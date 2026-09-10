@@ -1,9 +1,9 @@
-.PHONY: test test-codex test-claude-code test-cursor test-pi test-opencode test-langchain
+.PHONY: test test-codex test-claude-code test-cursor test-pi test-opencode test-langchain test-mastra
 
 PYTHON ?= python3
 NODE ?= node
 
-test: test-codex test-claude-code test-cursor test-pi test-opencode test-langchain
+test: test-codex test-claude-code test-cursor test-pi test-opencode test-langchain test-mastra
 
 test-codex:
 	cd codex && $(PYTHON) -m unittest test_hook.py -v
@@ -22,3 +22,6 @@ test-opencode:
 
 test-langchain:
 	cd langchain && PYTHONPATH=. $(if $(wildcard langchain/.venv/bin/python),$(CURDIR)/langchain/.venv/bin/python,$(PYTHON)) -m unittest discover -s tests -p 'test_*.py' -v
+
+test-mastra:
+	cd mastra && $(NODE) --test test/*.test.ts

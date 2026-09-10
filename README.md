@@ -8,7 +8,7 @@ Copy the directory for the agent you use.
 ## How it works
 
 ```text
-Codex / Claude Code / Cursor / Pi / OpenCode / LangChain
+Codex / Claude Code / Cursor / Pi / OpenCode / LangChain / Mastra
         │  before the tool runs
         ▼
   plugin  ──POST /governance/workflow/authorize──►  Mezmo
@@ -33,6 +33,7 @@ Request shape, polling, and identity rules are in
 | [pi](pi/) | `tool_call` / `tool_result` extension | yes | local JSONL | `~/.pi/agent/extensions/` or `.pi/extensions/` |
 | [opencode](opencode/) | `tool.execute.before` / `tool.execute.after` plugin | yes (throw to block) | local JSONL | `.opencode/plugins/` |
 | [langchain](langchain/) | `AgentMiddleware.awrap_tool_call` | yes | optional OpenTelemetry span | `middleware=[MezmoGovernanceMiddleware(...)]` |
+| [mastra](mastra/) | `hooks.beforeToolCall` / `afterToolCall` | yes (`proceed: false`) | local JSONL | `hooks: mezmoGovernanceHooks` |
 
 ## Setup
 
@@ -82,6 +83,7 @@ cursor/         Cursor agent hooks.json adapter
 pi/             Pi coding-agent extension
 opencode/       OpenCode plugin
 langchain/      LangChain AgentMiddleware
+mastra/         Mastra agent hooks
 docs/protocol.md
 ```
 

@@ -130,6 +130,7 @@ and polls instead of opening a second decision.
 | Pi | `pi`, session id, `toolCallId` | `pi_extension` | `pi` |
 | OpenCode | `opencode`, `sessionID`, `callID` | `opencode_plugin` | `opencode` |
 | LangChain | `langchain`, `thread_id` or turn id, tool call id | `langchain_middleware` | `langchain` |
+| Mastra | `mastra`, `threadId` or workflow `runId`, `toolCallId` | `mastra_hooks` | `mastra` |
 
 MCP tool names of the form `mcp__<server>__<tool>` split into namespace
 `<server>` and name `<tool>`. Arguments are never rewritten.
