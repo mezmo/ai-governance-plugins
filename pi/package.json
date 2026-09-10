@@ -1,0 +1,10 @@
+{
+  "name": "mezmo-governance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi coding-agent extension that gates tool calls through Mezmo Governance",
+  "pi": {
+    "extensions": ["./mezmo-governance.ts"]
+  }
+}

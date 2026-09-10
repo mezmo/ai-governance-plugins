@@ -1,0 +1,8 @@
+{
+  "name": "mezmo-governance",
+  "description": "Gate Claude Code tool calls through Mezmo Governance before they run",
+  "version": "0.1.0",
+  "author": {
+    "name": "Mezmo"
+  }
+}

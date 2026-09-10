@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""Cursor agent hook for Mezmo Governance."""
+
+from __future__ import annotations
+
+import json
+import os
+import socket
+import sys
+import time
+import uuid
+from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, NamedTuple
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.request import Request, urlopen
+
+AGENT = "cursor"
+DEFAULT_TIMEOUT_SECONDS = 590.0
+DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+DEFAULT_AUDIT_LOG = Path.home() / ".mezmo" / "governance-audit.jsonl"
+MAX_RESULT_PREVIEW_CHARACTERS = 2_000
+MCP_TOOL_PREFIX = "mcp__"
+
+HttpJson = Callable[[str, str, Mapping[str, Any] | None, float], tuple[int, dict[str, Any]]]
+Sleeper = Callable[[float], None]
+Clock = Callable[[], float]
+
+
+class HookContractError(ValueError):
+    pass
+
+
+class NormalizedToolCall(NamedTuple):
+    namespace: str
+    name: str
+    arguments: dict[str, Any]
+
+
+class CallIdentity(NamedTuple):
+    decision_id: str
+    request_id: str
+    session_id: str
+
+
+class Decision(NamedTuple):
+    approved: bool
+    reason: str | None
+
+
+def required_string(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise HookContractError(f"{field} must be a non-empty string")
+    return value.strip()
+
+
+def as_object(value: Any, field: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise HookContractError(f"{field} must be a JSON object")
+    return dict(value)
+
+
+def parse_object(raw: bytes) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise HookContractError(
+            "Mezmo Governance returned an invalid JSON response"
+        ) from error
+    if not isinstance(parsed, dict):
+        raise HookContractError("Mezmo Governance returned a non-object response")
+    return parsed
+
+
+def authorize_url() -> str:
+    return required_string(
+        os.environ.get("MEZMO_GOVERNANCE_URL"),
+        "MEZMO_GOVERNANCE_URL",
+    )
+
+
+def status_url(decision_id: str, base: str | None = None) -> str:
+    parsed = urlparse(base or authorize_url())
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    query["decision_id"] = [decision_id]
+    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+
+def authorization_header() -> str:
+    key = required_string(
+        os.environ.get("MEZMO_GOVERNANCE_ACCESS_KEY"),
+        "MEZMO_GOVERNANCE_ACCESS_KEY",
+    )
+    if key.lower().startswith("token ") or key.lower().startswith("bearer "):
+        return key
+    return f"Token {key}"
+
+
+def positive_seconds(environment_name: str, default: float) -> float:
+    configured = os.environ.get(environment_name)
+    if configured is None:
+        return default
+    try:
+        timeout = float(configured)
+    except ValueError as error:
+        raise HookContractError(f"{environment_name} must be a number") from error
+    if timeout <= 0:
+        raise HookContractError(f"{environment_name} must be greater than zero")
+    return timeout
+
+
+def timeout_seconds() -> float:
+    return positive_seconds(
+        "MEZMO_GOVERNANCE_TIMEOUT_SECONDS",
+        DEFAULT_TIMEOUT_SECONDS,
+    )
+
+
+def poll_interval_seconds() -> float:
+    return positive_seconds(
+        "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
+        DEFAULT_POLL_INTERVAL_SECONDS,
+    )
+
+
+def audit_log_path() -> Path:
+    configured = os.environ.get("MEZMO_GOVERNANCE_AUDIT_LOG")
+    if configured:
+        return Path(configured).expanduser()
+    return DEFAULT_AUDIT_LOG
+
+
+GATE_EVENTS = {"preToolUse", "beforeShellExecution", "beforeMCPExecution"}
+OBSERVE_EVENTS = {
+    "postToolUse",
+    "afterShellExecution",
+    "afterMCPExecution",
+    "postToolUseFailure",
+}
+
+
+def parse_arguments(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        if not raw.strip():
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise HookContractError("tool_input must be a JSON object") from error
+        if not isinstance(parsed, dict):
+            raise HookContractError("tool_input must be a JSON object")
+        return parsed
+    if isinstance(raw, dict):
+        return dict(raw)
+    raise HookContractError("tool_input must be a JSON object")
+
+
+def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
+    event_name = str(event.get("hook_event_name") or "")
+    if event_name in {"beforeShellExecution", "afterShellExecution"}:
+        command = event.get("command")
+        if not isinstance(command, str):
+            raise HookContractError("command must be a string")
+        return NormalizedToolCall(AGENT, "Shell", {"command": command})
+
+    canonical_name = required_string(event.get("tool_name"), "tool_name")
+    arguments = parse_arguments(event.get("tool_input"))
+    server = event.get("mcp_server_name")
+    server_name = server.strip() if isinstance(server, str) and server.strip() else ""
+
+    if event_name in {"beforeMCPExecution", "afterMCPExecution"}:
+        return NormalizedToolCall(server_name or AGENT, canonical_name, arguments)
+
+    if canonical_name.startswith(MCP_TOOL_PREFIX):
+        parts = canonical_name.split("__", 2)
+        if len(parts) != 3 or not parts[1] or not parts[2]:
+            raise HookContractError("MCP tool names must use mcp__<server>__<tool>")
+        return NormalizedToolCall(parts[1], parts[2], arguments)
+
+    if canonical_name.startswith("MCP:"):
+        rest = canonical_name[4:].strip()
+        if not rest:
+            raise HookContractError("MCP tool names must use MCP:<tool>")
+        return NormalizedToolCall(server_name or AGENT, rest, arguments)
+
+    return NormalizedToolCall(AGENT, canonical_name, arguments)
+
+
+def call_identity(event: Mapping[str, Any]) -> CallIdentity:
+    session_id = event.get("conversation_id") or event.get("session_id")
+    session_id = required_string(session_id, "conversation_id")
+    tool_call = normalize_tool_call(event)
+    explicit = event.get("tool_use_id")
+    if isinstance(explicit, str) and explicit.strip():
+        tool_use_id = explicit.strip()
+    else:
+        seed = json.dumps(
+            [
+                event.get("generation_id"),
+                tool_call.namespace,
+                tool_call.name,
+                tool_call.arguments,
+            ],
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        tool_use_id = str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+    request_id = f"{AGENT}:{session_id}:{tool_use_id}"
+    decision_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request_id))
+    return CallIdentity(decision_id, request_id, session_id)
+
+
+def origin(event: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": "cursor_hook",
+        "reason": str(event.get("hook_event_name") or "Cursor tool hook"),
+    }
+
+
+def approval_payload(event: Mapping[str, Any]) -> dict[str, Any]:
+    tool_call = normalize_tool_call(event)
+    identity = call_identity(event)
+    return {
+        "version": 1,
+        "decision_id": identity.decision_id,
+        "request_id": identity.request_id,
+        "scope": {
+            "kind": "single",
+            "session_id": identity.session_id,
+        },
+        "origin": origin(event),
+        "items": [
+            {
+                "id": 0,
+                "tool_namespace": tool_call.namespace,
+                "tool_name": tool_call.name,
+                "arguments": tool_call.arguments,
+            }
+        ],
+    }
+
+
+def http_json(
+    method: str,
+    url: str,
+    payload: Mapping[str, Any] | None,
+    timeout: float,
+) -> tuple[int, dict[str, Any]]:
+    body = (
+        None
+        if payload is None
+        else json.dumps(payload, separators=(",", ":")).encode()
+    )
+    headers = {
+        "Authorization": authorization_header(),
+        "Accept": "application/json",
+    }
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    request = Request(url, data=body, headers=headers, method=method)
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return response.status, parse_object(response.read())
+    except HTTPError as error:
+        try:
+            parsed = parse_object(error.read())
+        except HookContractError:
+            parsed = {}
+        return error.code, parsed
+    except TimeoutError:
+        raise
+    except URLError as error:
+        reason = error.reason
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            raise TimeoutError(str(error)) from error
+        if "timed out" in str(error).lower():
+            raise TimeoutError(str(error)) from error
+        raise HookContractError(f"Mezmo Governance is unavailable: {error}") from error
+    except socket.timeout as error:
+        raise TimeoutError(str(error)) from error
+
+
+def remaining_seconds(deadline: float, clock: Clock) -> float:
+    leftover = deadline - clock()
+    if leftover <= 0:
+        raise HookContractError("Mezmo Governance: approval still pending")
+    return leftover
+
+
+def decision_from_post_body(body: Mapping[str, Any]) -> Decision:
+    approved = body.get("approved")
+    if not isinstance(approved, bool):
+        raise HookContractError("Mezmo Governance did not return an approval decision")
+    reason = body.get("reason")
+    return Decision(approved, reason if isinstance(reason, str) else None)
+
+
+def decision_from_status_body(body: Mapping[str, Any]) -> Decision | None:
+    status = body.get("status")
+    reason = body.get("reason")
+    detail = reason if isinstance(reason, str) else None
+    if status == "approved":
+        return Decision(True, detail)
+    if status == "denied":
+        return Decision(False, detail or "Policy denied the call.")
+    if status == "pending":
+        return None
+    raise HookContractError(
+        f"Mezmo Governance returned an unexpected status: {status!r}"
+    )
+
+
+def poll_decision(
+    decision_id: str,
+    deadline: float,
+    http: HttpJson,
+    clock: Clock,
+    sleep: Sleeper,
+) -> Decision:
+    url = status_url(decision_id)
+    interval = poll_interval_seconds()
+    while True:
+        leftover = remaining_seconds(deadline, clock)
+        try:
+            status, body = http("GET", url, None, leftover)
+        except TimeoutError as error:
+            raise HookContractError(
+                f"Mezmo Governance is unavailable: {error}"
+            ) from error
+        if status == 404:
+            sleep(min(interval, leftover))
+            continue
+        if status != 200:
+            raise HookContractError(
+                f"Mezmo Governance returned HTTP {status} while polling"
+            )
+        decided = decision_from_status_body(body)
+        if decided is not None:
+            return decided
+        leftover = remaining_seconds(deadline, clock)
+        sleep(min(interval, leftover))
+
+
+def authorize(
+    payload: Mapping[str, Any],
+    http: HttpJson = http_json,
+    clock: Clock = time.monotonic,
+    sleep: Sleeper = time.sleep,
+) -> Decision:
+    deadline = clock() + timeout_seconds()
+    url = authorize_url()
+    leftover = remaining_seconds(deadline, clock)
+    try:
+        status, body = http("POST", url, payload, leftover)
+    except TimeoutError:
+        return poll_decision(str(payload["decision_id"]), deadline, http, clock, sleep)
+
+    if status == 409:
+        return poll_decision(str(payload["decision_id"]), deadline, http, clock, sleep)
+    if status != 200:
+        raise HookContractError(f"Mezmo Governance returned HTTP {status}")
+    return decision_from_post_body(body)
+
+
+def result_preview(value: Any) -> str:
+    try:
+        rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except (TypeError, ValueError):
+        rendered = str(value)
+    return rendered[:MAX_RESULT_PREVIEW_CHARACTERS]
+
+
+def result_has_known_error(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if value.get("isError") is True or value.get("is_error") is True:
+        return True
+    exit_code = value.get("exit_code")
+    return isinstance(exit_code, int) and exit_code != 0
+
+
+def append_audit(record: Mapping[str, Any]) -> None:
+    path = audit_log_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, separators=(",", ":"))
+                     + "\n")
+
+
+def handle_post_tool_use(event: Mapping[str, Any]) -> None:
+    tool_call = normalize_tool_call(event)
+    identity = call_identity(event)
+    response = event.get("tool_output", event.get("tool_response"))
+    failed = (
+        event.get("hook_event_name") == "postToolUseFailure"
+        or result_has_known_error(response)
+    )
+    preview = event.get("error_message") if failed and event.get("error_message") else response
+    append_audit(
+        {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "agent": AGENT,
+            "decision_id": identity.decision_id,
+            "request_id": identity.request_id,
+            "tool_namespace": tool_call.namespace,
+            "tool_name": tool_call.name,
+            "status": "failed" if failed else "observed",
+            "result_preview": result_preview(preview),
+        }
+    )
+
+
+def deny_output(reason: str) -> dict[str, Any]:
+    return {
+        "permission": "deny",
+        "user_message": reason,
+        "agent_message": reason,
+    }
+
+
+def allow_output() -> dict[str, Any]:
+    return {"permission": "allow"}
+
+
+def handle_pre_tool_use(
+    event: Mapping[str, Any],
+    http: HttpJson,
+    clock: Clock,
+    sleep: Sleeper,
+) -> dict[str, Any] | None:
+    decision = authorize(approval_payload(event), http=http, clock=clock, sleep=sleep)
+    if decision.approved:
+        return allow_output()
+    detail = decision.reason or "Policy denied the call."
+    return deny_output(f"Mezmo Governance denied this exact tool call: {detail}")
+
+
+def handle_event(
+    event: Mapping[str, Any],
+    http: HttpJson = http_json,
+    clock: Clock = time.monotonic,
+    sleep: Sleeper = time.sleep,
+) -> dict[str, Any] | None:
+    event_name = event.get("hook_event_name")
+    if event_name in GATE_EVENTS:
+        try:
+            return handle_pre_tool_use(event, http, clock, sleep)
+        except Exception as error:
+            return deny_output(
+                "Mezmo Governance could not authorize this exact tool call, so "
+                f"Cursor blocked it: {error}"
+            )
+    if event_name in OBSERVE_EVENTS:
+        try:
+            handle_post_tool_use(event)
+        except Exception as error:
+            print(
+                f"Mezmo Governance could not write the local audit log: {error}",
+                file=sys.stderr,
+            )
+        return None
+    raise HookContractError(f"unsupported hook event: {event_name!r}")
+
+
+def main() -> int:
+    try:
+        event = json.load(sys.stdin)
+        if not isinstance(event, dict):
+            raise HookContractError("hook input must be a JSON object")
+        output = handle_event(event)
+    except (HookContractError, json.JSONDecodeError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+
+    if output is not None:
+        print(json.dumps(output, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

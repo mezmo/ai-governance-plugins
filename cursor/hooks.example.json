@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.cursor/hooks/mezmo_governance_hook.py}\"",
+        "timeout": 600,
+        "failClosed": true
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.cursor/hooks/mezmo_governance_hook.py}\"",
+        "timeout": 15
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.cursor/hooks/mezmo_governance_hook.py}\"",
+        "timeout": 15
+      }
+    ]
+  }
+}
