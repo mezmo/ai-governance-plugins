@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -77,6 +78,30 @@ class FakeClock:
 
     def sleep(self, seconds: float) -> None:
         self.now += seconds
+
+class SlowHttp(FakeHttp):
+    """Advances the fake clock during each call, like a slow answer."""
+
+    def __init__(
+        self,
+        clock: FakeClock,
+        seconds: float,
+        responses: list[tuple[int, dict[str, Any]] | BaseException],
+    ) -> None:
+        super().__init__(responses)
+        self.clock = clock
+        self.seconds = seconds
+
+    def __call__(
+        self,
+        method: str,
+        url: str,
+        payload: Mapping[str, Any] | None,
+        timeout: float,
+    ) -> tuple[int, dict[str, Any]]:
+        self.clock.now += self.seconds
+        return super().__call__(method, url, payload, timeout)
+
 
 
 class CodexGovernanceHookTests(unittest.TestCase):
@@ -298,6 +323,70 @@ class PollingTests(unittest.TestCase):
             hook.authorize(
                 {"decision_id": "d"}, http=http, clock=clock, sleep=clock.sleep
             )
+
+    @patch.dict(os.environ, {**ENV, "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "2"})
+    def test_an_approval_posted_after_the_deadline_is_refused(self) -> None:
+        clock = FakeClock()
+        http = SlowHttp(clock, 5.0, [(200, {"approved": True})])
+
+        with self.assertRaisesRegex(hook.HookContractError, "approval still pending"):
+            hook.authorize(
+                {"decision_id": "d"}, http=http, clock=clock, sleep=clock.sleep
+            )
+
+    @patch.dict(os.environ, {**ENV, "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "2"})
+    def test_an_approval_polled_after_the_deadline_is_refused(self) -> None:
+        clock = FakeClock()
+        http = SlowHttp(
+            clock, 1.5, [(409, {}), (200, {"status": "approved", "reason": None})]
+        )
+
+        with self.assertRaisesRegex(hook.HookContractError, "approval still pending"):
+            hook.authorize(
+                {"decision_id": "d"}, http=http, clock=clock, sleep=clock.sleep
+            )
+
+
+class DeadlineWatchdogTests(unittest.TestCase):
+    def fire(self, stdout: Any) -> list[int]:
+        exits: list[int] = []
+        fired = threading.Event()
+
+        def fake_exit(code: int) -> None:
+            exits.append(code)
+            fired.set()
+
+        with patch.object(sys, "stdout", stdout), patch.object(
+            sys, "stderr", StringIO()
+        ), patch.object(hook.os, "_exit", fake_exit):
+            hook.deadline_watchdog(0.01)
+            self.assertTrue(fired.wait(5))
+        return exits
+
+    def test_prints_the_deny_output_and_exits_with_the_block_code(self) -> None:
+        stdout = StringIO()
+
+        self.assertEqual(self.fire(stdout), [2])
+        output = json.loads(stdout.getvalue())
+        self.assertEqual(set(output), set(deny_schema("x")))
+        self.assertIn("approval still pending", stdout.getvalue())
+
+    def test_exits_with_the_block_code_when_stdout_is_gone(self) -> None:
+        class ClosedStdout(StringIO):
+            def write(self, text: str) -> int:
+                raise BrokenPipeError("stdout closed")
+
+        self.assertEqual(self.fire(ClosedStdout()), [2])
+
+    def test_stopping_before_the_deadline_prints_nothing(self) -> None:
+        with patch.object(hook.os, "_exit") as fake_exit, patch.object(
+            sys, "stdout", StringIO()
+        ) as stdout:
+            hook.deadline_watchdog(0.05)()
+            time.sleep(0.2)
+
+        fake_exit.assert_not_called()
+        self.assertEqual(stdout.getvalue(), "")
 
 
 class DeadlineBoundsTests(unittest.TestCase):
@@ -527,6 +616,49 @@ class StubHandler(BaseHTTPRequestHandler):
         pass
 
 
+class DripHandler(BaseHTTPRequestHandler):
+    """Sends an approval one byte at a time, each byte inside the socket timeout."""
+
+    server: DripGovernance
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        body = b'{"approved":true' + b" " * 40 + b"}"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        for byte in body:
+            if self.server.stopped.wait(0.3):
+                return
+            try:
+                self.wfile.write(bytes([byte]))
+            except OSError:
+                return
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+
+class DripGovernance(ThreadingHTTPServer):
+    def __init__(self) -> None:
+        super().__init__(("127.0.0.1", 0), DripHandler)
+        self.stopped = threading.Event()
+
+    def __enter__(self) -> DripGovernance:
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.stopped.set()
+        self.shutdown()
+        self.server_close()
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server_address[1]}/governance/workflow/authorize"
+
+
 class EndToEndTests(unittest.TestCase):
     """Run the script as the runtime does: JSON on stdin, decision on stdout."""
 
@@ -534,6 +666,7 @@ class EndToEndTests(unittest.TestCase):
         self,
         event: dict[str, Any],
         url: str | None,
+        extra: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = {
             key: value
@@ -552,6 +685,7 @@ class EndToEndTests(unittest.TestCase):
         )
         if url is not None:
             env["MEZMO_GOVERNANCE_URL"] = url
+        env.update(extra or {})
         return subprocess.run(
             [sys.executable, str(HOOK_PATH)],
             input=json.dumps(event),
@@ -634,6 +768,22 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(stub.requests, [])
         log = Path(self.tmp.name) / "audit.jsonl"
         self.assertEqual(json.loads(log.read_text(encoding="utf-8"))["agent"], hook.AGENT)
+
+    def test_a_dripping_answer_is_denied_at_the_deadline(self) -> None:
+        with DripGovernance() as stub:
+            started = time.monotonic()
+            result = self.run_hook(
+                hook_event(PRE_EVENT),
+                stub.url,
+                extra={"MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "2"},
+            )
+            elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 10, "the hook waited past its deadline")
+        self.assertEqual(result.returncode, 2, result.stderr)
+        output = stdout_json(result)
+        self.assertEqual(set(output), set(deny_schema("x")))
+        self.assertIn("approval still pending", json.dumps(output))
 
 
 def stdout_json(result: subprocess.CompletedProcess[str]) -> Any:
