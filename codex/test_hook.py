@@ -270,6 +270,36 @@ class CodexGovernanceHookTests(unittest.TestCase):
             self.assertEqual(hook.authorization_header(), "Token sts_test")
 
 
+class PollingTests(unittest.TestCase):
+    @patch.dict(os.environ, ENV)
+    def test_poll_treats_404_as_pending_until_decided(self) -> None:
+        http = FakeHttp(
+            [
+                (409, {"code": "ECONFLICT"}),
+                (404, {}),
+                (200, {"status": "approved", "reason": None}),
+            ]
+        )
+        clock = FakeClock()
+
+        decision = hook.authorize(
+            {"decision_id": "d"}, http=http, clock=clock, sleep=clock.sleep
+        )
+
+        self.assertTrue(decision.approved)
+        self.assertEqual([call[0] for call in http.calls], ["POST", "GET", "GET"])
+
+    @patch.dict(os.environ, {**ENV, "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "2"})
+    def test_poll_denies_when_404_lasts_past_the_deadline(self) -> None:
+        http = FakeHttp([(409, {})] + [(404, {})] * 5)
+        clock = FakeClock()
+
+        with self.assertRaisesRegex(hook.HookContractError, "approval still pending"):
+            hook.authorize(
+                {"decision_id": "d"}, http=http, clock=clock, sleep=clock.sleep
+            )
+
+
 class DeadlineBoundsTests(unittest.TestCase):
     def seconds(self, name: str, configured: str) -> float:
         with patch.dict(os.environ, {**ENV, name: configured}):

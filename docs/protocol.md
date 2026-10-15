@@ -111,9 +111,12 @@ returns HTTP 409.
    be waiting for a person.
 5. `GET` `pending`: sleep `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` (default 5)
    and retry.
-6. Deadline reached while still pending: deny with reason
+6. `GET` HTTP 404: Mezmo has no record of the decision yet, for example while
+   the `POST` is still in flight. Treat it as `pending`. Every adapter does
+   this, and the deadline in rule 7 still ends the wait.
+7. Deadline reached while still pending: deny with reason
    `Mezmo Governance: approval still pending`.
-7. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
+8. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
    env, or transport error: deny. The tool does not run.
 
 ## Identity
@@ -125,8 +128,8 @@ and polls instead of opening a second decision.
 | Runtime | `request_id` pieces | `origin.kind` | Default `tool_namespace` |
 | --- | --- | --- | --- |
 | Codex | `codex`, `session_id`, `tool_use_id` (plus `turn_id` when present) | `codex_hook` | `codex`, or MCP server from `mcp__<server>__<tool>` |
-| Claude Code | `claude_code`, `session_id`, `tool_use_id` | `claude_code_hook` | `claude_code`, or MCP server from `mcp__<server>__<tool>` |
-| Cursor | `cursor`, `conversation_id`, `tool_use_id` | `cursor_hook` | `cursor`, or `mcp_server_name` / `MCP:<server>` |
+| Claude Code | `claude_code`, `session_id`, `tool_use_id` (plus `turn_id` when present) | `claude_code_hook` | `claude_code`, or MCP server from `mcp__<server>__<tool>` |
+| Cursor | `cursor`, `conversation_id`, `tool_use_id`, or a fresh `run-<uuid>` when the event has none | `cursor_hook` | `cursor`, `mcp_server_name`, or `<server>` from `mcp__<server>__<tool>` |
 | Pi | `pi`, session id, `toolCallId` | `pi_extension` | `pi` |
 | OpenCode | `opencode`, `sessionID`, `callID` | `opencode_plugin` | `opencode` |
 | LangChain | `langchain`, `thread_id` or turn id, tool call id | `langchain_middleware` | `langchain` |
@@ -164,6 +167,9 @@ After an approved tool runs, observe hooks append one JSON object per line:
   "result_preview": "{...}"
 }
 ```
+
+`decision_id` and `request_id` are `null` when the event carries no tool call
+id, as with Cursor's shell and MCP events.
 
 `status` is `failed` when the result looks like an error (`isError`, `is_error`,
 or non-zero `exit_code` or `exitCode`), otherwise `observed`. A result sent as
