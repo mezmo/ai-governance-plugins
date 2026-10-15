@@ -4,9 +4,12 @@
 `create_agent` graph, through `invoke`/`stream` and `ainvoke`/`astream`. It
 POSTs an authorize request, waits for `{ "approved": true|false }`, and
 returns a `ToolMessage` with `status="error"` when the call is denied. Any
-failure before a decision (Mezmo unreachable, an
-HTTP error, bad JSON, missing configuration) also returns an error
-`ToolMessage`: the tool does not run, and the agent keeps going.
+failure before a decision (Mezmo unreachable, an HTTP error, bad JSON, missing
+configuration) also returns an error `ToolMessage`: the tool does not run, and
+the agent keeps going.
+
+Tested against `langchain` 1.4.6 and `langgraph` 1.2.15: the tests run real
+`create_agent` graphs with a fake chat model through `invoke`.
 
 ## Install
 
@@ -66,6 +69,27 @@ export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
 export OPENAI_API_KEY="…"
 python3 example_agent.py
 ```
+
+## Verify it works
+
+With the package installed and the two variables set, ask Mezmo about one
+call. This prints the decision, or raises `GovernanceError` with the reason
+there is none:
+
+```bash
+python -c 'import asyncio, uuid
+from mezmo_governance import approval_payload, authorize
+payload = approval_payload(session_id="verify", tool_call_id=str(uuid.uuid4()),
+                           tool_name="echo", arguments={"text": "hi"})
+print(asyncio.run(authorize(payload)))'
+```
+
+To check fail-closed in your agent, set
+`MEZMO_GOVERNANCE_URL=http://127.0.0.1:9/authorize` and run a prompt that
+calls a tool: the tool message must say `could not authorize`, and the tool
+must not run.
+
+## What it sends
 
 `request_id` is `langchain:<session_id>:<tool_call_id>`. Tool names
 `mcp__<server>__<tool>` use that MCP server as `tool_namespace`; everything else

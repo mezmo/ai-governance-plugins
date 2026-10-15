@@ -4,8 +4,10 @@ Mastra agent hooks that ask Mezmo Governance before each tool runs. Denied or
 failed checks skip the tool (`proceed: false`). After an approved tool finishes,
 `afterToolCall` appends a local JSONL record.
 
-Requires `@mastra/core` 1.49.0 or later (agent `hooks`). Official docs:
-https://mastra.ai/docs/agents/using-tools
+Requires `@mastra/core` 1.49.0 or later (agent `hooks`). Tested against
+`@mastra/core` 1.77.0: a type check against its `ToolHooks` and
+`Agent.generate` options, plus tests that call the hooks directly. Official
+docs: https://mastra.ai/docs/agents/using-tools
 
 ## Install
 
@@ -58,6 +60,23 @@ custom fetch in tests.
 
 Do not use Mastra's `requireToolApproval` for this. That is Mastra's own
 approval UI. These hooks talk to Mezmo.
+
+## Verify it works
+
+From the folder that holds `mezmo-governance.ts`, ask the hook about one call
+(Node 22+):
+
+```bash
+node --input-type=module -e 'import { mezmoGovernanceHooks } from "./mezmo-governance.ts";
+console.log(await mezmoGovernanceHooks.beforeToolCall({ toolName: "echo", input: { text: "hi" }, context: {} }));'
+```
+
+`undefined` means Mezmo approved the call. `{ proceed: false, output: … }`
+means it was denied or could not be checked; `output` says which. To check
+fail-closed, run it again with
+`MEZMO_GOVERNANCE_URL=http://127.0.0.1:9/authorize`: the output must say
+`could not authorize`. After an approved tool runs in your agent, read the
+last audit line: `tail -1 ~/.mezmo/governance-audit.jsonl`.
 
 ## What the hooks send
 
