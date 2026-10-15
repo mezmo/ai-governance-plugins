@@ -1,9 +1,9 @@
-.PHONY: test test-codex test-claude-code test-cursor test-pi test-opencode test-langchain test-mastra
+.PHONY: test test-codex test-claude-code test-cursor test-pi test-opencode test-langchain test-mastra test-tools
 
 PYTHON ?= python3
 NODE ?= node
 
-test: test-codex test-claude-code test-cursor test-pi test-opencode test-langchain test-mastra
+test: test-codex test-claude-code test-cursor test-pi test-opencode test-langchain test-mastra test-tools
 
 test-codex:
 	cd codex && $(PYTHON) -m unittest test_hook.py -v
@@ -25,3 +25,6 @@ test-langchain:
 
 test-mastra:
 	cd mastra && $(NODE) --test test/*.test.ts
+
+test-tools:
+	$(PYTHON) -m unittest discover -s tools -p 'test_*.py' -v

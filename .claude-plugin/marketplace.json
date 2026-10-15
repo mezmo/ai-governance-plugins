@@ -1,0 +1,14 @@
+{
+  "name": "mezmo",
+  "description": "Mezmo plugins for Claude Code",
+  "owner": {
+    "name": "Mezmo"
+  },
+  "plugins": [
+    {
+      "name": "mezmo-governance",
+      "source": "./claude-code",
+      "description": "Ask Mezmo Governance before each tool call runs; block it on deny"
+    }
+  ]
+}

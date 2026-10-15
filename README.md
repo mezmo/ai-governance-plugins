@@ -3,88 +3,141 @@
 Plugins that ask Mezmo Governance before a coding agent runs a tool. If Mezmo
 denies the call, or never answers, the tool does not run.
 
-Copy the directory for the agent you use.
-
-## How it works
-
 ```text
-Codex / Claude Code / Cursor / Pi / OpenCode / LangChain / Mastra
+Claude Code / Codex / Cursor / Gemini CLI / Copilot / Pi / OpenCode / LangChain / Mastra
         │  before the tool runs
         ▼
-  plugin  ──POST /governance/workflow/authorize──►  Mezmo
+  plugin  ──POST /governance/workflow/authorize──►  Mezmo Governance
         │
         │  { "approved": true|false, "reason"? }
         ▼
-  run the tool, or stop it and show the reason
+  run the tool, or stop it and show the reason to the agent
 ```
 
-Some plugins append a line to a local JSONL file after a tool finishes.
+## Try it in two minutes, without a Mezmo account
 
-Request shape, polling, and identity rules are in
-[docs/protocol.md](docs/protocol.md).
+A local mock server stands in for Mezmo, so you can watch a plugin block a
+call before you connect it to anything. You need Python 3.9+ and Claude Code
+2.1.295+.
 
-## Supported agents
+1. Start the mock and deny `Bash`:
 
-| Directory | Mechanism | Stops the tool | After the tool | Install |
-| --- | --- | --- | --- | --- |
-| [codex](codex/) | `PreToolUse` / `PostToolUse` command hooks | yes | local JSONL | `~/.codex/hooks.json` or `.codex/hooks.json` |
-| [claude-code](claude-code/) | same hook events, or a Claude Code plugin | yes | local JSONL | `~/.claude/settings.json`, or this directory as a plugin |
-| [cursor](cursor/) | `preToolUse` (optional MCP/shell hooks) | yes (`failClosed: true`) | local JSONL | `~/.cursor/hooks.json` or `.cursor/hooks.json` |
-| [pi](pi/) | `tool_call` / `tool_result` extension | yes | local JSONL | `~/.pi/agent/extensions/` or `.pi/extensions/` |
-| [opencode](opencode/) | `tool.execute.before` / `tool.execute.after` plugin | yes (throw to block) | local JSONL | `.opencode/plugins/` |
-| [langchain](langchain/) | `AgentMiddleware.awrap_tool_call` | yes | optional OpenTelemetry span | `middleware=[MezmoGovernanceMiddleware(...)]` |
-| [mastra](mastra/) | `hooks.beforeToolCall` / `afterToolCall` | yes (`proceed: false`) | local JSONL | `hooks: mezmoGovernanceHooks` |
+   ```bash
+   git clone https://github.com/mezmo/ai-governance-plugins
+   cd ai-governance-plugins
+   python3 tools/mock_governance.py --deny Bash
+   ```
 
-## Setup
+2. In a second terminal, start Claude Code with the plugin loaded:
 
-In Mezmo, create a policy and register an agent for the coding tool you are
-installing. Copy the access key. Mezmo shows it once.
+   ```bash
+   export MEZMO_GOVERNANCE_URL=http://127.0.0.1:8787/governance/workflow/authorize
+   export MEZMO_GOVERNANCE_ACCESS_KEY=local-test
+   claude --plugin-dir ./claude-code
+   ```
 
-```bash
-export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+3. Ask Claude to run `ls`. The mock prints `denied claude_code:Bash`, and
+   Claude reports `Mezmo Governance denied this exact tool call: mock policy:
+   claude_code:Bash is denied`. Ask it to read a file: that call is approved.
+
+Run `python3 tools/mock_governance.py --help` for patterns (`--deny 'mcp__*'`,
+`--deny 'kubernetes:pods_*'`) and `--hold`, which leaves a call pending so you
+can watch the plugin wait and then deny.
+
+## Connect to Mezmo
+
+1. In Mezmo Governance, create a policy and register one agent per coding
+   tool, so each has its own policy and log. Copy the agent's access key:
+   Mezmo shows it once.
+2. Install the plugin for your agent (table below).
+3. Give it the URL and key. Claude Code prompts for both when you enable the
+   plugin. Every other agent reads environment variables:
+
+   ```bash
+   export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
+   export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+   ```
+
+4. Run one tool call your policy denies, and check that the agent shows the
+   reason. Then check `~/.mezmo/governance-audit.jsonl` for the approved calls.
+
+### Claude Code
+
+```text
+/plugin marketplace add mezmo/ai-governance-plugins
+/plugin install mezmo-governance@mezmo
 ```
 
-For development, use
-`https://api.use.dev.mezmo.it/governance/workflow/authorize` instead.
+Claude Code asks for the authorize URL and the access key and keeps the key in
+the system credential store. Details: [claude-code/](claude-code/).
 
-Register a separate agent for each coding tool so policy and logs stay
-separate. Then follow the README in that tool's directory.
+### Other agents
 
-## Environment
+| Agent | Hook | Fails closed? | Install |
+| --- | --- | --- | --- |
+| [Codex CLI](codex/) | `PreToolUse` command hook | no: a crashed hook lets the call run | copy the script, merge `hooks.example.json`, trust it in `/hooks` |
+| [Cursor](cursor/) | `preToolUse` hook | yes, with `failClosed: true` | copy the script, merge `hooks.example.json` |
+| [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | see its README | copy the script, merge `settings.example.json` |
+| [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | no: a timed-out hook lets the call run | copy the script, add `hooks.example.json` |
+| [Pi](pi/) | `tool_call` extension | yes | copy the folder to `~/.pi/agent/extensions/` |
+| [OpenCode](opencode/) 1.x | `tool.execute.before` plugin | yes | copy the folder to `.opencode/plugins/` |
+| [LangChain](langchain/) v1 | `AgentMiddleware` | yes | `pip install ./langchain` |
+| [Mastra](mastra/) | agent `hooks.beforeToolCall` | yes | copy the files, pass `hooks` |
+
+"Fails closed" means the tool does not run when the plugin itself crashes,
+times out, or cannot start. Every plugin denies the call when Mezmo denies it,
+cannot be reached, or returns something it does not understand.
+
+## What leaves your machine
+
+Before each tool call, the plugin sends Mezmo the tool name and its full
+arguments: the shell command, the file path, and for write tools the file
+content. It also sends the session id and the tool call id. Tool results are
+not sent: post-tool hooks only append a line to a local file.
+
+Write policy on the assumption that Mezmo sees every argument, and keep secrets
+out of tool arguments.
+
+## Settings
 
 | Variable | Required | Default |
 | --- | --- | --- |
-| `MEZMO_GOVERNANCE_URL` | yes | — |
-| `MEZMO_GOVERNANCE_ACCESS_KEY` | yes | — |
-| `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590` |
+| `MEZMO_GOVERNANCE_URL` | yes | none |
+| `MEZMO_GOVERNANCE_ACCESS_KEY` | yes | none |
+| `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590`, the longest the plugin waits for a person to decide |
 | `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` |
 | `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` |
 
-Hook JSON `timeout` values in the examples are 600 seconds so the plugin's
-590 second deadline finishes first.
+The hook examples set a 600 second hook timeout, so the plugin's own deadline
+ends first and returns a clear deny.
+
+## Troubleshooting
+
+| You see | Cause | Fix |
+| --- | --- | --- |
+| Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice |
+| Every call is denied: `MEZMO_GOVERNANCE_URL must be a non-empty string` | the agent did not inherit the variables | export them in the shell that starts the agent, or use the agent's own settings `env` block |
+| `Mezmo Governance returned HTTP 401` | wrong or revoked access key | copy a fresh key from the agent in Mezmo |
+| `approval still pending` | policy needs a person and nobody decided in time | decide in Mezmo, or raise `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` (max 590) |
+| `SyntaxError` or `TypeError` on start | `python3` is older than 3.9 | install a newer Python, or point the hook command at it |
+
+The protocol, including polling and request identity, is in
+[docs/protocol.md](docs/protocol.md).
 
 ## Tests
 
-Python 3.10+ and Node 22+ (type stripping for the TypeScript tests):
+Python 3.9+ and Node 22+. Tests mock HTTP and never call Mezmo.
 
 ```bash
 make test
 ```
 
-Each directory's tests mock HTTP. They do not call Mezmo.
+`make test` runs the LangChain middleware tests only when LangChain is
+installed in `langchain/.venv` (see [langchain/](langchain/)).
 
-## Layout
+## Security
 
-```text
-codex/          Codex CLI command hook
-claude-code/    Claude Code hook + plugin manifest
-cursor/         Cursor agent hooks.json adapter
-pi/             Pi coding-agent extension
-opencode/       OpenCode plugin
-langchain/      LangChain AgentMiddleware
-mastra/         Mastra agent hooks
-docs/protocol.md
-```
+Report a vulnerability as described in [SECURITY.md](SECURITY.md), not in a
+public issue.
 
 Apache License 2.0. See [LICENSE](LICENSE).
