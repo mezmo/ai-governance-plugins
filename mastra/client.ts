@@ -330,8 +330,10 @@ export async function authorize(
 }
 
 export function resultPreview(value: unknown): string {
+  // JSON.stringify gives "{}" for an Error: its fields are not enumerable.
+  const shown = value instanceof Error ? { name: value.name, message: value.message } : value;
   try {
-    return JSON.stringify(value).slice(0, MAX_RESULT_PREVIEW);
+    return JSON.stringify(shown).slice(0, MAX_RESULT_PREVIEW);
   } catch {
     return String(value).slice(0, MAX_RESULT_PREVIEW);
   }

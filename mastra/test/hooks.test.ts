@@ -151,6 +151,32 @@ test(
 );
 
 test(
+  "afterToolCall previews a thrown Error by name and message",
+  () =>
+    withEnv(ENV, async () => {
+      const dir = await mkdtemp(join(tmpdir(), "mezmo-gov-"));
+      const path = join(dir, "audit.jsonl");
+      await withEnv({ MEZMO_GOVERNANCE_AUDIT_LOG: path }, async () => {
+        const hooks = createMezmoGovernanceHooks({
+          fetchImpl: async () => jsonResponse(200, { approved: true }),
+        });
+        await hooks.afterToolCall({
+          toolName: "weatherTool",
+          input: { location: "Austin" },
+          context: { agent: { threadId: "thread-1", toolCallId: "call-1" } },
+          error: new TypeError("station offline"),
+        });
+        const line = JSON.parse((await readFile(path, "utf8")).trim());
+        assert.equal(line.status, "failed");
+        assert.deepEqual(JSON.parse(line.result_preview), {
+          name: "TypeError",
+          message: "station offline",
+        });
+      });
+    }),
+);
+
+test(
   "identical calls without toolCallId each get a fresh decision",
   () =>
     withEnv(ENV, async () => {
