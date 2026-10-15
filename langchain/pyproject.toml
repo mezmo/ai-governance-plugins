@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mezmo-governance-langchain"
+version = "0.1.0"
+description = "LangChain agent middleware that gates tool calls through Mezmo Governance"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.28.1",
+    "langchain>=1.0",
+]
+
+[project.optional-dependencies]
+otel = ["opentelemetry-api"]
+
+[tool.setuptools]
+packages = ["mezmo_governance"]
+
+[tool.setuptools.package-data]
+mezmo_governance = ["py.typed"]
