@@ -52,7 +52,10 @@ can watch the plugin wait and then deny.
    Mezmo shows it once.
 2. Install the plugin for your agent (table below).
 3. Give it the URL and key. Claude Code prompts for both when you enable the
-   plugin. Every other agent reads environment variables:
+   plugin. OpenCode 2.x takes them as plugin options in `opencode.json`
+   (see [opencode/](opencode/)), because its tools run in a background
+   service that does not see your shell. Every other agent reads environment
+   variables:
 
    ```bash
    export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
@@ -81,7 +84,7 @@ the system credential store. Details: [claude-code/](claude-code/).
 | [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | copy the script, merge `settings.example.json` |
 | [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | on a crash yes; on a timeout no | copy the script, add `hooks.example.json` to `~/.copilot/hooks/` |
 | [Pi](pi/) | `tool_call` extension | yes | copy the folder to `~/.pi/agent/extensions/` |
-| [OpenCode](opencode/) 1.x and 2.x | `tool.execute.before` plugin | yes | copy `mezmo-governance.ts` and its folder to `~/.config/opencode/plugins/` |
+| [OpenCode](opencode/) 1.x and 2.x | `tool.execute.before` plugin | yes | 2.x: copy the folder, name it in `opencode.json` `plugins` with options; 1.x: copy to `~/.config/opencode/plugins/` |
 | [LangChain](langchain/) v1 | `AgentMiddleware` (`wrap_tool_call` and `awrap_tool_call`) | yes | `pip install ./langchain` |
 | [Mastra](mastra/) | agent `hooks.beforeToolCall` | yes | copy the files, pass `hooks` |
 
@@ -171,7 +174,7 @@ one shell call (expected: denied) and one file read (expected: approved):
 | Cursor CLI | 2026.10.14 | pass | blocked |
 | Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
 | Copilot CLI | 1.0.95 | pass, with user-level hooks | blocked |
-| OpenCode | 2.0.25 | pass with `opencode run --standalone` | not checked |
+| OpenCode | 2.0.25 | pass, through the background service with plugin options | not checked |
 | Pi | 1.3.0 | pass | not checked |
 | Mastra | 1.77.0 | pass | not checked |
 | LangChain | 1.4.6, sync `invoke` | pass | not checked |

@@ -154,6 +154,10 @@ MCP tool names of the form `mcp__<server>__<tool>` split into namespace
 | `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` | Status poll spacing, at least 1 second |
 | `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` | Local post-tool log |
 
+OpenCode also takes these names as plugin options in `opencode.json`; an
+option wins over the variable. On 2.x options are the only way to reach the
+background service that runs the tools.
+
 Both seconds values must be finite numbers greater than zero. Any other value
 makes the hook deny every call with an error that names the variable.
 
