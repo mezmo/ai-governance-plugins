@@ -1,57 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 
 import { callIdentity } from "../mezmo-governance/client.ts";
 import { MezmoGovernance } from "../mezmo-governance.ts";
+import { auditLines, decision, type FakeFetch, withFakeMezmo } from "./runtime.ts";
 
-const ENV = {
-  MEZMO_GOVERNANCE_URL: "https://api.example.test/governance/workflow/authorize",
-  MEZMO_GOVERNANCE_ACCESS_KEY: "sts_test",
-  MEZMO_GOVERNANCE_TIMEOUT_SECONDS: "30",
-  MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS: "1",
-};
-
-type FakeFetch = (url: string, init?: { body?: string }) => Promise<unknown>;
-
-async function withRuntime(
+function withRuntime(
   fetchImpl: FakeFetch,
   fn: (hooks: Awaited<ReturnType<typeof MezmoGovernance>>, audit: string) => Promise<void>,
 ) {
-  const dir = await mkdtemp(join(tmpdir(), "mezmo-gov-oc-"));
-  const audit = join(dir, "audit.jsonl");
-  const values: Record<string, string> = { ...ENV, MEZMO_GOVERNANCE_AUDIT_LOG: audit };
-  const previous = new Map<string, string | undefined>();
-  for (const [key, value] of Object.entries(values)) {
-    previous.set(key, process.env[key]);
-    process.env[key] = value;
-  }
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = fetchImpl as typeof fetch;
-  try {
-    await fn(await MezmoGovernance(), audit);
-  } finally {
-    globalThis.fetch = realFetch;
-    for (const [key, value] of previous) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  }
-}
-
-function decision(body: unknown): FakeFetch {
-  return async () => ({ status: 200, text: async () => JSON.stringify(body) });
+  return withFakeMezmo(fetchImpl, async (audit) => fn(await MezmoGovernance(), audit));
 }
 
 const INPUT = { tool: "bash", sessionID: "ses_1", callID: "call_1" };
 
 async function auditLine(path: string) {
-  return JSON.parse((await readFile(path, "utf8")).trim());
+  return (await auditLines(path))[0];
 }
 
 test("tool.execute.before returns when Mezmo approves", async () => {
