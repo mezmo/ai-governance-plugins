@@ -5,7 +5,6 @@ import {
   argumentsObject,
   authorize,
   callIdentity,
-  resultFailed,
   resultPreview,
   splitToolName,
 } from "./client.ts";
@@ -15,7 +14,7 @@ type SessionManager = {
 };
 
 type Ui = {
-  setStatus?: (id: string, text: string) => void;
+  setStatus?: (id: string, text: string | undefined) => void;
 };
 
 type ToolCallEvent = {
@@ -28,13 +27,14 @@ type ToolResultEvent = {
   toolName: string;
   toolCallId: string;
   input?: unknown;
-  result?: unknown;
+  content?: unknown;
+  structuredContent?: unknown;
   isError?: boolean;
 };
 
 type ExtensionContext = {
   sessionManager: SessionManager;
-  ui: Ui;
+  ui?: Ui;
 };
 
 type ExtensionAPI = {
@@ -52,7 +52,7 @@ function sessionId(ctx: ExtensionContext): string {
 
 export default function mezmoGovernance(pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
-    ctx.ui.setStatus?.("mezmo-governance", "Checking Mezmo Governance");
+    ctx.ui?.setStatus?.("mezmo-governance", "Checking Mezmo Governance");
     try {
       const payload = approvalPayload({
         sessionId: sessionId(ctx),
@@ -77,7 +77,7 @@ export default function mezmoGovernance(pi: ExtensionAPI) {
         reason: `Mezmo Governance could not authorize this exact tool call, so Pi blocked it: ${message}`,
       };
     } finally {
-      ctx.ui.setStatus?.("mezmo-governance", "");
+      ctx.ui?.setStatus?.("mezmo-governance", undefined);
     }
   });
 
@@ -92,8 +92,8 @@ export default function mezmoGovernance(pi: ExtensionAPI) {
         request_id: identity.requestId,
         tool_namespace: tool.namespace,
         tool_name: tool.name,
-        status: event.isError || resultFailed(event.result) ? "failed" : "observed",
-        result_preview: resultPreview(event.result),
+        status: event.isError ? "failed" : "observed",
+        result_preview: resultPreview(event.structuredContent ?? event.content ?? null),
       });
     } catch (error) {
       console.error(
