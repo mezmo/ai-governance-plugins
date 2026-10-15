@@ -80,7 +80,7 @@ the system credential store. Details: [claude-code/](claude-code/).
 | [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | no: a crashed or timed-out hook lets the call run | copy the script, merge `settings.example.json` |
 | [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | on a crash yes; on a timeout no | copy the script, add `hooks.example.json` |
 | [Pi](pi/) | `tool_call` extension | yes | copy the folder to `~/.pi/agent/extensions/` |
-| [OpenCode](opencode/) 1.x | `tool.execute.before` plugin | yes | copy the folder to `.opencode/plugins/` |
+| [OpenCode](opencode/) 1.x and 2.x | `tool.execute.before` plugin | yes | copy `mezmo-governance.ts` and its folder to `~/.config/opencode/plugins/` |
 | [LangChain](langchain/) v1 | `AgentMiddleware` (`wrap_tool_call` and `awrap_tool_call`) | yes | `pip install ./langchain` |
 | [Mastra](mastra/) | agent `hooks.beforeToolCall` | yes | copy the files, pass `hooks` |
 

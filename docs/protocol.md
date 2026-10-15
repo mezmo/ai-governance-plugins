@@ -133,9 +133,9 @@ and polls instead of opening a second decision.
 | Gemini CLI | `gemini_cli`, `session_id`, a fresh `run-<uuid>` (no call id) | `gemini_cli_hook` | `gemini_cli`, or `mcp_context.server_name` |
 | GitHub Copilot | `copilot`, `sessionId`, a fresh `run-<uuid>` (no call id) | `copilot_hook` | `copilot` |
 | Pi | `pi`, session id, `toolCallId` | `pi_extension` | `pi` |
-| OpenCode | `opencode`, `sessionID`, `callID` | `opencode_plugin` | `opencode` |
-| LangChain | `langchain`, `thread_id` or turn id, tool call id | `langchain_middleware` | `langchain` |
-| Mastra | `mastra`, `threadId` or workflow `runId`, `toolCallId` | `mastra_hooks` | `mastra` |
+| OpenCode | `opencode`, `sessionID`, `callID`; on 2.x Code Mode the second and later inner calls add `#2`, `#3`, … | `opencode_plugin` | `opencode` |
+| LangChain | `langchain`, `thread_id`, turn id, or one random id per middleware instance; tool call id, or a random id when it is missing | `langchain_middleware` | `langchain` |
+| Mastra | `mastra`, `threadId` or workflow `runId`, `toolCallId` or a random id when it is missing | `mastra_hooks` | `mastra` |
 
 MCP tool names of the form `mcp__<server>__<tool>` split into namespace
 `<server>` and name `<tool>`. Arguments are never rewritten.
@@ -146,8 +146,8 @@ MCP tool names of the form `mcp__<server>__<tool>` split into namespace
 | --- | --- | --- | --- |
 | `MEZMO_GOVERNANCE_URL` | yes | — | Full authorize URL |
 | `MEZMO_GOVERNANCE_ACCESS_KEY` | yes | — | Agent access key (plugins prefix `Token `) |
-| `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590` | Overall deadline, under the 600s hook timeout. Python hooks cap it at 590 |
-| `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` | Status poll spacing. Python hooks use at least 1 |
+| `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590` | Overall deadline, under the 600s hook timeout. Capped at 590; `nan`, `inf` and values ≤ 0 are refused |
+| `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` | Status poll spacing, at least 1 second |
 | `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` | Local post-tool log |
 
 Both seconds values must be finite numbers greater than zero. Any other value
@@ -179,6 +179,18 @@ or non-zero `exit_code` or `exitCode`), otherwise `observed`. A result sent as
 JSON text, such as Cursor's `tool_output`, is parsed first. Gemini CLI also marks a
 `tool_response` with an `error` field as failed. Failures writing the file go to
 stderr and do not block the agent.
+
+Pi and OpenCode add `"arguments_changed": true` when the arguments the tool ran
+with differ from the approved ones (another extension changed them after
+approval; on OpenCode 2.x this includes a tool rename). OpenCode also reads a
+failure from `metadata.exit`.
+
+LangChain writes no JSONL file; it can emit an OpenTelemetry span instead.
+
+## Optional item field
+
+The LangChain middleware adds `items[].tool_call_intent` only when you pass an
+`intent_provider`. Leave it unset unless your Mezmo deployment accepts it.
 
 ## How policy shows up
 
