@@ -439,6 +439,72 @@ class PythonFloorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+# The three Python adapters are standalone copies. These shared parts must stay
+# identical so a fix in one copy reaches the others.
+SHARED_DEFINITIONS = (
+    "DEFAULT_TIMEOUT_SECONDS",
+    "MAX_TIMEOUT_SECONDS",
+    "DEFAULT_POLL_INTERVAL_SECONDS",
+    "MIN_POLL_INTERVAL_SECONDS",
+    "DEFAULT_AUDIT_LOG",
+    "MAX_RESULT_PREVIEW_CHARACTERS",
+    "HttpJson",
+    "HookContractError",
+    "Decision",
+    "required_string",
+    "parse_object",
+    "authorize_url",
+    "status_url",
+    "authorization_header",
+    "positive_seconds",
+    "timeout_seconds",
+    "poll_interval_seconds",
+    "audit_log_path",
+    "http_json",
+    "remaining_seconds",
+    "decision_from_post_body",
+    "decision_from_status_body",
+    "poll_decision",
+    "authorize",
+    "result_preview",
+    "result_has_known_error",
+    "append_audit",
+)
+SIBLING_ADAPTERS = ("codex", "cursor")
+
+
+def top_level_definitions(path: Path) -> dict[str, str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            found[node.name] = ast.dump(node)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    found[target.id] = ast.dump(node.value)
+    return found
+
+
+class SharedCoreDriftTests(unittest.TestCase):
+    def test_shared_core_is_identical_across_python_adapters(self) -> None:
+        reference = top_level_definitions(HOOK_PATH)
+        missing = [name for name in SHARED_DEFINITIONS if name not in reference]
+        self.assertEqual(missing, [])
+        siblings = [
+            HOOK_PATH.parent.parent / adapter / HOOK_PATH.name
+            for adapter in SIBLING_ADAPTERS
+        ]
+        present = [path for path in siblings if path.is_file()]
+        if not present:
+            self.skipTest("sibling adapters are not checked out next to this one")
+        for path in present:
+            sibling = top_level_definitions(path)
+            for name in SHARED_DEFINITIONS:
+                with self.subTest(adapter=path.parent.name, definition=name):
+                    self.assertEqual(sibling.get(name), reference[name])
+
+
 PRE_EVENT = "PreToolUse"
 POST_EVENT = "PostToolUse"
 ALLOW_OUTPUT = None
