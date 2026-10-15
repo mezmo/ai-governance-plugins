@@ -322,6 +322,33 @@ class DeadlineBoundsTests(unittest.TestCase):
         self.assertLessEqual(http.calls[0][3], hook.MAX_TIMEOUT_SECONDS)
 
 
+ADAPTER_DIR = Path(__file__).resolve().parent
+
+
+class HookConfigTests(unittest.TestCase):
+    def test_example_config_fails_closed_on_the_gate(self) -> None:
+        with (ADAPTER_DIR / "hooks.example.json").open(encoding="utf-8") as handle:
+            config = json.load(handle)
+
+        self.assertEqual(config["version"], 1)
+        hooks = config["hooks"]
+        self.assertEqual(
+            set(hooks),
+            {"preToolUse", "postToolUse", "postToolUseFailure"},
+        )
+        for event, handlers in hooks.items():
+            for handler in handlers:
+                with self.subTest(event=event):
+                    self.assertIn("mezmo_governance_hook.py", handler["command"])
+                    self.assertIn(event, hook.GATE_EVENTS | hook.OBSERVE_EVENTS)
+                    if event in hook.GATE_EVENTS:
+                        self.assertIs(handler["failClosed"], True)
+                        self.assertGreater(
+                            handler["timeout"],
+                            hook.MAX_TIMEOUT_SECONDS,
+                        )
+
+
 HOOK_PATH = Path(__file__).resolve().with_name("mezmo_governance_hook.py")
 PYTHON_FLOOR = (3, 9)
 
