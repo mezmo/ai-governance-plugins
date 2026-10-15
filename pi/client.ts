@@ -229,6 +229,14 @@ function remainingMs(deadline: number, now: Clock): number {
   return leftover;
 }
 
+// A response that lands after the deadline does not count, even an approval:
+// the caller may already have given up on this call.
+function inTime(deadline: number, now: Clock) {
+  if (now() >= deadline) {
+    throw new GovernanceError("Mezmo Governance answered after the deadline");
+  }
+}
+
 function decisionFromPost(body: Record<string, unknown>): Decision {
   if (typeof body.approved !== "boolean") {
     throw new GovernanceError("Mezmo Governance did not return an approval decision");
@@ -275,6 +283,7 @@ async function pollDecision(
       }
       throw error;
     }
+    inTime(deadline, now);
     if (status === 404) {
       await sleep(Math.min(intervalMs, leftover));
       continue;
@@ -320,6 +329,7 @@ export async function authorize(
     }
     throw error;
   }
+  inTime(deadline, now);
   if (status === 409) {
     return pollDecision(String(payload.decision_id), deadline, fetchImpl, now, sleep);
   }
