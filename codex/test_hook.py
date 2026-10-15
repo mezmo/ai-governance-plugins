@@ -321,6 +321,40 @@ class DeadlineBoundsTests(unittest.TestCase):
         self.assertLessEqual(http.calls[0][3], hook.MAX_TIMEOUT_SECONDS)
 
 
+ADAPTER_DIR = Path(__file__).resolve().parent
+# Handler keys the Codex hooks docs list for command hooks.
+CODEX_HANDLER_KEYS = {
+    "type",
+    "command",
+    "commandWindows",
+    "timeout",
+    "statusMessage",
+    "async",
+    "additionalContextLimit",
+}
+
+
+class HookConfigTests(unittest.TestCase):
+    def test_example_config_registers_both_events(self) -> None:
+        with (ADAPTER_DIR / "hooks.example.json").open(encoding="utf-8") as handle:
+            config = json.load(handle)["hooks"]
+
+        self.assertEqual(set(config), {"PreToolUse", "PostToolUse"})
+        for event, groups in config.items():
+            for group in groups:
+                self.assertEqual(group["matcher"], ".*")
+                for handler in group["hooks"]:
+                    with self.subTest(event=event):
+                        self.assertLessEqual(set(handler), CODEX_HANDLER_KEYS)
+                        self.assertEqual(handler["type"], "command")
+                        self.assertIn("mezmo_governance_hook.py", handler["command"])
+                        if event == "PreToolUse":
+                            self.assertGreater(
+                                handler["timeout"],
+                                hook.MAX_TIMEOUT_SECONDS,
+                            )
+
+
 HOOK_PATH = Path(__file__).resolve().with_name("mezmo_governance_hook.py")
 PYTHON_FLOOR = (3, 9)
 
