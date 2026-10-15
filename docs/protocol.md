@@ -111,9 +111,12 @@ returns HTTP 409.
    be waiting for a person.
 5. `GET` `pending`: sleep `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` (default 5)
    and retry.
-6. Deadline reached while still pending: deny with reason
+6. `GET` HTTP 404: Mezmo has no record of the decision yet, for example while
+   the `POST` is still in flight. Treat it as `pending`. Every adapter does
+   this, and the deadline in rule 7 still ends the wait.
+7. Deadline reached while still pending: deny with reason
    `Mezmo Governance: approval still pending`.
-7. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
+8. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
    env, or transport error: deny. The tool does not run.
 
 ## Identity
@@ -125,8 +128,10 @@ and polls instead of opening a second decision.
 | Runtime | `request_id` pieces | `origin.kind` | Default `tool_namespace` |
 | --- | --- | --- | --- |
 | Codex | `codex`, `session_id`, `tool_use_id` (plus `turn_id` when present) | `codex_hook` | `codex`, or MCP server from `mcp__<server>__<tool>` |
-| Claude Code | `claude_code`, `session_id`, `tool_use_id` | `claude_code_hook` | `claude_code`, or MCP server from `mcp__<server>__<tool>` |
-| Cursor | `cursor`, `conversation_id`, `tool_use_id` | `cursor_hook` | `cursor`, or `mcp_server_name` / `MCP:<server>` |
+| Claude Code | `claude_code`, `session_id`, `tool_use_id` (plus `turn_id` when present) | `claude_code_hook` | `claude_code`, or MCP server from `mcp__<server>__<tool>` |
+| Cursor | `cursor`, `conversation_id`, `tool_use_id`, or a fresh `run-<uuid>` when the event has none | `cursor_hook` | `cursor`, `mcp_server_name`, or `<server>` from `mcp__<server>__<tool>` |
+| Gemini CLI | `gemini_cli`, `session_id`, a fresh `run-<uuid>` (no call id) | `gemini_cli_hook` | `gemini_cli`, or `mcp_context.server_name` |
+| GitHub Copilot | `copilot`, `sessionId`, a fresh `run-<uuid>` (no call id) | `copilot_hook` | `copilot` |
 | Pi | `pi`, session id, `toolCallId` | `pi_extension` | `pi` |
 | OpenCode | `opencode`, `sessionID`, `callID` | `opencode_plugin` | `opencode` |
 | LangChain | `langchain`, `thread_id` or turn id, tool call id | `langchain_middleware` | `langchain` |
@@ -141,9 +146,12 @@ MCP tool names of the form `mcp__<server>__<tool>` split into namespace
 | --- | --- | --- | --- |
 | `MEZMO_GOVERNANCE_URL` | yes | — | Full authorize URL |
 | `MEZMO_GOVERNANCE_ACCESS_KEY` | yes | — | Agent access key (plugins prefix `Token `) |
-| `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590` | Overall deadline, under Codex/Claude's 600s hook default |
-| `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` | Status poll spacing |
+| `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590` | Overall deadline, under the 600s hook timeout. Python hooks cap it at 590 |
+| `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` | Status poll spacing. Python hooks use at least 1 |
 | `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` | Local post-tool log |
+
+Both seconds values must be finite numbers greater than zero. Any other value
+makes the hook deny every call with an error that names the variable.
 
 ## Post-tool log
 
@@ -162,8 +170,14 @@ After an approved tool runs, observe hooks append one JSON object per line:
 }
 ```
 
+`decision_id` and `request_id` are `null` when the event carries no tool call
+id, as with Cursor's shell and MCP events and every Gemini CLI and Copilot
+event.
+
 `status` is `failed` when the result looks like an error (`isError`, `is_error`,
-or non-zero `exit_code`), otherwise `observed`. Failures writing the file go to
+or non-zero `exit_code` or `exitCode`), otherwise `observed`. A result sent as
+JSON text, such as Cursor's `tool_output`, is parsed first. Gemini CLI also marks a
+`tool_response` with an `error` field as failed. Failures writing the file go to
 stderr and do not block the agent.
 
 ## How policy shows up

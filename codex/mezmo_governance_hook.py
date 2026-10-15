@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import sys
@@ -12,19 +13,21 @@ import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 AGENT = "codex"
 DEFAULT_TIMEOUT_SECONDS = 590.0
+MAX_TIMEOUT_SECONDS = 590.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+MIN_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_AUDIT_LOG = Path.home() / ".mezmo" / "governance-audit.jsonl"
 MAX_RESULT_PREVIEW_CHARACTERS = 2_000
 MCP_TOOL_PREFIX = "mcp__"
 
-HttpJson = Callable[[str, str, Mapping[str, Any] | None, float], tuple[int, dict[str, Any]]]
+HttpJson = Callable[[str, str, Optional[Mapping[str, Any]], float], tuple[int, dict[str, Any]]]
 Sleeper = Callable[[float], None]
 Clock = Callable[[], float]
 
@@ -54,12 +57,6 @@ def required_string(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise HookContractError(f"{field} must be a non-empty string")
     return value.strip()
-
-
-def as_object(value: Any, field: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise HookContractError(f"{field} must be a JSON object")
-    return dict(value)
 
 
 def parse_object(raw: bytes) -> dict[str, Any]:
@@ -105,25 +102,31 @@ def positive_seconds(environment_name: str, default: float) -> float:
     if configured is None:
         return default
     try:
-        timeout = float(configured)
+        seconds = float(configured)
     except ValueError as error:
         raise HookContractError(f"{environment_name} must be a number") from error
-    if timeout <= 0:
-        raise HookContractError(f"{environment_name} must be greater than zero")
-    return timeout
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise HookContractError(
+            f"{environment_name} must be a finite number greater than zero"
+        )
+    return seconds
 
 
 def timeout_seconds() -> float:
-    return positive_seconds(
-        "MEZMO_GOVERNANCE_TIMEOUT_SECONDS",
-        DEFAULT_TIMEOUT_SECONDS,
+    # The runtime kills the hook at its 600 second timeout; finish first.
+    return min(
+        positive_seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
+        MAX_TIMEOUT_SECONDS,
     )
 
 
 def poll_interval_seconds() -> float:
-    return positive_seconds(
-        "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
-        DEFAULT_POLL_INTERVAL_SECONDS,
+    return max(
+        positive_seconds(
+            "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
+            DEFAULT_POLL_INTERVAL_SECONDS,
+        ),
+        MIN_POLL_INTERVAL_SECONDS,
     )
 
 
@@ -322,11 +325,17 @@ def result_preview(value: Any) -> str:
 
 
 def result_has_known_error(value: Any) -> bool:
+    if isinstance(value, str):
+        # Some runtimes send the tool result as JSON text.
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return False
     if not isinstance(value, dict):
         return False
     if value.get("isError") is True or value.get("is_error") is True:
         return True
-    exit_code = value.get("exit_code")
+    exit_code = value.get("exit_code", value.get("exitCode"))
     return isinstance(exit_code, int) and exit_code != 0
 
 

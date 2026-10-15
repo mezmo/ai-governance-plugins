@@ -1,8 +1,27 @@
 {
   "name": "mezmo-governance",
   "description": "Gate Claude Code tool calls through Mezmo Governance before they run",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Mezmo"
+  },
+  "homepage": "https://github.com/mezmo/ai-governance-plugins/tree/main/claude-code",
+  "repository": "https://github.com/mezmo/ai-governance-plugins",
+  "license": "Apache-2.0",
+  "userConfig": {
+    "governance_url": {
+      "type": "string",
+      "title": "Mezmo Governance URL",
+      "description": "Full authorize URL. MEZMO_GOVERNANCE_URL overrides it.",
+      "default": "https://api.mezmo.com/governance/workflow/authorize",
+      "required": true
+    },
+    "access_key": {
+      "type": "string",
+      "title": "Agent access key",
+      "description": "Access key of the agent registered in Mezmo. MEZMO_GOVERNANCE_ACCESS_KEY overrides it.",
+      "sensitive": true,
+      "required": true
+    }
   }
 }

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.copilot/hooks/mezmo_governance_hook.py}\" preToolUse",
+        "powershell": "py -3 \"$HOME/.copilot/hooks/mezmo_governance_hook.py\" preToolUse",
+        "timeoutSec": 600
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.copilot/hooks/mezmo_governance_hook.py}\" postToolUse",
+        "powershell": "py -3 \"$HOME/.copilot/hooks/mezmo_governance_hook.py\" postToolUse",
+        "timeoutSec": 15
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "type": "command",
+        "bash": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.copilot/hooks/mezmo_governance_hook.py}\" postToolUseFailure",
+        "powershell": "py -3 \"$HOME/.copilot/hooks/mezmo_governance_hook.py\" postToolUseFailure",
+        "timeoutSec": 15
+      }
+    ]
+  }
+}

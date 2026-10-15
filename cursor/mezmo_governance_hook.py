@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import sys
@@ -12,19 +13,21 @@ import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 AGENT = "cursor"
 DEFAULT_TIMEOUT_SECONDS = 590.0
+MAX_TIMEOUT_SECONDS = 590.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+MIN_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_AUDIT_LOG = Path.home() / ".mezmo" / "governance-audit.jsonl"
 MAX_RESULT_PREVIEW_CHARACTERS = 2_000
 MCP_TOOL_PREFIX = "mcp__"
 
-HttpJson = Callable[[str, str, Mapping[str, Any] | None, float], tuple[int, dict[str, Any]]]
+HttpJson = Callable[[str, str, Optional[Mapping[str, Any]], float], tuple[int, dict[str, Any]]]
 Sleeper = Callable[[float], None]
 Clock = Callable[[], float]
 
@@ -54,12 +57,6 @@ def required_string(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise HookContractError(f"{field} must be a non-empty string")
     return value.strip()
-
-
-def as_object(value: Any, field: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise HookContractError(f"{field} must be a JSON object")
-    return dict(value)
 
 
 def parse_object(raw: bytes) -> dict[str, Any]:
@@ -105,25 +102,31 @@ def positive_seconds(environment_name: str, default: float) -> float:
     if configured is None:
         return default
     try:
-        timeout = float(configured)
+        seconds = float(configured)
     except ValueError as error:
         raise HookContractError(f"{environment_name} must be a number") from error
-    if timeout <= 0:
-        raise HookContractError(f"{environment_name} must be greater than zero")
-    return timeout
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise HookContractError(
+            f"{environment_name} must be a finite number greater than zero"
+        )
+    return seconds
 
 
 def timeout_seconds() -> float:
-    return positive_seconds(
-        "MEZMO_GOVERNANCE_TIMEOUT_SECONDS",
-        DEFAULT_TIMEOUT_SECONDS,
+    # The runtime kills the hook at its 600 second timeout; finish first.
+    return min(
+        positive_seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
+        MAX_TIMEOUT_SECONDS,
     )
 
 
 def poll_interval_seconds() -> float:
-    return positive_seconds(
-        "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
-        DEFAULT_POLL_INTERVAL_SECONDS,
+    return max(
+        positive_seconds(
+            "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
+            DEFAULT_POLL_INTERVAL_SECONDS,
+        ),
+        MIN_POLL_INTERVAL_SECONDS,
     )
 
 
@@ -192,26 +195,20 @@ def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
     return NormalizedToolCall(AGENT, canonical_name, arguments)
 
 
+def explicit_tool_use_id(event: Mapping[str, Any]) -> str | None:
+    value = event.get("tool_use_id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def call_identity(event: Mapping[str, Any]) -> CallIdentity:
     session_id = event.get("conversation_id") or event.get("session_id")
     session_id = required_string(session_id, "conversation_id")
-    tool_call = normalize_tool_call(event)
-    explicit = event.get("tool_use_id")
-    if isinstance(explicit, str) and explicit.strip():
-        tool_use_id = explicit.strip()
-    else:
-        seed = json.dumps(
-            [
-                event.get("generation_id"),
-                tool_call.namespace,
-                tool_call.name,
-                tool_call.arguments,
-            ],
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
-        tool_use_id = str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+    # beforeShellExecution and beforeMCPExecution carry no tool call id. A
+    # fresh id per run keeps a repeated identical call from reusing an
+    # earlier decision through HTTP 409.
+    tool_use_id = explicit_tool_use_id(event) or f"run-{uuid.uuid4()}"
     request_id = f"{AGENT}:{session_id}:{tool_use_id}"
     decision_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request_id))
     return CallIdentity(decision_id, request_id, session_id)
@@ -378,11 +375,17 @@ def result_preview(value: Any) -> str:
 
 
 def result_has_known_error(value: Any) -> bool:
+    if isinstance(value, str):
+        # Some runtimes send the tool result as JSON text.
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return False
     if not isinstance(value, dict):
         return False
     if value.get("isError") is True or value.get("is_error") is True:
         return True
-    exit_code = value.get("exit_code")
+    exit_code = value.get("exit_code", value.get("exitCode"))
     return isinstance(exit_code, int) and exit_code != 0
 
 
@@ -396,8 +399,16 @@ def append_audit(record: Mapping[str, Any]) -> None:
 
 def handle_post_tool_use(event: Mapping[str, Any]) -> None:
     tool_call = normalize_tool_call(event)
-    identity = call_identity(event)
-    response = event.get("tool_output", event.get("tool_response"))
+    # Without a tool call id the record cannot be joined to its decision.
+    identity = call_identity(event) if explicit_tool_use_id(event) else None
+    response = next(
+        (
+            event[key]
+            for key in ("tool_output", "result_json", "output", "tool_response")
+            if event.get(key) is not None
+        ),
+        None,
+    )
     failed = (
         event.get("hook_event_name") == "postToolUseFailure"
         or result_has_known_error(response)
@@ -407,8 +418,8 @@ def handle_post_tool_use(event: Mapping[str, Any]) -> None:
         {
             "ts": datetime.now(timezone.utc).isoformat(),
             "agent": AGENT,
-            "decision_id": identity.decision_id,
-            "request_id": identity.request_id,
+            "decision_id": identity.decision_id if identity else None,
+            "request_id": identity.request_id if identity else None,
             "tool_namespace": tool_call.namespace,
             "tool_name": tool_call.name,
             "status": "failed" if failed else "observed",

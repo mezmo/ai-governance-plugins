@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from collections.abc import Mapping
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -263,6 +268,542 @@ class ClaudeCodeGovernanceHookTests(unittest.TestCase):
             {**ENV, "MEZMO_GOVERNANCE_ACCESS_KEY": "Token sts_test"},
         ):
             self.assertEqual(hook.authorization_header(), "Token sts_test")
+
+
+class PollingTests(unittest.TestCase):
+    @patch.dict(os.environ, ENV)
+    def test_poll_treats_404_as_pending_until_decided(self) -> None:
+        http = FakeHttp(
+            [
+                (409, {"code": "ECONFLICT"}),
+                (404, {}),
+                (200, {"status": "approved", "reason": None}),
+            ]
+        )
+        clock = FakeClock()
+
+        decision = hook.authorize(
+            {"decision_id": "d"}, http=http, clock=clock, sleep=clock.sleep
+        )
+
+        self.assertTrue(decision.approved)
+        self.assertEqual([call[0] for call in http.calls], ["POST", "GET", "GET"])
+
+    @patch.dict(os.environ, {**ENV, "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "2"})
+    def test_poll_denies_when_404_lasts_past_the_deadline(self) -> None:
+        http = FakeHttp([(409, {})] + [(404, {})] * 5)
+        clock = FakeClock()
+
+        with self.assertRaisesRegex(hook.HookContractError, "approval still pending"):
+            hook.authorize(
+                {"decision_id": "d"}, http=http, clock=clock, sleep=clock.sleep
+            )
+
+
+class DeadlineBoundsTests(unittest.TestCase):
+    def seconds(self, name: str, configured: str) -> float:
+        with patch.dict(os.environ, {**ENV, name: configured}):
+            if name == "MEZMO_GOVERNANCE_TIMEOUT_SECONDS":
+                return hook.timeout_seconds()
+            return hook.poll_interval_seconds()
+
+    def test_timeout_at_or_above_the_hook_budget_is_capped(self) -> None:
+        for configured in ("590", "600", "3600", "1e308"):
+            with self.subTest(configured=configured):
+                self.assertEqual(
+                    self.seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", configured),
+                    hook.MAX_TIMEOUT_SECONDS,
+                )
+        self.assertLess(hook.MAX_TIMEOUT_SECONDS, 600)
+
+    def test_small_positive_timeouts_are_kept(self) -> None:
+        for configured, expected in (("30", 30.0), ("5e-324", 5e-324)):
+            with self.subTest(configured=configured):
+                self.assertEqual(
+                    self.seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", configured),
+                    expected,
+                )
+
+    def test_rejects_seconds_that_are_not_finite_and_positive(self) -> None:
+        names = (
+            "MEZMO_GOVERNANCE_TIMEOUT_SECONDS",
+            "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
+        )
+        for name in names:
+            for configured in ("0", "-0", "-1", "nan", "inf", "-inf", "", "ten"):
+                with self.subTest(name=name, configured=configured):
+                    with self.assertRaises(hook.HookContractError):
+                        self.seconds(name, configured)
+
+    def test_poll_interval_has_a_floor(self) -> None:
+        for configured in ("5e-324", "0.001"):
+            with self.subTest(configured=configured):
+                self.assertEqual(
+                    self.seconds("MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS", configured),
+                    hook.MIN_POLL_INTERVAL_SECONDS,
+                )
+
+    def test_a_large_timeout_still_ends_before_the_runtime_kills_the_hook(self) -> None:
+        http = FakeHttp([(200, {"approved": True})])
+        env = {**ENV, "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "3600"}
+        with patch.dict(os.environ, env):
+            hook.authorize({"decision_id": "d"}, http=http)
+        self.assertLessEqual(http.calls[0][3], hook.MAX_TIMEOUT_SECONDS)
+
+
+ADAPTER_DIR = Path(__file__).resolve().parent
+
+
+class HookConfigTests(unittest.TestCase):
+    def load(self, relative: str) -> dict[str, Any]:
+        with (ADAPTER_DIR / relative).open(encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def test_example_configs_register_every_event_and_block_on_failure(self) -> None:
+        for relative in ("settings.example.json", "hooks/hooks.json"):
+            config = self.load(relative)["hooks"]
+            self.assertEqual(
+                set(config),
+                {"PreToolUse", "PostToolUse", "PostToolUseFailure"},
+                relative,
+            )
+            for event, groups in config.items():
+                for group in groups:
+                    for handler in group["hooks"]:
+                        with self.subTest(config=relative, event=event):
+                            self.assertEqual(handler["type"], "command")
+                            self.assertIn("mezmo_governance_hook.py", handler["command"])
+                            self.assertIn("statusMessage", handler)
+                            if event == "PreToolUse":
+                                self.assertEqual(handler["onFailure"], "block")
+                                self.assertGreater(
+                                    handler["timeout"],
+                                    hook.MAX_TIMEOUT_SECONDS,
+                                )
+                            else:
+                                self.assertNotIn("onFailure", handler)
+
+    def test_plugin_hooks_use_the_plugin_root(self) -> None:
+        config = self.load("hooks/hooks.json")["hooks"]
+        for groups in config.values():
+            for group in groups:
+                for handler in group["hooks"]:
+                    self.assertIn("${CLAUDE_PLUGIN_ROOT}", handler["command"])
+        manifest = self.load(".claude-plugin/plugin.json")
+        self.assertEqual(manifest["name"], "mezmo-governance")
+
+    def test_plugin_options_match_what_the_hook_reads(self) -> None:
+        options = self.load(".claude-plugin/plugin.json")["userConfig"]
+        exported = {f"CLAUDE_PLUGIN_OPTION_{key.upper()}" for key in options}
+
+        self.assertEqual(exported, set(hook.PLUGIN_OPTIONS.values()))
+        for key, option in options.items():
+            with self.subTest(option=key):
+                self.assertEqual(option["type"], "string")
+                self.assertIs(option["required"], True)
+                self.assertTrue(option["title"] and option["description"])
+        self.assertIs(options["access_key"]["sensitive"], True)
+        self.assertNotIn("default", options["access_key"])
+        self.assertEqual(
+            options["governance_url"]["default"],
+            "https://api.mezmo.com/governance/workflow/authorize",
+        )
+
+
+class PluginOptionTests(unittest.TestCase):
+    URL_OPTION = "CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL"
+    KEY_OPTION = "CLAUDE_PLUGIN_OPTION_ACCESS_KEY"
+    PLUGIN_URL = "https://plugin.example.test/governance/workflow/authorize"
+
+    def test_falls_back_to_plugin_options(self) -> None:
+        env = {self.URL_OPTION: self.PLUGIN_URL, self.KEY_OPTION: "sts_plugin"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(hook.authorize_url(), self.PLUGIN_URL)
+            self.assertEqual(hook.authorization_header(), "Token sts_plugin")
+
+    def test_environment_wins_over_plugin_options(self) -> None:
+        env = {
+            **ENV,
+            self.URL_OPTION: self.PLUGIN_URL,
+            self.KEY_OPTION: "sts_plugin",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(hook.authorize_url(), AUTHORIZE_URL)
+            self.assertEqual(hook.authorization_header(), "Token sts_test")
+
+    def test_blank_environment_values_fall_back(self) -> None:
+        env = {
+            "MEZMO_GOVERNANCE_URL": " ",
+            "MEZMO_GOVERNANCE_ACCESS_KEY": "",
+            self.URL_OPTION: self.PLUGIN_URL,
+            self.KEY_OPTION: "sts_plugin",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(hook.authorize_url(), self.PLUGIN_URL)
+            self.assertEqual(hook.authorization_header(), "Token sts_plugin")
+
+    def test_missing_both_names_each_source(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(
+                hook.HookContractError,
+                "MEZMO_GOVERNANCE_URL.*CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL",
+            ):
+                hook.authorize_url()
+            with self.assertRaisesRegex(
+                hook.HookContractError,
+                "MEZMO_GOVERNANCE_ACCESS_KEY.*CLAUDE_PLUGIN_OPTION_ACCESS_KEY",
+            ):
+                hook.authorization_header()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_status_url_uses_the_plugin_url(self) -> None:
+        os.environ[self.URL_OPTION] = self.PLUGIN_URL
+        self.assertEqual(
+            hook.status_url("d-1"),
+            f"{self.PLUGIN_URL}?decision_id=d-1",
+        )
+
+
+HOOK_PATH = Path(__file__).resolve().with_name("mezmo_governance_hook.py")
+PYTHON_FLOOR = (3, 9)
+
+
+def runtime_union_lines(source: str) -> list[int]:
+    """Lines that evaluate `X | Y` at runtime, which Python 3.9 rejects for types."""
+    tree = ast.parse(source)
+    annotations: set[int] = set()
+    for node in ast.walk(tree):
+        roots: list[ast.AST | None] = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            arguments = node.args
+            every = [
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+                arguments.vararg,
+                arguments.kwarg,
+            ]
+            roots.extend(argument.annotation for argument in every if argument)
+            roots.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            roots.append(node.annotation)
+        for root in roots:
+            if root is not None:
+                annotations.update(id(child) for child in ast.walk(root))
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.BitOr)
+        and id(node) not in annotations
+    ]
+
+
+def floor_interpreter() -> str | None:
+    for candidate in ("python3.9", "/usr/bin/python3"):
+        path = shutil.which(candidate)
+        if path is None:
+            continue
+        probe = subprocess.run(
+            [path, "-c", "import sys; print(sys.version_info[:2] == (3, 9))"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if probe.stdout.strip() == "True":
+            return path
+    return None
+
+
+class PythonFloorTests(unittest.TestCase):
+    def test_hook_has_no_runtime_union_syntax(self) -> None:
+        source = HOOK_PATH.read_text(encoding="utf-8")
+        self.assertEqual(runtime_union_lines(source), [])
+
+    def test_hook_imports_on_the_oldest_supported_python(self) -> None:
+        interpreter = floor_interpreter()
+        if interpreter is None:
+            self.skipTest("no Python 3.9 interpreter on PATH")
+        result = subprocess.run(
+            [
+                interpreter,
+                "-I",
+                "-c",
+                "import sys; sys.path.insert(0, sys.argv[1]); "
+                "import mezmo_governance_hook",
+                str(HOOK_PATH.parent),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+# The three Python adapters are standalone copies. These shared parts must stay
+# identical so a fix in one copy reaches the others.
+SHARED_DEFINITIONS = (
+    "DEFAULT_TIMEOUT_SECONDS",
+    "MAX_TIMEOUT_SECONDS",
+    "DEFAULT_POLL_INTERVAL_SECONDS",
+    "MIN_POLL_INTERVAL_SECONDS",
+    "DEFAULT_AUDIT_LOG",
+    "MAX_RESULT_PREVIEW_CHARACTERS",
+    "HttpJson",
+    "HookContractError",
+    "Decision",
+    "required_string",
+    "parse_object",
+    "status_url",
+    "positive_seconds",
+    "timeout_seconds",
+    "poll_interval_seconds",
+    "audit_log_path",
+    "http_json",
+    "remaining_seconds",
+    "decision_from_post_body",
+    "decision_from_status_body",
+    "poll_decision",
+    "authorize",
+    "result_preview",
+    "result_has_known_error",
+    "append_audit",
+)
+SIBLING_ADAPTERS = ("codex", "cursor", "gemini-cli", "copilot")
+# Claude Code also reads plugin options here, so only the siblings match.
+SIBLING_ONLY_DEFINITIONS = ("authorize_url", "authorization_header")
+
+
+def top_level_definitions(path: Path) -> dict[str, str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            found[node.name] = ast.dump(node)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    found[target.id] = ast.dump(node.value)
+    return found
+
+
+class SharedCoreDriftTests(unittest.TestCase):
+    def test_shared_core_is_identical_across_python_adapters(self) -> None:
+        reference = top_level_definitions(HOOK_PATH)
+        missing = [name for name in SHARED_DEFINITIONS if name not in reference]
+        self.assertEqual(missing, [])
+        siblings = [
+            HOOK_PATH.parent.parent / adapter / HOOK_PATH.name
+            for adapter in SIBLING_ADAPTERS
+        ]
+        present = [path for path in siblings if path.is_file()]
+        if not present:
+            self.skipTest("sibling adapters are not checked out next to this one")
+        for path in present:
+            sibling = top_level_definitions(path)
+            for name in SHARED_DEFINITIONS:
+                with self.subTest(adapter=path.parent.name, definition=name):
+                    self.assertEqual(sibling.get(name), reference[name])
+        first, *others = (top_level_definitions(path) for path in present)
+        for name in SIBLING_ONLY_DEFINITIONS:
+            self.assertIsNotNone(first.get(name))
+            for path, sibling in zip(present[1:], others):
+                with self.subTest(adapter=path.parent.name, definition=name):
+                    self.assertEqual(sibling.get(name), first[name])
+
+
+PRE_EVENT = "PreToolUse"
+POST_EVENT = "PostToolUse"
+ALLOW_OUTPUT = None
+ORIGIN_KIND = "claude_code_hook"
+
+
+def deny_schema(reason: str) -> dict[str, Any]:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+
+
+class StubGovernance(ThreadingHTTPServer):
+    """Local Mezmo Governance stand-in that replays scripted answers."""
+
+    def __init__(self, answers: list[tuple[int, dict[str, Any]]]) -> None:
+        super().__init__(("127.0.0.1", 0), StubHandler)
+        self.answers = list(answers)
+        self.requests: list[dict[str, Any]] = []
+
+    def __enter__(self) -> StubGovernance:
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.shutdown()
+        self.server_close()
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server_address[1]}/governance/workflow/authorize"
+
+
+class StubHandler(BaseHTTPRequestHandler):
+    server: StubGovernance
+
+    def answer(self) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        self.server.requests.append(
+            {
+                "method": self.command,
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "body": json.loads(raw) if raw else None,
+            }
+        )
+        status, body = self.server.answers.pop(0)
+        encoded = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    do_GET = answer
+    do_POST = answer
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+
+class EndToEndTests(unittest.TestCase):
+    """Run the script as the runtime does: JSON on stdin, decision on stdout."""
+
+    def run_hook(
+        self,
+        event: dict[str, Any],
+        url: str | None,
+        extra: Mapping[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith(("MEZMO_GOVERNANCE_", "CLAUDE_PLUGIN_OPTION_"))
+            and key.lower() not in {"http_proxy", "https_proxy", "all_proxy"}
+        }
+        env.update(
+            {
+                "NO_PROXY": "*",
+                "MEZMO_GOVERNANCE_ACCESS_KEY": "sts_test",
+                "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "20",
+                "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": "1",
+                "MEZMO_GOVERNANCE_AUDIT_LOG": str(Path(self.tmp.name) / "audit.jsonl"),
+            }
+        )
+        if url is not None:
+            env["MEZMO_GOVERNANCE_URL"] = url
+        env.update(extra or {})
+        return subprocess.run(
+            [sys.executable, str(HOOK_PATH)],
+            input=json.dumps(event),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_approved_call_runs(self) -> None:
+        with StubGovernance([(200, {"approved": True})]) as stub:
+            result = self.run_hook(hook_event(PRE_EVENT), stub.url)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stdout_json(result), ALLOW_OUTPUT)
+        self.assertEqual(stub.requests[0]["method"], "POST")
+        self.assertEqual(stub.requests[0]["authorization"], "Token sts_test")
+        self.assertEqual(stub.requests[0]["body"]["origin"]["kind"], ORIGIN_KIND)
+
+    def test_denied_call_prints_the_runtime_deny_schema(self) -> None:
+        with StubGovernance([(200, {"approved": False, "reason": "No."})]) as stub:
+            result = self.run_hook(hook_event(PRE_EVENT), stub.url)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            stdout_json(result),
+            deny_schema("Mezmo Governance denied this exact tool call: No."),
+        )
+
+    def test_conflict_polls_the_existing_decision(self) -> None:
+        answers = [(409, {"code": "ECONFLICT"}), (200, {"status": "denied", "reason": "No."})]
+        with StubGovernance(answers) as stub:
+            result = self.run_hook(hook_event(PRE_EVENT), stub.url)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            stdout_json(result),
+            deny_schema("Mezmo Governance denied this exact tool call: No."),
+        )
+        decision_id = stub.requests[0]["body"]["decision_id"]
+        self.assertEqual(stub.requests[1]["method"], "GET")
+        self.assertIn(f"decision_id={decision_id}", stub.requests[1]["path"])
+
+    def test_missing_url_denies(self) -> None:
+        result = self.run_hook(hook_event(PRE_EVENT), None)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = stdout_json(result)
+        self.assertEqual(set(output), set(deny_schema("x")))
+        self.assertIn("MEZMO_GOVERNANCE_URL", json.dumps(output))
+
+    def test_unreachable_governance_denies(self) -> None:
+        with StubGovernance([]) as stub:
+            url = stub.url
+        result = self.run_hook(hook_event(PRE_EVENT), url)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("unavailable", json.dumps(stdout_json(result)))
+
+    def test_plugin_options_configure_the_hook(self) -> None:
+        options = {"CLAUDE_PLUGIN_OPTION_ACCESS_KEY": "sts_plugin"}
+        with StubGovernance([(200, {"approved": True})]) as stub:
+            options["CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL"] = stub.url
+            result = self.run_hook(hook_event(PRE_EVENT), None, options)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(stdout_json(result))
+        # MEZMO_GOVERNANCE_ACCESS_KEY is set in run_hook, so it wins.
+        self.assertEqual(stub.requests[0]["authorization"], "Token sts_test")
+
+    def test_unsupported_event_exits_2(self) -> None:
+        event = hook_event(PRE_EVENT)
+        event["hook_event_name"] = "SomethingElse"
+        result = self.run_hook(event, None)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("unsupported hook event", result.stderr)
+
+    def test_post_event_logs_without_calling_governance(self) -> None:
+        with StubGovernance([]) as stub:
+            result = self.run_hook(hook_event(POST_EVENT), stub.url)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(stub.requests, [])
+        log = Path(self.tmp.name) / "audit.jsonl"
+        self.assertEqual(json.loads(log.read_text(encoding="utf-8"))["agent"], hook.AGENT)
+
+
+def stdout_json(result: subprocess.CompletedProcess[str]) -> Any:
+    if not result.stdout.strip():
+        return None
+    return json.loads(result.stdout)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import sys
@@ -12,19 +13,26 @@ import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 AGENT = "claude_code"
 DEFAULT_TIMEOUT_SECONDS = 590.0
+MAX_TIMEOUT_SECONDS = 590.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+MIN_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_AUDIT_LOG = Path.home() / ".mezmo" / "governance-audit.jsonl"
 MAX_RESULT_PREVIEW_CHARACTERS = 2_000
 MCP_TOOL_PREFIX = "mcp__"
+# Claude Code exports each plugin userConfig option as CLAUDE_PLUGIN_OPTION_<KEY>.
+PLUGIN_OPTIONS = {
+    "MEZMO_GOVERNANCE_URL": "CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL",
+    "MEZMO_GOVERNANCE_ACCESS_KEY": "CLAUDE_PLUGIN_OPTION_ACCESS_KEY",
+}
 
-HttpJson = Callable[[str, str, Mapping[str, Any] | None, float], tuple[int, dict[str, Any]]]
+HttpJson = Callable[[str, str, Optional[Mapping[str, Any]], float], tuple[int, dict[str, Any]]]
 Sleeper = Callable[[float], None]
 Clock = Callable[[], float]
 
@@ -56,12 +64,6 @@ def required_string(value: Any, field: str) -> str:
     return value.strip()
 
 
-def as_object(value: Any, field: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise HookContractError(f"{field} must be a JSON object")
-    return dict(value)
-
-
 def parse_object(raw: bytes) -> dict[str, Any]:
     if not raw:
         return {}
@@ -76,11 +78,18 @@ def parse_object(raw: bytes) -> dict[str, Any]:
     return parsed
 
 
+def configured(name: str) -> str:
+    """Read a setting from the environment, then from the plugin's userConfig."""
+    option = PLUGIN_OPTIONS[name]
+    for source in (name, option):
+        value = os.environ.get(source)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raise HookContractError(f"set {name} or the plugin option ({option})")
+
+
 def authorize_url() -> str:
-    return required_string(
-        os.environ.get("MEZMO_GOVERNANCE_URL"),
-        "MEZMO_GOVERNANCE_URL",
-    )
+    return configured("MEZMO_GOVERNANCE_URL")
 
 
 def status_url(decision_id: str, base: str | None = None) -> str:
@@ -91,10 +100,7 @@ def status_url(decision_id: str, base: str | None = None) -> str:
 
 
 def authorization_header() -> str:
-    key = required_string(
-        os.environ.get("MEZMO_GOVERNANCE_ACCESS_KEY"),
-        "MEZMO_GOVERNANCE_ACCESS_KEY",
-    )
+    key = configured("MEZMO_GOVERNANCE_ACCESS_KEY")
     if key.lower().startswith("token ") or key.lower().startswith("bearer "):
         return key
     return f"Token {key}"
@@ -105,25 +111,31 @@ def positive_seconds(environment_name: str, default: float) -> float:
     if configured is None:
         return default
     try:
-        timeout = float(configured)
+        seconds = float(configured)
     except ValueError as error:
         raise HookContractError(f"{environment_name} must be a number") from error
-    if timeout <= 0:
-        raise HookContractError(f"{environment_name} must be greater than zero")
-    return timeout
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise HookContractError(
+            f"{environment_name} must be a finite number greater than zero"
+        )
+    return seconds
 
 
 def timeout_seconds() -> float:
-    return positive_seconds(
-        "MEZMO_GOVERNANCE_TIMEOUT_SECONDS",
-        DEFAULT_TIMEOUT_SECONDS,
+    # The runtime kills the hook at its 600 second timeout; finish first.
+    return min(
+        positive_seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
+        MAX_TIMEOUT_SECONDS,
     )
 
 
 def poll_interval_seconds() -> float:
-    return positive_seconds(
-        "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
-        DEFAULT_POLL_INTERVAL_SECONDS,
+    return max(
+        positive_seconds(
+            "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
+            DEFAULT_POLL_INTERVAL_SECONDS,
+        ),
+        MIN_POLL_INTERVAL_SECONDS,
     )
 
 
@@ -322,11 +334,17 @@ def result_preview(value: Any) -> str:
 
 
 def result_has_known_error(value: Any) -> bool:
+    if isinstance(value, str):
+        # Some runtimes send the tool result as JSON text.
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return False
     if not isinstance(value, dict):
         return False
     if value.get("isError") is True or value.get("is_error") is True:
         return True
-    exit_code = value.get("exit_code")
+    exit_code = value.get("exit_code", value.get("exitCode"))
     return isinstance(exit_code, int) and exit_code != 0
 
 
