@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mezmo-governance-claude-agent-sdk"
+version = "0.1.0"
+description = "Claude Agent SDK hooks that gate tool calls through Mezmo Governance"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = [
+    "claude-agent-sdk>=0.2.168",
+    "httpx>=0.28.1",
+]
+
+[tool.setuptools]
+packages = ["mezmo_governance_claude_agent_sdk"]
+
+[tool.setuptools.package-data]
+mezmo_governance_claude_agent_sdk = ["py.typed"]

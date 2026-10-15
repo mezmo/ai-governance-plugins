@@ -4,12 +4,17 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-// pi, opencode and mastra each ship their own client.ts so a user can copy one
+// pi, opencode, mastra and claude-agent-sdk each ship their own client.ts so a user can copy one
 // directory. The copies may differ only in the agent name, origin.kind and the
 // default origin.reason. This check needs the whole repository; a copied
 // directory skips it.
 const REPO = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
-const COPIES = ["pi/client.ts", "opencode/mezmo-governance/client.ts", "mastra/client.ts"];
+const COPIES = [
+  "pi/client.ts",
+  "opencode/mezmo-governance/client.ts",
+  "mastra/client.ts",
+  "claude-agent-sdk/typescript/client.ts",
+];
 
 function normalized(path: string): string {
   return readFileSync(path, "utf8")
