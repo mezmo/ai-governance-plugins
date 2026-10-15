@@ -7,6 +7,7 @@
             "type": "command",
             "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.claude/hooks/mezmo_governance_hook.py}\"",
             "timeout": 600,
+            "onFailure": "block",
             "statusMessage": "Checking Mezmo Governance"
           }
         ]
@@ -30,7 +31,8 @@
           {
             "type": "command",
             "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.claude/hooks/mezmo_governance_hook.py}\"",
-            "timeout": 15
+            "timeout": 15,
+            "statusMessage": "Recording the governed result"
           }
         ]
       }

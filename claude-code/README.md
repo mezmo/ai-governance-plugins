@@ -7,6 +7,11 @@ Official docs: https://code.claude.com/docs/en/hooks
 
 The script needs Python 3.9 or later and uses only the standard library.
 
+Use Claude Code v2.1.295 or later. The examples set `"onFailure": "block"` on
+`PreToolUse`, so a missing script, a crash or a timeout blocks the tool call.
+Older versions do not support `onFailure`: there, such a failure lets the tool
+run.
+
 ## Install as settings
 
 1. Copy the hook:

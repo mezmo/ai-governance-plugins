@@ -319,6 +319,48 @@ class DeadlineBoundsTests(unittest.TestCase):
         self.assertLessEqual(http.calls[0][3], hook.MAX_TIMEOUT_SECONDS)
 
 
+ADAPTER_DIR = Path(__file__).resolve().parent
+
+
+class HookConfigTests(unittest.TestCase):
+    def load(self, relative: str) -> dict[str, Any]:
+        with (ADAPTER_DIR / relative).open(encoding="utf-8") as handle:
+            return json.load(handle)
+
+    def test_example_configs_register_every_event_and_block_on_failure(self) -> None:
+        for relative in ("settings.example.json", "hooks/hooks.json"):
+            config = self.load(relative)["hooks"]
+            self.assertEqual(
+                set(config),
+                {"PreToolUse", "PostToolUse", "PostToolUseFailure"},
+                relative,
+            )
+            for event, groups in config.items():
+                for group in groups:
+                    for handler in group["hooks"]:
+                        with self.subTest(config=relative, event=event):
+                            self.assertEqual(handler["type"], "command")
+                            self.assertIn("mezmo_governance_hook.py", handler["command"])
+                            self.assertIn("statusMessage", handler)
+                            if event == "PreToolUse":
+                                self.assertEqual(handler["onFailure"], "block")
+                                self.assertGreater(
+                                    handler["timeout"],
+                                    hook.MAX_TIMEOUT_SECONDS,
+                                )
+                            else:
+                                self.assertNotIn("onFailure", handler)
+
+    def test_plugin_hooks_use_the_plugin_root(self) -> None:
+        config = self.load("hooks/hooks.json")["hooks"]
+        for groups in config.values():
+            for group in groups:
+                for handler in group["hooks"]:
+                    self.assertIn("${CLAUDE_PLUGIN_ROOT}", handler["command"])
+        manifest = self.load(".claude-plugin/plugin.json")
+        self.assertEqual(manifest["name"], "mezmo-governance")
+
+
 HOOK_PATH = Path(__file__).resolve().with_name("mezmo_governance_hook.py")
 PYTHON_FLOOR = (3, 9)
 
