@@ -4,7 +4,7 @@ Plugins that ask Mezmo Governance before a coding agent runs a tool. If Mezmo
 denies the call, or never answers, the tool does not run.
 
 ```text
-Claude Code / Codex / Cursor / Gemini CLI / Copilot / Pi / OpenCode / LangChain / Mastra
+Claude Code / Codex / Cursor / Gemini CLI / Copilot / Goose / Pi / OpenCode / LangChain / Mastra
         │  before the tool runs
         ▼
   plugin  ──POST /governance/workflow/authorize──►  Mezmo Governance
@@ -83,6 +83,7 @@ the system credential store. Details: [claude-code/](claude-code/).
 | [Cursor](cursor/) | `preToolUse` hook | yes, with `failClosed: true` | copy the script, merge `hooks.example.json` |
 | [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | copy the script, merge `settings.example.json` |
 | [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | on a crash yes; on a timeout no | copy the script, add `hooks.example.json` to `~/.copilot/hooks/` |
+| [Goose](goose/) | `PreToolUse` plugin hook | yes, with `on_failure: block` | copy the plugin to `~/.agents/plugins/mezmo-governance/` |
 | [Pi](pi/) | `tool_call` extension | yes | copy the folder to `~/.pi/agent/extensions/` |
 | [OpenCode](opencode/) 1.x and 2.x | `tool.execute.before` plugin | yes | 2.x: copy the folder, name it in `opencode.json` `plugins` with options; 1.x: copy to `~/.config/opencode/plugins/` |
 | [LangChain](langchain/) v1 | `AgentMiddleware` (`wrap_tool_call` and `awrap_tool_call`) | yes | `pip install ./langchain` |
@@ -119,7 +120,7 @@ ends first and returns a clear deny.
 
 | You see | Cause | Fix |
 | --- | --- | --- |
-| Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice; Copilot: install in `~/.copilot/hooks/`, not `.github/hooks/`; Gemini CLI: use `~/.gemini/settings.json` or trust the folder |
+| Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice; Copilot: install in `~/.copilot/hooks/`, not `.github/hooks/`; Gemini CLI: use `~/.gemini/settings.json` or trust the folder; Goose: put the plugin in `~/.agents/plugins/` and use no `"*"` matcher |
 | Every call is denied: `MEZMO_GOVERNANCE_URL must be a non-empty string` | the agent did not inherit the variables | export them in the shell that starts the agent, or use the agent's own settings `env` block |
 | `Mezmo Governance returned HTTP 401` | wrong or revoked access key | copy a fresh key from the agent in Mezmo |
 | `approval still pending` | policy needs a person and nobody decided in time | decide in Mezmo, or raise `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` (max 590) |
@@ -160,7 +161,7 @@ A local HTTP server stands in for Mezmo. The tests confirm that:
 - the post-tool event writes an audit line and never blocks;
 - each example config registers every event and blocks on hook failure,
   including the `|| exit 2` guard for Codex and Gemini CLI;
-- the shared code is identical across the five Python hooks and across the
+- the shared code is identical across the six Python hooks and across the
   three `client.ts` copies, and the Python hooks import on Python 3.9.
 
 ### What they do not confirm
@@ -176,6 +177,7 @@ one shell call (expected: denied) and one file read (expected: approved):
 | Cursor CLI | 2026.10.14 | pass | blocked |
 | Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
 | Copilot CLI | 1.0.95 | pass, with user-level hooks | blocked |
+| Goose CLI | 1.54.0 | pass | blocked with `on_failure: block`, also on a timeout; runs without it |
 | OpenCode | 2.0.25 | pass, through the background service with plugin options | not checked |
 | Pi | 1.3.0 | pass | not checked |
 | Mastra | 1.77.0, `generate` and `stream` | pass | not checked |
