@@ -20,7 +20,9 @@ type BeforeOutput = {
   args: unknown;
 };
 
-type AfterInput = BeforeInput;
+type AfterInput = BeforeInput & {
+  args?: unknown;
+};
 
 type AfterOutput = {
   title?: string;
@@ -28,20 +30,31 @@ type AfterOutput = {
   metadata?: unknown;
 };
 
-async function before(input: BeforeInput, output: BeforeOutput) {
-  const payload = approvalPayload({
-    sessionId: input.sessionID,
-    toolCallId: input.callID,
-    toolName: input.tool,
-    arguments: argumentsObject(output.args ?? {}),
-    eventName: "tool.execute.before",
-  });
+// OpenCode runs plugin hooks in load order and passes the same args object to
+// each, then to the tool. Remember what Mezmo approved so the after hook can
+// flag a call whose arguments a later plugin changed.
+const MAX_PENDING = 1000;
+type Approved = Map<string, string>;
+
+async function before(input: BeforeInput, output: BeforeOutput, approved: Approved) {
   try {
+    const args = argumentsObject(output.args ?? {});
+    const payload = approvalPayload({
+      sessionId: input.sessionID,
+      toolCallId: input.callID,
+      toolName: input.tool,
+      arguments: args,
+      eventName: "tool.execute.before",
+    });
     const decision = await authorize(payload);
     if (!decision.approved) {
       const detail = decision.reason || "Policy denied the call.";
       throw new Error(`Mezmo Governance denied this exact tool call: ${detail}`);
     }
+    if (approved.size >= MAX_PENDING) {
+      approved.delete(approved.keys().next().value as string);
+    }
+    approved.set(`${input.sessionID}:${input.callID}`, JSON.stringify(args));
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Mezmo Governance denied")) {
       throw error;
@@ -70,10 +83,14 @@ function afterFailed(output: AfterOutput | undefined): boolean {
   return resultFailed(output);
 }
 
-async function after(input: AfterInput, output: AfterOutput | undefined) {
+async function after(input: AfterInput, output: AfterOutput | undefined, approved: Approved) {
   try {
     const identity = callIdentity(input.sessionID, input.callID);
     const tool = splitToolName(input.tool);
+    const key = `${input.sessionID}:${input.callID}`;
+    const approvedArgs = approved.get(key);
+    approved.delete(key);
+    const changed = approvedArgs !== undefined && approvedArgs !== JSON.stringify(input.args ?? {});
     await appendAudit({
       ts: new Date().toISOString(),
       agent: AGENT,
@@ -83,6 +100,7 @@ async function after(input: AfterInput, output: AfterOutput | undefined) {
       tool_name: tool.name,
       status: afterFailed(output) ? "failed" : "observed",
       result_preview: resultPreview(output?.output ?? output ?? null),
+      ...(changed ? { arguments_changed: true } : {}),
     });
   } catch (error) {
     console.error(
@@ -93,9 +111,12 @@ async function after(input: AfterInput, output: AfterOutput | undefined) {
   }
 }
 
-export const MezmoGovernance = async () => ({
-  "tool.execute.before": before,
-  "tool.execute.after": after,
-});
+export const MezmoGovernance = async () => {
+  const approved: Approved = new Map();
+  return {
+    "tool.execute.before": (input: BeforeInput, output: BeforeOutput) => before(input, output, approved),
+    "tool.execute.after": (input: AfterInput, output: AfterOutput) => after(input, output, approved),
+  };
+};
 
 export default MezmoGovernance;

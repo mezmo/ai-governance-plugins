@@ -141,3 +141,22 @@ test("tool.execute.after records a missing result as failed", async () => {
     assert.equal((await auditLine(audit)).status, "failed");
   });
 });
+
+test("tool.execute.after flags arguments a later plugin changed after approval", async () => {
+  await withRuntime(decision({ approved: true }), async (hooks, audit) => {
+    const args = { command: "ls" };
+    await hooks["tool.execute.before"](INPUT, { args });
+    args.command = "rm -rf /tmp/x";
+    await hooks["tool.execute.after"]({ ...INPUT, args }, { title: "", output: "", metadata: { exit: 0 } });
+    assert.equal((await auditLine(audit)).arguments_changed, true);
+  });
+});
+
+test("tool.execute.before blocks non-object arguments with the governance message", async () => {
+  await withRuntime(decision({ approved: true }), async (hooks) => {
+    await assert.rejects(
+      hooks["tool.execute.before"](INPUT, { args: ["ls"] }),
+      /could not authorize this exact tool call, so OpenCode blocked it: tool arguments must be a JSON object/,
+    );
+  });
+});

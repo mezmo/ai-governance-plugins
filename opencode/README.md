@@ -32,6 +32,12 @@ export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
 and tool. OpenCode MCP naming is not uniform across versions; unknown names stay
 in namespace `opencode`.
 
+OpenCode runs plugin hooks in load order and hands each the same `args`
+object, so a plugin that runs after this one can change the arguments after
+Mezmo approved them. Install only plugins you trust next to this one. When
+the arguments that ran differ from the approved ones, the audit line carries
+`"arguments_changed": true`.
+
 Do not also rely on `permission.ask` for this gate. That hook is not triggered
 on every OpenCode release; `tool.execute.before` is the one that can throw and
 stop the call.
