@@ -53,7 +53,24 @@ async function before(input: BeforeInput, output: BeforeOutput) {
   }
 }
 
-async function after(input: AfterInput, output: AfterOutput) {
+// Built-in tools return { title, output, metadata }; the shell tool reports its
+// exit code as metadata.exit (null when killed). MCP tools return the raw
+// result with isError. A missing result means the tool failed.
+function afterFailed(output: AfterOutput | undefined): boolean {
+  if (!output || typeof output !== "object") {
+    return true;
+  }
+  const metadata = output.metadata;
+  if (metadata && typeof metadata === "object" && "exit" in metadata) {
+    const exit = (metadata as Record<string, unknown>).exit;
+    if (exit === null || (typeof exit === "number" && exit !== 0)) {
+      return true;
+    }
+  }
+  return resultFailed(output);
+}
+
+async function after(input: AfterInput, output: AfterOutput | undefined) {
   try {
     const identity = callIdentity(input.sessionID, input.callID);
     const tool = splitToolName(input.tool);
@@ -64,8 +81,8 @@ async function after(input: AfterInput, output: AfterOutput) {
       request_id: identity.requestId,
       tool_namespace: tool.namespace,
       tool_name: tool.name,
-      status: resultFailed(output) ? "failed" : "observed",
-      result_preview: resultPreview(output.output ?? output),
+      status: afterFailed(output) ? "failed" : "observed",
+      result_preview: resultPreview(output?.output ?? output ?? null),
     });
   } catch (error) {
     console.error(

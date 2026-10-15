@@ -18,5 +18,7 @@ test("every top-level .ts file loads as an OpenCode 1.x plugin", async () => {
     for (const [name, value] of Object.entries(mod)) {
       assert.equal(typeof value, "function", `${file} export ${name} is not a function`);
     }
+    // OpenCode calls every distinct exported function as a plugin factory.
+    assert.equal(new Set(Object.values(mod)).size, 1, `${file} must export only the plugin`);
   }
 });
