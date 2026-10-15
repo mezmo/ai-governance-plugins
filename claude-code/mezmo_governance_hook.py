@@ -26,6 +26,11 @@ MIN_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_AUDIT_LOG = Path.home() / ".mezmo" / "governance-audit.jsonl"
 MAX_RESULT_PREVIEW_CHARACTERS = 2_000
 MCP_TOOL_PREFIX = "mcp__"
+# Claude Code exports each plugin userConfig option as CLAUDE_PLUGIN_OPTION_<KEY>.
+PLUGIN_OPTIONS = {
+    "MEZMO_GOVERNANCE_URL": "CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL",
+    "MEZMO_GOVERNANCE_ACCESS_KEY": "CLAUDE_PLUGIN_OPTION_ACCESS_KEY",
+}
 
 HttpJson = Callable[[str, str, Optional[Mapping[str, Any]], float], tuple[int, dict[str, Any]]]
 Sleeper = Callable[[float], None]
@@ -79,11 +84,18 @@ def parse_object(raw: bytes) -> dict[str, Any]:
     return parsed
 
 
+def configured(name: str) -> str:
+    """Read a setting from the environment, then from the plugin's userConfig."""
+    option = PLUGIN_OPTIONS[name]
+    for source in (name, option):
+        value = os.environ.get(source)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raise HookContractError(f"set {name} or the plugin option ({option})")
+
+
 def authorize_url() -> str:
-    return required_string(
-        os.environ.get("MEZMO_GOVERNANCE_URL"),
-        "MEZMO_GOVERNANCE_URL",
-    )
+    return configured("MEZMO_GOVERNANCE_URL")
 
 
 def status_url(decision_id: str, base: str | None = None) -> str:
@@ -94,10 +106,7 @@ def status_url(decision_id: str, base: str | None = None) -> str:
 
 
 def authorization_header() -> str:
-    key = required_string(
-        os.environ.get("MEZMO_GOVERNANCE_ACCESS_KEY"),
-        "MEZMO_GOVERNANCE_ACCESS_KEY",
-    )
+    key = configured("MEZMO_GOVERNANCE_ACCESS_KEY")
     if key.lower().startswith("token ") or key.lower().startswith("bearer "):
         return key
     return f"Token {key}"

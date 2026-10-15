@@ -44,7 +44,13 @@ This directory is a plugin (`.claude-plugin/plugin.json` plus `hooks/hooks.json`
 Enable it from a local marketplace or by pointing Claude Code at this folder.
 Plugin hooks run `python3 "${CLAUDE_PLUGIN_ROOT}/mezmo_governance_hook.py"`.
 
-The environment variables still have to be present in the Claude Code process.
+When you enable the plugin, Claude Code asks for the Mezmo Governance URL
+(default `https://api.mezmo.com/governance/workflow/authorize`) and the agent
+access key. It stores the key in the system credential store, not in
+`settings.json`, and passes both to the hook as `CLAUDE_PLUGIN_OPTION_*`
+variables. Change the URL later with `/config`; the key, being sensitive, does
+not appear there. `MEZMO_GOVERNANCE_URL` and
+`MEZMO_GOVERNANCE_ACCESS_KEY`, when set, win over the plugin options.
 
 ## Windows
 

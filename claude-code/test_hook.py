@@ -392,6 +392,77 @@ class HookConfigTests(unittest.TestCase):
         manifest = self.load(".claude-plugin/plugin.json")
         self.assertEqual(manifest["name"], "mezmo-governance")
 
+    def test_plugin_options_match_what_the_hook_reads(self) -> None:
+        options = self.load(".claude-plugin/plugin.json")["userConfig"]
+        exported = {f"CLAUDE_PLUGIN_OPTION_{key.upper()}" for key in options}
+
+        self.assertEqual(exported, set(hook.PLUGIN_OPTIONS.values()))
+        for key, option in options.items():
+            with self.subTest(option=key):
+                self.assertEqual(option["type"], "string")
+                self.assertIs(option["required"], True)
+                self.assertTrue(option["title"] and option["description"])
+        self.assertIs(options["access_key"]["sensitive"], True)
+        self.assertNotIn("default", options["access_key"])
+        self.assertEqual(
+            options["governance_url"]["default"],
+            "https://api.mezmo.com/governance/workflow/authorize",
+        )
+
+
+class PluginOptionTests(unittest.TestCase):
+    URL_OPTION = "CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL"
+    KEY_OPTION = "CLAUDE_PLUGIN_OPTION_ACCESS_KEY"
+    PLUGIN_URL = "https://plugin.example.test/governance/workflow/authorize"
+
+    def test_falls_back_to_plugin_options(self) -> None:
+        env = {self.URL_OPTION: self.PLUGIN_URL, self.KEY_OPTION: "sts_plugin"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(hook.authorize_url(), self.PLUGIN_URL)
+            self.assertEqual(hook.authorization_header(), "Token sts_plugin")
+
+    def test_environment_wins_over_plugin_options(self) -> None:
+        env = {
+            **ENV,
+            self.URL_OPTION: self.PLUGIN_URL,
+            self.KEY_OPTION: "sts_plugin",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(hook.authorize_url(), AUTHORIZE_URL)
+            self.assertEqual(hook.authorization_header(), "Token sts_test")
+
+    def test_blank_environment_values_fall_back(self) -> None:
+        env = {
+            "MEZMO_GOVERNANCE_URL": " ",
+            "MEZMO_GOVERNANCE_ACCESS_KEY": "",
+            self.URL_OPTION: self.PLUGIN_URL,
+            self.KEY_OPTION: "sts_plugin",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(hook.authorize_url(), self.PLUGIN_URL)
+            self.assertEqual(hook.authorization_header(), "Token sts_plugin")
+
+    def test_missing_both_names_each_source(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(
+                hook.HookContractError,
+                "MEZMO_GOVERNANCE_URL.*CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL",
+            ):
+                hook.authorize_url()
+            with self.assertRaisesRegex(
+                hook.HookContractError,
+                "MEZMO_GOVERNANCE_ACCESS_KEY.*CLAUDE_PLUGIN_OPTION_ACCESS_KEY",
+            ):
+                hook.authorization_header()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_status_url_uses_the_plugin_url(self) -> None:
+        os.environ[self.URL_OPTION] = self.PLUGIN_URL
+        self.assertEqual(
+            hook.status_url("d-1"),
+            f"{self.PLUGIN_URL}?decision_id=d-1",
+        )
+
 
 HOOK_PATH = Path(__file__).resolve().with_name("mezmo_governance_hook.py")
 PYTHON_FLOOR = (3, 9)
@@ -483,9 +554,7 @@ SHARED_DEFINITIONS = (
     "Decision",
     "required_string",
     "parse_object",
-    "authorize_url",
     "status_url",
-    "authorization_header",
     "positive_seconds",
     "timeout_seconds",
     "poll_interval_seconds",
@@ -501,6 +570,8 @@ SHARED_DEFINITIONS = (
     "append_audit",
 )
 SIBLING_ADAPTERS = ("codex", "cursor")
+# Claude Code also reads plugin options here, so only codex and cursor match.
+SIBLING_ONLY_DEFINITIONS = ("authorize_url", "authorization_header")
 
 
 def top_level_definitions(path: Path) -> dict[str, str]:
@@ -533,6 +604,12 @@ class SharedCoreDriftTests(unittest.TestCase):
             for name in SHARED_DEFINITIONS:
                 with self.subTest(adapter=path.parent.name, definition=name):
                     self.assertEqual(sibling.get(name), reference[name])
+        if len(present) == len(SIBLING_ADAPTERS):
+            codex, cursor = (top_level_definitions(path) for path in present)
+            for name in SIBLING_ONLY_DEFINITIONS:
+                with self.subTest(definition=name):
+                    self.assertIsNotNone(codex.get(name))
+                    self.assertEqual(codex.get(name), cursor.get(name))
 
 
 PRE_EVENT = "PreToolUse"
@@ -608,11 +685,12 @@ class EndToEndTests(unittest.TestCase):
         self,
         event: dict[str, Any],
         url: str | None,
+        extra: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = {
             key: value
             for key, value in os.environ.items()
-            if not key.startswith("MEZMO_GOVERNANCE_")
+            if not key.startswith(("MEZMO_GOVERNANCE_", "CLAUDE_PLUGIN_OPTION_"))
             and key.lower() not in {"http_proxy", "https_proxy", "all_proxy"}
         }
         env.update(
@@ -626,6 +704,7 @@ class EndToEndTests(unittest.TestCase):
         )
         if url is not None:
             env["MEZMO_GOVERNANCE_URL"] = url
+        env.update(extra or {})
         return subprocess.run(
             [sys.executable, str(HOOK_PATH)],
             input=json.dumps(event),
@@ -689,6 +768,17 @@ class EndToEndTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("unavailable", json.dumps(stdout_json(result)))
+
+    def test_plugin_options_configure_the_hook(self) -> None:
+        options = {"CLAUDE_PLUGIN_OPTION_ACCESS_KEY": "sts_plugin"}
+        with StubGovernance([(200, {"approved": True})]) as stub:
+            options["CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL"] = stub.url
+            result = self.run_hook(hook_event(PRE_EVENT), None, options)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(stdout_json(result))
+        # MEZMO_GOVERNANCE_ACCESS_KEY is set in run_hook, so it wins.
+        self.assertEqual(stub.requests[0]["authorization"], "Token sts_test")
 
     def test_unsupported_event_exits_2(self) -> None:
         event = hook_event(PRE_EVENT)
