@@ -176,8 +176,8 @@ one shell call (expected: denied) and one file read (expected: approved):
 | Copilot CLI | 1.0.95 | pass, with user-level hooks | blocked |
 | OpenCode | 2.0.25 | pass, through the background service with plugin options | not checked |
 | Pi | 1.3.0 | pass | not checked |
-| Mastra | 1.77.0 | pass | not checked |
-| LangChain | 1.4.6, sync `invoke` | pass | not checked |
+| Mastra | 1.77.0, `generate` and `stream` | pass | not checked |
+| LangChain | 1.4.6, `invoke` and `ainvoke` | pass | not checked |
 
 The TypeScript plugins also pass `tsc --strict` against the real Pi, OpenCode
 (1.19.0 and 2.0.25) and Mastra types. That check is not part of `make test`.
@@ -186,7 +186,9 @@ Not checked at all: a real Mezmo Governance endpoint, a reply from Mezmo
 that is not valid JSON or lacks `approved`, a decision a person
 approves while the hook waits, Windows, the Copilot cloud agent and VS Code,
 and how each runtime behaves when the hook times out. To repeat a live check,
-start the mock and follow the smoke test in the adapter's README.
+start the mock and follow the smoke test in the adapter's README. For Mastra
+and LangChain, [examples/check.sh](examples/) runs a real agent and fails if
+the gate lets the wrong tool run.
 
 ## Security
 
