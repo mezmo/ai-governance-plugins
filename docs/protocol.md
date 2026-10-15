@@ -133,7 +133,7 @@ and polls instead of opening a second decision.
 | Gemini CLI | `gemini_cli`, `session_id`, a fresh `run-<uuid>` (no call id) | `gemini_cli_hook` | `gemini_cli`, or `mcp_context.server_name` |
 | GitHub Copilot | `copilot`, `sessionId`, a fresh `run-<uuid>` (no call id) | `copilot_hook` | `copilot` |
 | Pi | `pi`, session id, `toolCallId` | `pi_extension` | `pi` |
-| OpenCode | `opencode`, `sessionID`, `callID`; on 2.x Code Mode the second and later inner calls add `#2`, `#3`, … | `opencode_plugin` | `opencode` |
+| OpenCode | `opencode`, `sessionID`, `callID`; on 2.x `<callID>#<random UUID>`, because Code Mode reuses one call id for many inner calls | `opencode_plugin` | `opencode` |
 | LangChain | `langchain`, `thread_id`, turn id, or one random id per middleware instance; tool call id, or a random id when it is missing | `langchain_middleware` | `langchain` |
 | Mastra | `mastra`, `threadId` or workflow `runId`, `toolCallId` or a random id when it is missing | `mastra_hooks` | `mastra` |
 
