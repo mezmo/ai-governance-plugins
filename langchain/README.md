@@ -1,7 +1,7 @@
 # LangChain + Mezmo Governance
 
 `MezmoGovernanceMiddleware` wraps every tool call from a LangChain v1
-`create_agent` graph. It POSTs an authorize request, waits for
+`create_agent` graph, through `invoke`/`stream` and `ainvoke`/`astream`. It POSTs an authorize request, waits for
 `{ "approved": true|false }`, and returns a `ToolMessage` with `status="error"`
 when the call is denied. Any failure before a decision (Mezmo unreachable, an
 HTTP error, bad JSON, missing configuration) also returns an error

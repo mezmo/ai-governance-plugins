@@ -256,5 +256,183 @@ class MiddlewareFailClosedTests(unittest.IsolatedAsyncioTestCase):
         await self.assert_blocked(middleware, tool_request())
 
 
+@unittest.skipUnless(ToolMessage is not None, "langchain is not installed")
+class MiddlewareSyncTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = patch.dict(os.environ, ENV)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_sync_approved_call_runs_handler(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            return 200, {"approved": True}
+
+        result = MezmoGovernanceMiddleware(http=http).wrap_tool_call(
+            tool_request(),
+            lambda _request: ToolMessage(content="hi", tool_call_id="call-1"),
+        )
+        self.assertEqual(result.content, "hi")
+
+    def test_sync_denied_call_returns_error_tool_message(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            return 200, {"approved": False, "reason": "nope"}
+
+        def handler(_request: Any) -> Any:
+            raise AssertionError("handler must not run")
+
+        result = MezmoGovernanceMiddleware(http=http).wrap_tool_call(tool_request(), handler)
+        self.assertEqual(result.status, "error")
+        self.assertIn("nope", result.content)
+
+    def test_sync_transport_exception_returns_error_tool_message(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            raise ConnectionError("connection refused")
+
+        def handler(_request: Any) -> Any:
+            raise AssertionError("handler must not run")
+
+        result = MezmoGovernanceMiddleware(http=http).wrap_tool_call(tool_request(), handler)
+        self.assertEqual(result.status, "error")
+        self.assertIn("could not authorize", result.content)
+
+    def test_sync_call_inside_a_running_event_loop(self) -> None:
+        import asyncio
+
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            return 200, {"approved": True}
+
+        async def main() -> Any:
+            return MezmoGovernanceMiddleware(http=http).wrap_tool_call(
+                tool_request(),
+                lambda _request: ToolMessage(content="hi", tool_call_id="call-1"),
+            )
+
+        self.assertEqual(asyncio.run(main()).content, "hi")
+
+    def test_sync_call_in_a_running_loop_keeps_the_turn_id(self) -> None:
+        import asyncio
+
+        from mezmo_governance.middleware import (
+            MezmoGovernanceMiddleware,
+            reset_current_turn_id,
+            set_current_turn_id,
+        )
+
+        sent: list[Any] = []
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            sent.append(payload)
+            return 200, {"approved": True}
+
+        async def main() -> None:
+            token = set_current_turn_id("turn-7")
+            try:
+                MezmoGovernanceMiddleware(http=http).wrap_tool_call(
+                    tool_request(thread_id=None),
+                    lambda _request: ToolMessage(content="hi", tool_call_id="call-1"),
+                )
+            finally:
+                reset_current_turn_id(token)
+
+        asyncio.run(main())
+        self.assertEqual(sent[0]["scope"]["session_id"], "turn-7")
+
+    def test_sync_path_records_a_span(self) -> None:
+        from mezmo_governance import middleware as module
+
+        attributes: dict[str, Any] = {}
+
+        class Span:
+            def __enter__(self) -> Any:
+                return self
+
+            def __exit__(self, *exc: Any) -> None:
+                return None
+
+            def set_attribute(self, key: str, value: Any) -> None:
+                attributes[key] = value
+
+            def set_status(self, status: Any) -> None:
+                attributes["status"] = status
+
+        fake_trace = SimpleNamespace(
+            get_tracer=lambda _name: SimpleNamespace(start_as_current_span=lambda _op: Span())
+        )
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            return 200, {"approved": True}
+
+        with patch.object(module, "trace", fake_trace):
+            module.MezmoGovernanceMiddleware(http=http).wrap_tool_call(
+                tool_request(),
+                lambda _request: ToolMessage(content="hi", tool_call_id="call-1"),
+            )
+        self.assertEqual(attributes["tool.name"], "echo")
+        self.assertEqual(attributes["tool.parameters"], '{"text":"hi"}')
+        self.assertEqual(attributes["tool.result"], "hi")
+
+    def test_agent_invoke_runs_through_the_sync_path(self) -> None:
+        from langchain.agents import create_agent
+        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+        from langchain_core.messages import AIMessage
+        from langchain_core.tools import tool
+
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        ran: list[str] = []
+
+        @tool
+        def echo(text: str) -> str:
+            """Return the text."""
+            ran.append(text)
+            return text
+
+        class FakeModel(GenericFakeChatModel):
+            def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+                return self
+
+        def agent(reason: str | None) -> Any:
+            async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+                if reason is None:
+                    return 200, {"approved": True}
+                return 200, {"approved": False, "reason": reason}
+
+            model = FakeModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="",
+                            tool_calls=[{"name": "echo", "args": {"text": "hi"}, "id": "c1"}],
+                        ),
+                        AIMessage(content="done"),
+                    ]
+                )
+            )
+            return create_agent(
+                model=model,
+                tools=[echo],
+                middleware=[MezmoGovernanceMiddleware(http=http)],
+            )
+
+        config = {"configurable": {"thread_id": "t1"}}
+        prompt = {"messages": [{"role": "user", "content": "hi"}]}
+
+        denied = agent("nope").invoke(prompt, config=config)
+        tool_messages = [m for m in denied["messages"] if m.type == "tool"]
+        self.assertEqual(ran, [])
+        self.assertIn("nope", tool_messages[0].content)
+
+        agent(None).invoke(prompt, config=config)
+        self.assertEqual(ran, ["hi"])
+
+
 if __name__ == "__main__":
     unittest.main()

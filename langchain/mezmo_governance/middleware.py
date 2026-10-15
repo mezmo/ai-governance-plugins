@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
-from contextvars import ContextVar, Token
+from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar, Token, copy_context
 from types import TracebackType
-from typing import Any
+from typing import Any, TypeVar
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.messages import ToolMessage
@@ -38,6 +41,7 @@ except ImportError:  # optional
     StatusCode = None  # type: ignore[misc, assignment]
 
 TRACE_OPERATION = "mcp.tool_call"
+T = TypeVar("T")
 
 
 class GovernanceBlocked(RuntimeError):
@@ -174,14 +178,8 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
             status="error",
         )
 
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[
-            [ToolCallRequest],
-            Awaitable[ToolMessage | Command],
-        ],
-    ) -> ToolMessage | Command:
+    async def _check(self, request: ToolCallRequest) -> ToolMessage | None:
+        """Return None when Mezmo approves, else the error ToolMessage to send back."""
         # Any failure before a decision blocks the call. The agent sees an error
         # ToolMessage and keeps running, as with a deny.
         try:
@@ -191,56 +189,93 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
                 url=self.endpoint,
             )
         except Exception as exc:
-            return self._blocked(
-                request,
-                "Mezmo Governance could not authorize this tool call, "
-                f"so LangChain blocked it: {exc}",
-            )
-
+            return self._unavailable(request, exc)
         if not decision.approved:
             return self._blocked(
                 request,
                 "Mezmo Governance denied this tool call: "
                 f"{decision.reason or 'no reason provided'}",
             )
+        return None
 
+    def _unavailable(self, request: ToolCallRequest, exc: Exception) -> ToolMessage:
+        return self._blocked(
+            request,
+            f"Mezmo Governance could not authorize this tool call, so LangChain blocked it: {exc}",
+        )
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command],
+    ) -> ToolMessage | Command:
+        try:
+            blocked = run_sync(self._check(request))
+        except Exception as exc:
+            blocked = self._unavailable(request, exc)
+        if blocked is not None:
+            return blocked
         call = request.tool_call
-        return await self._execute_with_trace(request, handler, str(call["name"]), call["args"])
+        with traced(str(call["name"]), call["args"]) as span:
+            return finish(span, handler(request))
 
-    @staticmethod
-    async def _execute_with_trace(
+    async def awrap_tool_call(
+        self,
         request: ToolCallRequest,
         handler: Callable[
             [ToolCallRequest],
             Awaitable[ToolMessage | Command],
         ],
-        tool_name: str,
-        arguments: Mapping[str, Any],
     ) -> ToolMessage | Command:
-        if trace is None:
-            return await handler(request)
+        blocked = await self._check(request)
+        if blocked is not None:
+            return blocked
+        call = request.tool_call
+        with traced(str(call["name"]), call["args"]) as span:
+            return finish(span, await handler(request))
 
-        tracer = trace.get_tracer("mezmo.governance.langchain")
-        with tracer.start_as_current_span(TRACE_OPERATION) as span:
-            span.set_attribute("tool.name", tool_name)
-            span.set_attribute(
-                "tool.parameters",
-                json.dumps(
-                    dict(arguments),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    default=str,
-                ),
-            )
-            try:
-                result = await handler(request)
-            except Exception as exc:
-                span.record_exception(exc)
-                if Status is not None and StatusCode is not None:
-                    span.set_status(Status(StatusCode.ERROR, str(exc)))
-                raise
 
-            span.set_attribute("tool.result", tool_result_text(result)[:8000])
+def run_sync(coroutine: Coroutine[Any, Any, T]) -> T:
+    """Run a coroutine from sync code, in a worker thread if a loop is running."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coroutine)
+    context = copy_context()  # keeps CURRENT_TURN_ID visible in the worker
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(context.run, asyncio.run, coroutine).result()
+
+
+@contextmanager
+def traced(tool_name: str, arguments: Mapping[str, Any]) -> Iterator[Any]:
+    """Wrap an approved call in an `mcp.tool_call` span when OpenTelemetry is installed."""
+    if trace is None:
+        yield None
+        return
+    tracer = trace.get_tracer("mezmo.governance.langchain")
+    with tracer.start_as_current_span(TRACE_OPERATION) as span:
+        span.set_attribute("tool.name", tool_name)
+        span.set_attribute(
+            "tool.parameters",
+            json.dumps(
+                dict(arguments),
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            ),
+        )
+        try:
+            yield span
+        except Exception as exc:
+            span.record_exception(exc)
             if Status is not None and StatusCode is not None:
-                span.set_status(Status(StatusCode.OK))
-            return result
+                span.set_status(Status(StatusCode.ERROR, str(exc)))
+            raise
+
+
+def finish(span: Any, result: ToolMessage | Command) -> ToolMessage | Command:
+    if span is not None:
+        span.set_attribute("tool.result", tool_result_text(result)[:8000])
+        if Status is not None and StatusCode is not None:
+            span.set_status(Status(StatusCode.OK))
+    return result
