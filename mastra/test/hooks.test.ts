@@ -62,16 +62,10 @@ test("session prefers threadId, then workflow runId, then agentId", () => {
 
 test("toolCallId prefers agent.toolCallId", () => {
   assert.equal(
-    toolCallIdFromHook(
-      { agent: { toolCallId: "call-1" } },
-      "weatherTool",
-      { location: "Austin" },
-    ),
+    toolCallIdFromHook({ agent: { toolCallId: "call-1" } }),
     "call-1",
   );
-  const derived = toolCallIdFromHook({}, "weatherTool", { location: "Austin" });
-  assert.equal(typeof derived, "string");
-  assert.notEqual(derived, "");
+  assert.equal(toolCallIdFromHook({}), "");
 });
 
 test(
@@ -152,6 +146,49 @@ test(
         assert.equal(line.request_id, identity.requestId);
         assert.equal(line.tool_name, "weatherTool");
         assert.equal(line.status, "observed");
+      });
+    }),
+);
+
+test(
+  "identical calls without toolCallId each get a fresh decision",
+  () =>
+    withEnv(ENV, async () => {
+      const decisionIds: string[] = [];
+      const hooks = createMezmoGovernanceHooks({
+        fetchImpl: async (_url, init) => {
+          decisionIds.push(JSON.parse(String(init?.body)).decision_id);
+          return jsonResponse(200, { approved: true });
+        },
+      });
+      const context = { workflow: { runId: "run-1" } };
+      for (let i = 0; i < 2; i += 1) {
+        await hooks.beforeToolCall({ toolName: "weatherTool", input: { location: "Austin" }, context });
+      }
+      assert.equal(decisionIds.length, 2);
+      assert.notEqual(decisionIds[0], decisionIds[1]);
+    }),
+);
+
+test(
+  "afterToolCall without toolCallId reuses the id its beforeToolCall sent",
+  () =>
+    withEnv(ENV, async () => {
+      const dir = await mkdtemp(join(tmpdir(), "mezmo-gov-"));
+      const path = join(dir, "audit.jsonl");
+      await withEnv({ MEZMO_GOVERNANCE_AUDIT_LOG: path }, async () => {
+        let requestId = "";
+        const hooks = createMezmoGovernanceHooks({
+          fetchImpl: async (_url, init) => {
+            requestId = JSON.parse(String(init?.body)).request_id;
+            return jsonResponse(200, { approved: true });
+          },
+        });
+        const hook = { toolName: "weatherTool", input: { location: "Austin" }, context: { workflow: { runId: "run-1" } } };
+        await hooks.beforeToolCall(hook);
+        await hooks.afterToolCall({ ...hook, output: { temperatureCelsius: 21 } });
+        const line = JSON.parse((await readFile(path, "utf8")).trim());
+        assert.equal(line.request_id, requestId);
       });
     }),
 );

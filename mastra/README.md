@@ -46,7 +46,9 @@ Built-in tools use namespace `mastra`. Names of the form `mcp__<server>__<tool>`
 split into that server and tool.
 
 `request_id` is `mastra:<session_id>:<toolCallId>`. `session_id` is the memory
-`threadId` when present, otherwise the workflow `runId`, then `agentId`.
+`threadId` when present, otherwise the workflow `runId`, then `agentId`. A
+call without a `toolCallId` (outside an agent loop) gets a random id, so it
+never reuses an earlier decision.
 
 A deny returns:
 

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   AGENT,
   appendAudit,
@@ -8,7 +10,6 @@ import {
   resultFailed,
   resultPreview,
   splitToolName,
-  uuid5,
   type FetchLike,
 } from "./client.ts";
 
@@ -54,17 +55,41 @@ export function sessionFromHook(
   );
 }
 
-export function toolCallIdFromHook(
-  context: unknown,
-  toolName: string,
-  input: unknown,
-): string {
-  const agent = asRecord(asRecord(context)?.agent);
-  const fromAgent = stringField(agent, "toolCallId");
-  if (fromAgent) {
-    return fromAgent;
-  }
-  return uuid5(`${sessionFromHook(context)}:${toolName}:${JSON.stringify(input ?? {})}`);
+export function toolCallIdFromHook(context: unknown): string {
+  return stringField(asRecord(asRecord(context)?.agent), "toolCallId");
+}
+
+// Without a runtime toolCallId, every call gets a fresh random id, so two
+// identical calls never share one decision. afterToolCall receives the same
+// context object as beforeToolCall, which lets it find that id for the audit.
+function fallbackIds() {
+  const pending = new WeakMap<object, string>();
+  return {
+    before(hook: HookContext): string {
+      const fromAgent = toolCallIdFromHook(hook.context);
+      if (fromAgent) {
+        return fromAgent;
+      }
+      const id = randomUUID();
+      const key = asRecord(hook.context);
+      if (key) {
+        pending.set(key, id);
+      }
+      return id;
+    },
+    after(hook: HookContext): string {
+      const fromAgent = toolCallIdFromHook(hook.context);
+      if (fromAgent) {
+        return fromAgent;
+      }
+      const key = asRecord(hook.context);
+      const id = key && pending.get(key);
+      if (key) {
+        pending.delete(key);
+      }
+      return id || randomUUID();
+    },
+  };
 }
 
 function deny(message: string): BeforeHookResult {
@@ -72,12 +97,13 @@ function deny(message: string): BeforeHookResult {
 }
 
 export function createMezmoGovernanceHooks(options: { fetchImpl?: FetchLike } = {}) {
+  const ids = fallbackIds();
   return {
     async beforeToolCall(hook: HookContext): Promise<BeforeHookResult | undefined> {
       try {
         const payload = approvalPayload({
           sessionId: sessionFromHook(hook.context, hook.metadata),
-          toolCallId: toolCallIdFromHook(hook.context, hook.toolName, hook.input),
+          toolCallId: ids.before(hook),
           toolName: hook.toolName,
           arguments: argumentsObject(hook.input ?? {}),
           eventName: "beforeToolCall",
@@ -99,7 +125,7 @@ export function createMezmoGovernanceHooks(options: { fetchImpl?: FetchLike } = 
     async afterToolCall(hook: HookContext): Promise<void> {
       try {
         const sessionId = sessionFromHook(hook.context, hook.metadata);
-        const toolCallId = toolCallIdFromHook(hook.context, hook.toolName, hook.input);
+        const toolCallId = ids.after(hook);
         const identity = callIdentity(sessionId, toolCallId);
         const tool = splitToolName(hook.toolName);
         await appendAudit({
