@@ -149,3 +149,25 @@ test("tool_result prefers structuredContent and records isError as failed", asyn
     assert.equal(line.result_preview, '{"code":403}');
   });
 });
+
+test("tool_result flags arguments a later extension changed after approval", async () => {
+  await withRuntime(decision({ approved: true }), async (audit) => {
+    const pi = fakePi();
+    const input = { command: "ls" };
+    assert.equal(await pi.toolCall({ toolName: "bash", toolCallId: "call-3", input }), undefined);
+    input.command = "rm -rf /tmp/x";
+    await pi.toolResult({ toolName: "bash", toolCallId: "call-3", input, content: [], isError: false });
+    const line = await auditLine(audit);
+    assert.equal(line.arguments_changed, true);
+  });
+});
+
+test("tool_result leaves arguments_changed out when the input is unchanged", async () => {
+  await withRuntime(decision({ approved: true }), async (audit) => {
+    const pi = fakePi();
+    const input = { command: "ls" };
+    await pi.toolCall({ toolName: "bash", toolCallId: "call-4", input });
+    await pi.toolResult({ toolName: "bash", toolCallId: "call-4", input, content: [], isError: false });
+    assert.equal((await auditLine(audit)).arguments_changed, undefined);
+  });
+});
