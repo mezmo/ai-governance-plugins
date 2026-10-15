@@ -116,10 +116,10 @@ returns HTTP 409.
    this, and the deadline in rule 7 still ends the wait.
 7. Deadline reached while still pending: deny with reason
    `Mezmo Governance: approval still pending`.
-   Python hooks also treat an answer that arrives after the deadline as
-   pending. A socket timeout bounds each read, not the whole answer, so a
-   watchdog thread in the Python hooks prints the deny and exits 2 at the
-   deadline.
+   Every plugin treats an answer that arrives after the deadline as a deny,
+   and bounds the whole answer, not each read: the TypeScript clients abort
+   the fetch, LangChain wraps the request in `asyncio.wait_for`, and a
+   watchdog thread in the Python hooks prints the deny and exits 2.
 8. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
    env, or transport error: deny. The tool does not run.
 
