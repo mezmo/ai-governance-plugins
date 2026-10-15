@@ -6,6 +6,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -100,6 +101,94 @@ class MiddlewareTests(unittest.IsolatedAsyncioTestCase):
             reset_current_turn_id(token)
 
         self.assertEqual(result.content, "hi")
+
+
+def tool_request(call_id: str | None = "call-1", thread_id: str | None = "thread-1") -> Any:
+    config = {"configurable": {"thread_id": thread_id}} if thread_id else {}
+    return ToolCallRequest(
+        tool_call={"name": "echo", "args": {"text": "hi"}, "id": call_id},
+        tool=None,
+        state={},
+        runtime=SimpleNamespace(config=config),
+    )
+
+
+class RecordingTransport:
+    """Stands in for httpx_json and records what the middleware sent."""
+
+    def __init__(self, response: tuple[int, dict[str, Any]] | BaseException) -> None:
+        self.response = response
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(
+        self,
+        method: str,
+        url: str,
+        payload: Any,
+        timeout: float,
+        *,
+        access_key: str | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        self.calls.append(
+            {"method": method, "url": url, "payload": payload, "access_key": access_key}
+        )
+        if isinstance(self.response, BaseException):
+            raise self.response
+        return self.response
+
+
+@unittest.skipUnless(ToolMessage is not None, "langchain is not installed")
+class MiddlewareConfigTests(unittest.IsolatedAsyncioTestCase):
+    @patch.dict(os.environ, ENV)
+    async def test_constructor_endpoint_and_key_beat_the_environment(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        transport = RecordingTransport((200, {"approved": True}))
+        middleware = MezmoGovernanceMiddleware(
+            "https://other.example.test/authorize",
+            access_key="sts_explicit",
+        )
+
+        async def handler(_request: Any) -> ToolMessage:
+            return ToolMessage(content="hi", tool_call_id="call-1")
+
+        with patch("mezmo_governance.middleware.httpx_json", transport):
+            await middleware.awrap_tool_call(tool_request(), handler)
+
+        self.assertEqual(transport.calls[0]["url"], "https://other.example.test/authorize")
+        self.assertEqual(transport.calls[0]["access_key"], "sts_explicit")
+
+    async def test_constructor_does_not_change_the_environment(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        with patch.dict(os.environ, {}, clear=True):
+            MezmoGovernanceMiddleware(
+                "https://other.example.test/authorize",
+                access_key="sts_explicit",
+            )
+            self.assertNotIn("MEZMO_GOVERNANCE_URL", os.environ)
+            self.assertNotIn("MEZMO_GOVERNANCE_ACCESS_KEY", os.environ)
+
+    @patch.dict(os.environ, ENV)
+    async def test_poll_uses_the_constructor_endpoint(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        urls: list[str] = []
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            urls.append(url)
+            if method == "POST":
+                return 409, {}
+            return 200, {"status": "approved", "reason": None}
+
+        middleware = MezmoGovernanceMiddleware("https://other.example.test/authorize", http=http)
+
+        async def handler(_request: Any) -> ToolMessage:
+            return ToolMessage(content="hi", tool_call_id="call-1")
+
+        await middleware.awrap_tool_call(tool_request(), handler)
+        self.assertTrue(all(url.startswith("https://other.example.test/authorize") for url in urls))
+        self.assertIn("decision_id=", urls[1])
 
 
 if __name__ == "__main__":

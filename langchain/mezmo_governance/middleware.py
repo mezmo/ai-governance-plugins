@@ -108,19 +108,14 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
         | None = None,
     ) -> None:
         super().__init__()
-        if endpoint:
-            import os
-
-            os.environ.setdefault("MEZMO_GOVERNANCE_URL", endpoint)
+        # Explicit arguments win over MEZMO_GOVERNANCE_URL and
+        # MEZMO_GOVERNANCE_ACCESS_KEY, which are read per call when these are None.
+        self.endpoint = endpoint
         self.matched_pattern = matched_pattern
         self.access_key = access_key
         self.decision_ids = decision_ids or DecisionIdStore()
         self.intent_provider = intent_provider
         self.http = http
-        if access_key:
-            import os
-
-            os.environ.setdefault("MEZMO_GOVERNANCE_ACCESS_KEY", access_key)
 
     async def __aenter__(self) -> MezmoGovernanceMiddleware:
         return self
@@ -168,7 +163,7 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
         )
 
         http = self.http
-        if http is None and self.access_key:
+        if http is None:
 
             async def http(
                 method: str,
@@ -185,7 +180,7 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
                 )
 
         try:
-            decision = await authorize(payload, http=http)
+            decision = await authorize(payload, http=http, url=self.endpoint)
         except (GovernanceError, TimeoutError, ValueError) as exc:
             raise GovernanceBlocked(
                 "Mezmo Governance could not authorize this call"
