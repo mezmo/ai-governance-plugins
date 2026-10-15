@@ -75,7 +75,9 @@ def make_handler(deny: list[str], hold: list[str]) -> type[BaseHTTPRequestHandle
             decisions[decision_id] = status
             label = f"{item.get('tool_namespace')}:{item.get('tool_name')}"
             # Tool arguments can hold secrets, so print only the decision.
-            print(f"{status:8} {label}", flush=True)
+            # One write per line: parallel tool calls arrive on parallel threads.
+            sys.stdout.write(f"{status:8} {label}\n")
+            sys.stdout.flush()
             if status == "pending":
                 # The real service holds the POST open for a person; answer 409
                 # so the plugin falls into its poll loop right away.

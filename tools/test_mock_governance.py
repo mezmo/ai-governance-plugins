@@ -97,6 +97,26 @@ class MockGovernanceTests(unittest.TestCase):
         self.assertIn("denied", captured.getvalue())
         self.assertNotIn("CANARY_SECRET", captured.getvalue())
 
+    def test_each_decision_is_one_write(self) -> None:
+        # Parallel calls run on parallel threads; a line split over two writes interleaves.
+        import contextlib
+
+        class Writes:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def write(self, text: str) -> int:
+                self.calls.append(text)
+                return len(text)
+
+            def flush(self) -> None:
+                pass
+
+        writes = Writes()
+        with contextlib.redirect_stdout(writes):
+            self.run_hook(event("Read", "c7"))
+        self.assertEqual(writes.calls, ["approved claude_code:Read\n"])
+
     def test_missing_key_is_rejected(self) -> None:
         self.env.pop("MEZMO_GOVERNANCE_ACCESS_KEY")
         self.env.pop("CLAUDE_PLUGIN_OPTION_ACCESS_KEY", None)
