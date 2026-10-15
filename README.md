@@ -151,6 +151,8 @@ A local HTTP server stands in for Mezmo. The tests confirm that:
   reached, a decision stays pending, or an answer arrives (or drips in)
   after the deadline; the Python hooks also block on malformed input from
   the runtime;
+- the call is blocked when Mezmo's reply is not JSON, not an object, or has
+  no boolean `approved`, and when a poll returns an unknown status;
 - a `409` falls into polling, and a call without a call id never reuses an
   earlier decision;
 - the timeout is capped below the runtime's hook timeout, and `nan`, `inf`
@@ -182,8 +184,7 @@ one shell call (expected: denied) and one file read (expected: approved):
 The TypeScript plugins also pass `tsc --strict` against the real Pi, OpenCode
 (1.19.0 and 2.0.25) and Mastra types. That check is not part of `make test`.
 
-Not checked at all: a real Mezmo Governance endpoint, a reply from Mezmo
-that is not valid JSON or lacks `approved`, a decision a person
+Not checked at all: a real Mezmo Governance endpoint, a decision a person
 approves while the hook waits, Windows, the Copilot cloud agent and VS Code,
 and how each runtime behaves when the hook times out. To repeat a live check,
 start the mock and follow the smoke test in the adapter's README. For Mastra

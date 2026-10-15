@@ -288,6 +288,53 @@ class DripTests(unittest.IsolatedAsyncioTestCase):
             server.server_close()
 
 
+
+class RawHandler(BaseHTTPRequestHandler):
+    """Replays the server's queued (status, body bytes) answers as they are."""
+
+    def answer(self) -> None:
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        status, body = self.server.answers.pop(0)  # type: ignore[attr-defined]
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = answer
+    do_POST = answer
+
+    def log_message(self, *args: object) -> None:
+        pass
+
+
+@unittest.skipUnless(httpx is not None, "httpx is not installed")
+class UnreadableReplyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_reply_it_cannot_read_fails_closed(self) -> None:
+        cases = [
+            ([(200, b"<html>bad gateway</html>")], "invalid JSON response"),
+            ([(200, b"[]")], "non-object response"),
+            ([(200, b"")], "invalid JSON response"),
+            ([(200, b'{"reason": "no field"}')], "did not return an approval decision"),
+            ([(200, b'{"approved": "true"}')], "did not return an approval decision"),
+            ([(200, b'{"approved": 1}')], "did not return an approval decision"),
+            ([(409, b"{}"), (200, b'{"status": "maybe"}')], "unexpected status"),
+            ([(409, b"{}"), (200, b"not json")], "invalid JSON response"),
+        ]
+        for answers, message in cases:
+            with self.subTest(answers=answers):
+                server = ThreadingHTTPServer(("127.0.0.1", 0), RawHandler)
+                server.answers = list(answers)  # type: ignore[attr-defined]
+                threading.Thread(target=server.serve_forever, daemon=True).start()
+                url = f"http://127.0.0.1:{server.server_port}/governance/workflow/authorize"
+                try:
+                    with patch.dict(os.environ, {**ENV, "MEZMO_GOVERNANCE_URL": url}):
+                        with self.assertRaisesRegex(GovernanceError, message):
+                            await authorize(PAYLOAD)
+                finally:
+                    server.shutdown()
+                    server.server_close()
+
 # Same bounds as the Python hooks: finish before a 600 s runtime kill, and
 # never poll more than once a second.
 MAX_TIMEOUT_SECONDS = 590.0

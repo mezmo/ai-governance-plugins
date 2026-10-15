@@ -203,6 +203,41 @@ test(
     }),
 );
 
+test(
+  "fails closed on a reply it cannot read",
+  () =>
+    withEnv(ENV, async () => {
+      const cases: [[number, string][], string][] = [
+        [[[200, "<html>bad gateway</html>"]], "invalid JSON response"],
+        [[[200, "[]"]], "non-object response"],
+        [[[200, ""]], "did not return an approval decision"],
+        [[[200, '{"reason":"no field"}']], "did not return an approval decision"],
+        [[[200, '{"approved":"true"}']], "did not return an approval decision"],
+        [[[200, '{"approved":1}']], "did not return an approval decision"],
+        [[[409, "{}"], [200, '{"status":"maybe"}']], "unexpected status"],
+        [[[409, "{}"], [200, "not json"]], "invalid JSON response"],
+      ];
+      for (const [answers, message] of cases) {
+        const queue = [...answers];
+        const fetchImpl = async () => {
+          const [status, body] = queue.shift()!;
+          return { status, async text() { return body; } };
+        };
+        const payload = approvalPayload({
+          sessionId: "sess-1",
+          toolCallId: "call-1",
+          toolName: "bash",
+          arguments: { command: "ls" },
+        });
+        await assert.rejects(
+          () => authorize(payload, { fetchImpl }),
+          (error: unknown) => error instanceof GovernanceError && error.message.includes(message),
+          JSON.stringify(answers),
+        );
+      }
+    }),
+);
+
 test("appendAudit writes JSONL", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mezmo-gov-"));
   const path = join(dir, "audit.jsonl");

@@ -655,7 +655,8 @@ class StubHandler(BaseHTTPRequestHandler):
             }
         )
         status, body = self.server.answers.pop(0)
-        encoded = json.dumps(body).encode()
+        # Bytes are sent as they are, to stand in for a broken reply.
+        encoded = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
@@ -794,6 +795,25 @@ class EndToEndTests(unittest.TestCase):
         output = stdout_json(result)
         self.assertEqual(set(output), set(deny_schema("x")))
         self.assertIn("MEZMO_GOVERNANCE_URL", json.dumps(output))
+
+    def test_a_reply_it_cannot_read_denies(self) -> None:
+        cases = [
+            ([(200, b"<html>bad gateway</html>")], "invalid JSON response"),
+            ([(200, b"[]")], "non-object response"),
+            ([(200, b"")], "did not return an approval decision"),
+            ([(200, {"reason": "no field"})], "did not return an approval decision"),
+            ([(200, {"approved": "true"})], "did not return an approval decision"),
+            ([(200, {"approved": 1})], "did not return an approval decision"),
+            ([(409, {}), (200, {"status": "maybe"})], "unexpected status"),
+            ([(409, {}), (200, b"not json")], "invalid JSON response"),
+        ]
+        for answers, message in cases:
+            with self.subTest(answers=answers):
+                with StubGovernance(answers) as stub:
+                    result = self.run_hook(hook_event(PRE_EVENT), stub.url)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotEqual(stdout_json(result), ALLOW_OUTPUT)
+                self.assertIn(message, json.dumps(stdout_json(result)))
 
     def test_unreachable_governance_denies(self) -> None:
         with StubGovernance([]) as stub:
