@@ -452,6 +452,9 @@ CODEX_HANDLER_KEYS = {
     "additionalContextLimit",
 }
 
+# Codex and Gemini CLI run the tool when a hook exits 1, for example on a crash.
+CRASH_GUARD = " || { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
+
 
 class HookConfigTests(unittest.TestCase):
     def test_example_config_registers_both_events(self) -> None:
@@ -472,6 +475,56 @@ class HookConfigTests(unittest.TestCase):
                                 handler["timeout"],
                                 hook.MAX_TIMEOUT_SECONDS,
                             )
+
+    def pre_and_post_commands(self) -> tuple[str, str]:
+        with (ADAPTER_DIR / "hooks.example.json").open(encoding="utf-8") as handle:
+            config = json.load(handle)["hooks"]
+        return (
+            config["PreToolUse"][0]["hooks"][0]["command"],
+            config["PostToolUse"][0]["hooks"][0]["command"],
+        )
+
+    def run_command(self, command: str, hook_path: Path) -> subprocess.CompletedProcess[str]:
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("MEZMO_GOVERNANCE_")
+        }
+        env["MEZMO_GOVERNANCE_HOOK"] = str(hook_path)
+        return subprocess.run(
+            ["/bin/sh", "-c", command],
+            input=json.dumps(hook_event("PreToolUse")),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+    def test_only_the_gating_command_carries_the_crash_guard(self) -> None:
+        pre, post = self.pre_and_post_commands()
+
+        self.assertTrue(pre.endswith(CRASH_GUARD))
+        self.assertNotIn("exit 2", post)
+
+    def test_the_crash_guard_turns_a_crash_into_a_block(self) -> None:
+        pre, _ = self.pre_and_post_commands()
+        with tempfile.TemporaryDirectory() as tmp:
+            crashing = Path(tmp) / "crash.py"
+            crashing.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
+            result = self.run_command(pre, crashing)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Mezmo Governance hook failed; blocking", result.stderr)
+
+    def test_the_crash_guard_keeps_the_hook_deny_output(self) -> None:
+        pre, _ = self.pre_and_post_commands()
+        result = self.run_command(pre, HOOK_PATH)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(set(output), set(deny_schema("x")))
+        self.assertIn("MEZMO_GOVERNANCE_URL", result.stdout)
 
 
 HOOK_PATH = Path(__file__).resolve().with_name("mezmo_governance_hook.py")
