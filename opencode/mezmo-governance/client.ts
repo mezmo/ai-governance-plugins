@@ -5,7 +5,10 @@ import { dirname, join } from "node:path";
 
 export const AGENT = "opencode";
 const DEFAULT_TIMEOUT_SECONDS = 590;
+// Finish before a runtime's 600 second hook timeout, whatever is configured.
+export const MAX_TIMEOUT_SECONDS = 590;
 const DEFAULT_POLL_INTERVAL_SECONDS = 5;
+export const MIN_POLL_INTERVAL_SECONDS = 1;
 const MAX_RESULT_PREVIEW = 2000;
 const NAMESPACE_URL = Buffer.from("6ba7b8119dad11d180b400c04fd430c8", "hex");
 
@@ -71,19 +74,22 @@ function positiveSeconds(name: string, fallback: number): number {
   }
   const parsed = Number(configured);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new GovernanceError(`${name} must be greater than zero`);
+    throw new GovernanceError(`${name} must be a finite number greater than zero`);
   }
   return parsed;
 }
 
 export function timeoutSeconds(): number {
-  return positiveSeconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS);
+  return Math.min(
+    positiveSeconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
+    MAX_TIMEOUT_SECONDS,
+  );
 }
 
 export function pollIntervalSeconds(): number {
-  return positiveSeconds(
-    "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
-    DEFAULT_POLL_INTERVAL_SECONDS,
+  return Math.max(
+    positiveSeconds("MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS),
+    MIN_POLL_INTERVAL_SECONDS,
   );
 }
 
@@ -324,8 +330,10 @@ export async function authorize(
 }
 
 export function resultPreview(value: unknown): string {
+  // JSON.stringify gives "{}" for an Error: its fields are not enumerable.
+  const shown = value instanceof Error ? { name: value.name, message: value.message } : value;
   try {
-    return JSON.stringify(value).slice(0, MAX_RESULT_PREVIEW);
+    return JSON.stringify(shown).slice(0, MAX_RESULT_PREVIEW);
   } catch {
     return String(value).slice(0, MAX_RESULT_PREVIEW);
   }

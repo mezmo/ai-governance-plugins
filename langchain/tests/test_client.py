@@ -19,7 +19,9 @@ from mezmo_governance.client import (  # noqa: E402
     approval_payload,
     authorize,
     call_identity,
+    poll_interval_seconds,
     split_tool_name,
+    timeout_seconds,
 )
 
 ENV = {
@@ -82,6 +84,33 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["origin"]["kind"], "langchain_middleware")
         self.assertEqual(payload["origin"]["matched_pattern"], "*")
         self.assertEqual(payload["items"][0]["tool_namespace"], "langchain")
+
+    def test_default_payload_has_only_protocol_fields(self) -> None:
+        payload = approval_payload(
+            session_id="sess-1",
+            tool_call_id="call-1",
+            tool_name="echo",
+            arguments={"text": "hi"},
+            matched_pattern="*",
+        )
+        self.assertEqual(
+            set(payload),
+            {"version", "decision_id", "request_id", "scope", "origin", "items"},
+        )
+        self.assertEqual(
+            set(payload["items"][0]),
+            {"id", "tool_namespace", "tool_name", "arguments"},
+        )
+
+    def test_intent_is_sent_only_when_given(self) -> None:
+        payload = approval_payload(
+            session_id="sess-1",
+            tool_call_id="call-1",
+            tool_name="echo",
+            arguments={"text": "hi"},
+            intent="say hi",
+        )
+        self.assertEqual(payload["items"][0]["tool_call_intent"], "say hi")
 
     @patch.dict(os.environ, ENV)
     async def test_allows(self) -> None:
@@ -163,6 +192,43 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(GovernanceError):
             await authorize(payload, http=http)
+
+
+# Same bounds as the Python hooks: finish before a 600 s runtime kill, and
+# never poll more than once a second.
+MAX_TIMEOUT_SECONDS = 590.0
+MIN_POLL_INTERVAL_SECONDS = 1.0
+TIMEOUT = "MEZMO_GOVERNANCE_TIMEOUT_SECONDS"
+POLL = "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS"
+
+
+class DeadlineBoundsTests(unittest.TestCase):
+    def seconds(self, name: str, configured: str) -> float:
+        with patch.dict(os.environ, {**ENV, name: configured}):
+            return timeout_seconds() if name == TIMEOUT else poll_interval_seconds()
+
+    def test_timeout_at_or_above_the_hook_budget_is_capped(self) -> None:
+        for configured in ("590", "600", "3600", "1e308"):
+            with self.subTest(configured=configured):
+                self.assertEqual(self.seconds(TIMEOUT, configured), MAX_TIMEOUT_SECONDS)
+
+    def test_small_positive_timeouts_are_kept(self) -> None:
+        for configured, expected in (("30", 30.0), ("5e-324", 5e-324)):
+            with self.subTest(configured=configured):
+                self.assertEqual(self.seconds(TIMEOUT, configured), expected)
+
+    def test_rejects_seconds_that_are_not_finite_and_positive(self) -> None:
+        for name in (TIMEOUT, POLL):
+            for configured in ("0", "-0", "-1", "nan", "inf", "-inf", "", "ten"):
+                with self.subTest(name=name, configured=configured):
+                    with self.assertRaises(GovernanceError):
+                        self.seconds(name, configured)
+
+    def test_poll_interval_has_a_floor(self) -> None:
+        for configured in ("5e-324", "0.001"):
+            with self.subTest(configured=configured):
+                self.assertEqual(self.seconds(POLL, configured), MIN_POLL_INTERVAL_SECONDS)
+        self.assertEqual(self.seconds(POLL, "1e308"), 1e308)
 
 
 if __name__ == "__main__":

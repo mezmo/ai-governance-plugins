@@ -4,8 +4,10 @@ Mastra agent hooks that ask Mezmo Governance before each tool runs. Denied or
 failed checks skip the tool (`proceed: false`). After an approved tool finishes,
 `afterToolCall` appends a local JSONL record.
 
-Requires `@mastra/core` 1.49.0 or later (agent `hooks`). Official docs:
-https://mastra.ai/docs/agents/using-tools
+Requires `@mastra/core` 1.49.0 or later (agent `hooks`). Tested against
+`@mastra/core` 1.77.0: a type check against its `ToolHooks` and
+`Agent.generate` options, plus tests that call the hooks directly. Official
+docs: https://mastra.ai/docs/agents/using-tools
 
 ## Install
 
@@ -31,8 +33,27 @@ export const agent = new Agent({
 });
 ```
 
-You can also pass `hooks` to `.generate()` or `.stream()`. Those override matching
-agent-level hooks for that run.
+### Run-level hooks bypass the gate
+
+Mastra merges run-level `hooks` from `.generate()` or `.stream()` over the
+agent's hooks, key by key. A run-level `beforeToolCall` replaces the
+governance hook for that run, and tools then run without asking Mezmo. To add
+your own hook, compose it so the governance hook runs last and sees the final
+input:
+
+```typescript
+import { mezmoGovernanceHooks } from "./mezmo-governance.ts";
+
+await agent.generate(prompt, {
+  hooks: {
+    ...mezmoGovernanceHooks,
+    async beforeToolCall(ctx) {
+      const mine = await myBeforeToolCall(ctx); // may return { proceed: false, output }
+      return mine ?? mezmoGovernanceHooks.beforeToolCall(ctx);
+    },
+  },
+});
+```
 
 `createMezmoGovernanceHooks()` builds a fresh hook pair if you need to inject a
 custom fetch in tests.
@@ -40,13 +61,32 @@ custom fetch in tests.
 Do not use Mastra's `requireToolApproval` for this. That is Mastra's own
 approval UI. These hooks talk to Mezmo.
 
+## Verify it works
+
+From the folder that holds `mezmo-governance.ts`, ask the hook about one call
+(Node 22+):
+
+```bash
+node --input-type=module -e 'import { mezmoGovernanceHooks } from "./mezmo-governance.ts";
+console.log(await mezmoGovernanceHooks.beforeToolCall({ toolName: "echo", input: { text: "hi" }, context: {} }));'
+```
+
+`undefined` means Mezmo approved the call. `{ proceed: false, output: … }`
+means it was denied or could not be checked; `output` says which. To check
+fail-closed, run it again with
+`MEZMO_GOVERNANCE_URL=http://127.0.0.1:9/authorize`: the output must say
+`could not authorize`. After an approved tool runs in your agent, read the
+last audit line: `tail -1 ~/.mezmo/governance-audit.jsonl`.
+
 ## What the hooks send
 
 Built-in tools use namespace `mastra`. Names of the form `mcp__<server>__<tool>`
 split into that server and tool.
 
 `request_id` is `mastra:<session_id>:<toolCallId>`. `session_id` is the memory
-`threadId` when present, otherwise the workflow `runId`, then `agentId`.
+`threadId` when present, otherwise the workflow `runId`, then `agentId`. A
+call without a `toolCallId` (outside an agent loop) gets a random id, so it
+never reuses an earlier decision.
 
 A deny returns:
 

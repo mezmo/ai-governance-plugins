@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import time
 import uuid
@@ -13,7 +14,10 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 AGENT = "langchain"
 DEFAULT_TIMEOUT_SECONDS = 590.0
+# Finish before a runtime's 600 second hook timeout, whatever is configured.
+MAX_TIMEOUT_SECONDS = 590.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+MIN_POLL_INTERVAL_SECONDS = 1.0
 MCP_TOOL_PREFIX = "mcp__"
 
 HttpJson = Callable[
@@ -59,19 +63,25 @@ def positive_seconds(name: str, default: float) -> float:
         timeout = float(configured)
     except ValueError as error:
         raise GovernanceError(f"{name} must be a number") from error
-    if timeout <= 0:
-        raise GovernanceError(f"{name} must be greater than zero")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise GovernanceError(f"{name} must be a finite number greater than zero")
     return timeout
 
 
 def timeout_seconds() -> float:
-    return positive_seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)
+    return min(
+        positive_seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
+        MAX_TIMEOUT_SECONDS,
+    )
 
 
 def poll_interval_seconds() -> float:
-    return positive_seconds(
-        "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
-        DEFAULT_POLL_INTERVAL_SECONDS,
+    return max(
+        positive_seconds(
+            "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
+            DEFAULT_POLL_INTERVAL_SECONDS,
+        ),
+        MIN_POLL_INTERVAL_SECONDS,
     )
 
 
@@ -203,8 +213,9 @@ async def poll_decision(
     http: HttpJson,
     clock: Clock,
     sleep: Sleeper,
+    base_url: str | None = None,
 ) -> Decision:
-    url = status_url(decision_id)
+    url = status_url(decision_id, base_url)
     interval = poll_interval_seconds()
     while True:
         leftover = remaining_seconds(deadline, clock)
@@ -232,13 +243,16 @@ async def authorize(
     http: HttpJson | None = None,
     clock: Clock = time.monotonic,
     sleep: Sleeper | None = None,
+    url: str | None = None,
 ) -> Decision:
+    """Ask Mezmo about one call. ``url`` overrides ``MEZMO_GOVERNANCE_URL``."""
     http_fn = http or httpx_json
     sleep_fn = sleep or asyncio.sleep
+    base_url = url or authorize_url()
     deadline = clock() + timeout_seconds()
     leftover = remaining_seconds(deadline, clock)
     try:
-        status, body = await http_fn("POST", authorize_url(), payload, leftover)
+        status, body = await http_fn("POST", base_url, payload, leftover)
     except TimeoutError:
         return await poll_decision(
             str(payload["decision_id"]),
@@ -246,6 +260,7 @@ async def authorize(
             http_fn,
             clock,
             sleep_fn,
+            base_url,
         )
     if status == 409:
         return await poll_decision(
@@ -254,6 +269,7 @@ async def authorize(
             http_fn,
             clock,
             sleep_fn,
+            base_url,
         )
     if status != 200:
         raise GovernanceError(f"Mezmo Governance returned HTTP {status}")
