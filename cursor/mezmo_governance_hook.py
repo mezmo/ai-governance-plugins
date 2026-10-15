@@ -59,12 +59,6 @@ def required_string(value: Any, field: str) -> str:
     return value.strip()
 
 
-def as_object(value: Any, field: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise HookContractError(f"{field} must be a JSON object")
-    return dict(value)
-
-
 def parse_object(raw: bytes) -> dict[str, Any]:
     if not raw:
         return {}
