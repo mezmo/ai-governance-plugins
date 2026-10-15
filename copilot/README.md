@@ -13,14 +13,14 @@ Official docs: https://docs.github.com/en/copilot/reference/hooks-configuration
 
 The script needs Python 3.9 or later and uses only the standard library.
 
-Tested version: none against a live session. Copilot CLI 1.0.95 was installed,
-but a test run needs a signed-in account and a model call. The tests run the
-script against the input and output the docs give.
+Tested version: Copilot CLI 1.0.95, run live with `copilot -p` against
+`tools/mock_governance.py`.
 
 ## Fail behavior
 
 Copilot fails closed for a `preToolUse` command hook that crashes, cannot
-start, or exits non-zero: the tool does not run. It fails open on a timeout:
+start, or exits non-zero: the tool does not run. A crash was verified live
+("hook errored"). It fails open on a timeout:
 the call goes on to the normal permission flow. The example sets
 `timeoutSec` to `600`, so the script's own 590 second deadline ends first and
 returns a clear deny. Do not lower it below the deadline.
@@ -29,6 +29,17 @@ returns a clear deny. Do not lower it below the deadline.
 the hook off.
 
 ## Install
+
+Install the hook at user level, in `~/.copilot/hooks/` or
+`$COPILOT_HOME/hooks/`. Copilot CLI 1.0.95 skipped a repository
+`.github/hooks/*.json` file in an untrusted folder without any warning: under
+`copilot -p` the hook did not run, and `ls` ran ungoverned. The user-level
+file ran in the same folder.
+
+To confirm the hook runs, start `python3 tools/mock_governance.py --deny bash`
+from this repository, point `MEZMO_GOVERNANCE_URL` at it, and ask Copilot to
+run `ls`. The mock prints a `denied copilot:bash` line for each call it sees.
+No line means the hook did not run.
 
 1. Copy the hook:
 
@@ -53,6 +64,11 @@ Each command passes the event name as its last argument, for example
 `preToolUse`. The hook needs it: the camelCase payload does not name the event.
 Use the camelCase event names. The PascalCase names (`PreToolUse`) send
 another payload, which this hook rejects, so Copilot denies every call.
+
+## Tool names in policy
+
+Mezmo sees every tool with namespace `copilot`. Names seen live in Copilot CLI
+1.0.95: `bash` for shell commands and `view` for reads.
 
 ## Cloud agent
 

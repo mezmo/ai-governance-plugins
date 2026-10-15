@@ -9,20 +9,28 @@ Official docs: https://geminicli.com/docs/hooks/reference/
 
 The script needs Python 3.9 or later and uses only the standard library.
 
-Tested version: none. Gemini CLI was not installed when this adapter was
-written. The tests run the script against the input and output the docs give.
+Tested version: Gemini CLI 0.64.0, run live against
+`tools/mock_governance.py`.
 
-## Fail-open limit
+## Fail behavior
 
-Gemini CLI has no fail-closed setting. The hook denies whenever it runs and
-gets no clear approval, but Gemini CLI still runs the tool when:
+Gemini CLI has no fail-closed setting. Gemini CLI 0.64.0 runs the tool when a
+hook exits 1, for example on a crash (verified live). The example
+`BeforeTool` command ends with a guard that turns any non-zero exit into exit
+2, which Gemini CLI treats as a block:
 
-- the script crashes: Python exits 1, which Gemini CLI treats as a warning;
+```bash
+|| { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }
+```
+
+The docs say exit 2 blocks. The guard itself was verified live in Codex, not
+in Gemini CLI. With it, a crash, a wrong path or a missing `python3` blocks
+the call. Gemini CLI still runs the tool when:
+
 - the hook reaches its `timeout` (from the source code, not verified);
 - the hook is disabled in `/hooks`, or a changed project hook is not trusted.
 
-Gemini CLI does not document what happens when the command cannot start, for
-example a wrong path or no `python3`. Run the [smoke test](#smoke-test) after
+Keep the guard on `BeforeTool` only. Run the [smoke test](#smoke-test) after
 each install.
 
 ## Install
@@ -35,7 +43,8 @@ cp mezmo_governance_hook.py ~/.gemini/hooks/
 ```
 
 2. Merge [settings.example.json](settings.example.json) into
-   `~/.gemini/settings.json`, or into `.gemini/settings.json` in a project.
+   `~/.gemini/settings.json`. Prefer this user-level file: Gemini CLI loads
+   project `.gemini/settings.json` hooks only in a trusted folder.
    The example path starts at `$HOME`, so it works from any directory. To keep
    the script elsewhere, set `MEZMO_GOVERNANCE_HOOK` to its absolute path.
 
@@ -50,12 +59,23 @@ export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
    CLI warns about a project hook whose name or command changed until you
    trust it again.
 
+Headless `gemini -p` refuses to run in an untrusted folder: "Gemini CLI is
+not running in a trusted directory". For CI, set
+`GEMINI_CLI_TRUST_WORKSPACE=true` or pass `--skip-trust`. Both trust the
+whole workspace for that run, including its project hooks and settings.
+
 The `BeforeTool` timeout is in milliseconds. The example sets `600000`, so the
 script's own 590 second deadline ends first and returns a clear deny.
 
 If you turn on `security.environmentVariableRedaction`, Gemini CLI removes
 variables whose names contain `KEY` or `TOKEN` from the hook. Add
 `MEZMO_GOVERNANCE_ACCESS_KEY` to its `allowed` list, or every call is denied.
+
+## Tool names in policy
+
+Mezmo sees built-in tools with namespace `gemini_cli`. Names seen live in
+Gemini CLI 0.64.0: `run_shell_command` for shell commands and `read_file` for
+reads.
 
 ## MCP tools
 
@@ -73,8 +93,11 @@ code, not verified). The example uses POSIX shell syntax. On Windows, use an
 absolute path:
 
 ```json
-"command": "py -3 C:/Users/<you>/.gemini/hooks/mezmo_governance_hook.py"
+"command": "py -3 C:/Users/<you>/.gemini/hooks/mezmo_governance_hook.py; if ($LASTEXITCODE -ne 0) { exit 2 }"
 ```
+
+The `if ($LASTEXITCODE ...)` part is the crash guard in PowerShell form, for
+`BeforeTool` only. It was not run on Windows.
 
 Set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
 `$env:MEZMO_GOVERNANCE_ACCESS_KEY = "..."` before you start Gemini CLI.

@@ -9,18 +9,27 @@ Official docs: https://developers.openai.com/codex/hooks
 
 The script needs Python 3.9 or later and uses only the standard library.
 
-## Fail-open limit
+## Fail behavior
 
-Codex has no fail-closed setting. The hook denies whenever it runs and gets no
-clear approval, but Codex still runs the tool when:
+Codex has no fail-closed setting. Codex 0.162.1 runs the tool when a hook
+exits 1, for example on a crash (verified live). The example command ends
+with a guard that turns any non-zero exit into exit 2, which Codex treats as
+a block:
 
-- the hook command cannot start, for example a wrong path or no `python3`;
-- the script crashes, or exits with a code other than 0 or 2;
+```bash
+|| { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }
+```
+
+With the guard, a crash blocks the call (verified live: `hook: PreToolUse
+Blocked`). A wrong path or a missing `python3` also exits non-zero, so the
+guard blocks those too. Codex still runs the tool when:
+
 - the hook reaches its `timeout`;
 - Codex skips the hook because it is new or changed and not yet trusted.
 
-Run the [smoke test](#smoke-test) after each install, and check `/hooks` after
-each config change. Hosted tools such as `WebSearch` never fire hooks.
+Keep the guard on `PreToolUse` only. Run the [smoke test](#smoke-test) after
+each install, and check `/hooks` after each config change. Hosted tools such
+as `WebSearch` never fire hooks.
 
 ## Install
 
@@ -52,21 +61,35 @@ export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
 Hooks are on by default. `hooks = false` under `[features]` in
 `~/.codex/config.toml` turns them all off.
 
-Codex inherits the environment of the shell that launches it. `--full-auto`
-still runs hooks.
+Codex inherits the environment of the shell that launches it.
+
+Headless `codex exec` skips hooks that are not trusted yet, so the tool runs
+ungoverned. Trust the hooks once in an interactive session first. For CI,
+`codex exec --dangerously-bypass-hook-trust` runs them without stored trust.
+It trusts every enabled hook, not just this one, so use it only where you
+control every hook source.
 
 To gate only some tools, change `matcher`. Examples: `Bash`, `^apply_patch$`,
 `mcp__kubernetes__.*`. `apply_patch` also matches `Edit` and `Write`.
+
+## Tool names in policy
+
+Mezmo sees the Codex tool name with namespace `codex`. Names seen live in
+Codex 0.162.1: `Bash` for shell commands and `apply_patch` for file edits. An
+MCP tool arrives with its server as the namespace.
 
 ## Windows
 
 The example command uses POSIX shell syntax (`${VAR:-default}`, `$HOME`) and
 `python3`. On Windows, add `commandWindows` to each handler with an absolute
-path:
+path. For `PreToolUse`, add the guard in PowerShell form:
 
 ```json
-"commandWindows": "py -3 C:\\Users\\<you>\\.codex\\hooks\\mezmo_governance_hook.py"
+"commandWindows": "py -3 C:\\Users\\<you>\\.codex\\hooks\\mezmo_governance_hook.py; if ($LASTEXITCODE -ne 0) { exit 2 }"
 ```
+
+The Codex docs do not say which shell runs `commandWindows`. The guard
+assumes PowerShell; this is not verified.
 
 In PowerShell, set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
 `$env:MEZMO_GOVERNANCE_ACCESS_KEY = "..."` before you start Codex.

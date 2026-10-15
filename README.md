@@ -76,10 +76,10 @@ the system credential store. Details: [claude-code/](claude-code/).
 
 | Agent | Hook | Fails closed? | Install |
 | --- | --- | --- | --- |
-| [Codex CLI](codex/) | `PreToolUse` command hook | no: a crashed hook lets the call run | copy the script, merge `hooks.example.json`, trust it in `/hooks` |
+| [Codex CLI](codex/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | copy the script, merge `hooks.example.json`, trust it in `/hooks` |
 | [Cursor](cursor/) | `preToolUse` hook | yes, with `failClosed: true` | copy the script, merge `hooks.example.json` |
-| [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | no: a crashed or timed-out hook lets the call run | copy the script, merge `settings.example.json` |
-| [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | on a crash yes; on a timeout no | copy the script, add `hooks.example.json` |
+| [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | copy the script, merge `settings.example.json` |
+| [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | on a crash yes; on a timeout no | copy the script, add `hooks.example.json` to `~/.copilot/hooks/` |
 | [Pi](pi/) | `tool_call` extension | yes | copy the folder to `~/.pi/agent/extensions/` |
 | [OpenCode](opencode/) 1.x and 2.x | `tool.execute.before` plugin | yes | copy `mezmo-governance.ts` and its folder to `~/.config/opencode/plugins/` |
 | [LangChain](langchain/) v1 | `AgentMiddleware` (`wrap_tool_call` and `awrap_tool_call`) | yes | `pip install ./langchain` |
@@ -116,7 +116,7 @@ ends first and returns a clear deny.
 
 | You see | Cause | Fix |
 | --- | --- | --- |
-| Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice |
+| Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice; Copilot: install in `~/.copilot/hooks/`, not `.github/hooks/`; Gemini CLI: use `~/.gemini/settings.json` or trust the folder |
 | Every call is denied: `MEZMO_GOVERNANCE_URL must be a non-empty string` | the agent did not inherit the variables | export them in the shell that starts the agent, or use the agent's own settings `env` block |
 | `Mezmo Governance returned HTTP 401` | wrong or revoked access key | copy a fresh key from the agent in Mezmo |
 | `approval still pending` | policy needs a person and nobody decided in time | decide in Mezmo, or raise `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` (max 590) |
