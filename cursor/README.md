@@ -55,8 +55,12 @@ Deny:
 }
 ```
 
-`request_id` is `cursor:<conversation_id>:<tool_use_id>`. Post-tool events only
-append the local JSONL audit log.
+`request_id` is `cursor:<conversation_id>:<tool_use_id>`. The shell and MCP
+events carry no `tool_use_id`, so the hook uses a fresh `run-<uuid>` for each
+run. A repeated identical command then gets its own decision instead of
+reusing an earlier one. Their post-tool records have `decision_id: null`.
+
+Post-tool events only append the local JSONL audit log.
 
 ## Tests
 

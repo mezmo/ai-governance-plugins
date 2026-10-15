@@ -201,26 +201,20 @@ def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
     return NormalizedToolCall(AGENT, canonical_name, arguments)
 
 
+def explicit_tool_use_id(event: Mapping[str, Any]) -> str | None:
+    value = event.get("tool_use_id")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def call_identity(event: Mapping[str, Any]) -> CallIdentity:
     session_id = event.get("conversation_id") or event.get("session_id")
     session_id = required_string(session_id, "conversation_id")
-    tool_call = normalize_tool_call(event)
-    explicit = event.get("tool_use_id")
-    if isinstance(explicit, str) and explicit.strip():
-        tool_use_id = explicit.strip()
-    else:
-        seed = json.dumps(
-            [
-                event.get("generation_id"),
-                tool_call.namespace,
-                tool_call.name,
-                tool_call.arguments,
-            ],
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
-        tool_use_id = str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
+    # beforeShellExecution and beforeMCPExecution carry no tool call id. A
+    # fresh id per run keeps a repeated identical call from reusing an
+    # earlier decision through HTTP 409.
+    tool_use_id = explicit_tool_use_id(event) or f"run-{uuid.uuid4()}"
     request_id = f"{AGENT}:{session_id}:{tool_use_id}"
     decision_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request_id))
     return CallIdentity(decision_id, request_id, session_id)
@@ -411,7 +405,8 @@ def append_audit(record: Mapping[str, Any]) -> None:
 
 def handle_post_tool_use(event: Mapping[str, Any]) -> None:
     tool_call = normalize_tool_call(event)
-    identity = call_identity(event)
+    # Without a tool call id the record cannot be joined to its decision.
+    identity = call_identity(event) if explicit_tool_use_id(event) else None
     response = next(
         (
             event[key]
@@ -429,8 +424,8 @@ def handle_post_tool_use(event: Mapping[str, Any]) -> None:
         {
             "ts": datetime.now(timezone.utc).isoformat(),
             "agent": AGENT,
-            "decision_id": identity.decision_id,
-            "request_id": identity.request_id,
+            "decision_id": identity.decision_id if identity else None,
+            "request_id": identity.request_id if identity else None,
             "tool_namespace": tool_call.namespace,
             "tool_name": tool_call.name,
             "status": "failed" if failed else "observed",

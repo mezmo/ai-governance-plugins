@@ -47,6 +47,7 @@ def hook_event(name: str) -> dict[str, Any]:
     if name in {"beforeShellExecution", "afterShellExecution"}:
         event.pop("tool_name", None)
         event.pop("tool_input", None)
+        event.pop("tool_use_id", None)
         event["command"] = "kubectl delete pod demo-pod -n staging"
     return event
 
@@ -171,6 +172,56 @@ class CursorGovernanceHookTests(unittest.TestCase):
             record = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
             self.assertEqual(record["agent"], "cursor")
             self.assertEqual(record["tool_name"], "pods_delete")
+
+
+class CursorIdentityFallbackTests(unittest.TestCase):
+    def test_a_repeated_identical_shell_command_opens_a_new_decision(self) -> None:
+        first = hook.approval_payload(hook_event("beforeShellExecution"))
+        second = hook.approval_payload(hook_event("beforeShellExecution"))
+
+        self.assertNotEqual(first["decision_id"], second["decision_id"])
+        self.assertNotEqual(first["request_id"], second["request_id"])
+        self.assertTrue(first["request_id"].startswith("cursor:conv-1:"))
+
+    @patch.dict(os.environ, ENV)
+    def test_a_repeat_after_an_approval_is_authorized_again(self) -> None:
+        seen: set[str] = set()
+
+        def http(
+            method: str,
+            url: str,
+            payload: Mapping[str, Any] | None,
+            timeout: float,
+        ) -> tuple[int, dict[str, Any]]:
+            if method == "GET":
+                return 200, {"status": "approved", "reason": "earlier call"}
+            assert payload is not None
+            if payload["decision_id"] in seen:
+                return 409, {"code": "ECONFLICT"}
+            seen.add(payload["decision_id"])
+            if len(seen) == 1:
+                return 200, {"approved": True}
+            return 200, {"approved": False, "reason": "needs a person"}
+
+        first = hook.handle_event(hook_event("beforeShellExecution"), http=http)
+        second = hook.handle_event(hook_event("beforeShellExecution"), http=http)
+
+        self.assertEqual(first["permission"], "allow")
+        self.assertEqual(second["permission"], "deny")
+
+    @patch.dict(os.environ, ENV)
+    def test_post_events_without_a_tool_use_id_claim_no_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "audit.jsonl"
+            env = {**ENV, "MEZMO_GOVERNANCE_AUDIT_LOG": str(log_path)}
+            event = hook_event("afterShellExecution")
+            self.assertNotIn("tool_use_id", event)
+            with patch.dict(os.environ, env):
+                hook.handle_event(event)
+            record = json.loads(log_path.read_text(encoding="utf-8"))
+        self.assertIsNone(record["decision_id"])
+        self.assertIsNone(record["request_id"])
+        self.assertEqual(record["tool_name"], "Shell")
 
 
 class CursorToolOutputTests(unittest.TestCase):
