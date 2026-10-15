@@ -33,8 +33,11 @@ await agent.ainvoke(
 )
 ```
 
-If the runtime has no `thread_id`, call `set_current_turn_id(...)` around
-`ainvoke` (see [example_agent.py](example_agent.py)).
+Without a `thread_id`, the middleware uses `set_current_turn_id(...)` when you
+set one around the call (see [example_agent.py](example_agent.py)). Otherwise
+it uses one random session id per middleware instance, so every un-threaded
+run through that instance shows as one session in Mezmo. A tool call without
+an id gets a random one, so it never reuses an earlier decision.
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"

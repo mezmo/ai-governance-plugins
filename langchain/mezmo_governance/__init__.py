@@ -18,7 +18,6 @@ try:
     from mezmo_governance.middleware import (
         CURRENT_TURN_ID,
         DecisionIdStore,
-        GovernanceBlocked,
         MezmoGovernanceMiddleware,
         reset_current_turn_id,
         set_current_turn_id,
@@ -29,7 +28,6 @@ else:
     __all__ += [
         "CURRENT_TURN_ID",
         "DecisionIdStore",
-        "GovernanceBlocked",
         "MezmoGovernanceMiddleware",
         "reset_current_turn_id",
         "set_current_turn_id",

@@ -44,10 +44,6 @@ TRACE_OPERATION = "mcp.tool_call"
 T = TypeVar("T")
 
 
-class GovernanceBlocked(RuntimeError):
-    """The tool call could not be authorized and was not executed."""
-
-
 class DecisionIdStore:
     """Process-local stable IDs for retried middleware calls."""
 
@@ -74,7 +70,8 @@ def reset_current_turn_id(token: Token[str | None]) -> None:
     CURRENT_TURN_ID.reset(token)
 
 
-def session_id_from_request(request: ToolCallRequest) -> str:
+def session_id_from_request(request: ToolCallRequest, default: str) -> str:
+    """Return the LangGraph thread_id, else the current turn id, else ``default``."""
     runtime = getattr(request, "runtime", None)
     config = getattr(runtime, "config", None)
     if isinstance(config, dict):
@@ -86,7 +83,7 @@ def session_id_from_request(request: ToolCallRequest) -> str:
     turn_id = CURRENT_TURN_ID.get()
     if turn_id:
         return turn_id
-    raise GovernanceBlocked("The current LangChain turn has no stable ID")
+    return default
 
 
 def tool_result_text(result: ToolMessage | Command) -> str:
@@ -119,6 +116,8 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
         # Explicit arguments win over MEZMO_GOVERNANCE_URL and
         # MEZMO_GOVERNANCE_ACCESS_KEY, which are read per call when these are None.
         self.endpoint = endpoint
+        # Session for calls without a thread_id or turn id: one per middleware.
+        self.session_id = f"middleware-{uuid.uuid4()}"
         self.matched_pattern = matched_pattern
         self.access_key = access_key
         self.decision_ids = decision_ids or DecisionIdStore()
@@ -141,8 +140,9 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
         arguments = call["args"]
         if not isinstance(arguments, Mapping):
             raise GovernanceError("tool arguments must be a JSON object")
-        session_id = session_id_from_request(request)
-        tool_call_id = str(call["id"])
+        session_id = session_id_from_request(request, self.session_id)
+        # A call without an id gets a random one, so it never reuses a decision.
+        tool_call_id = str(call.get("id") or f"generated-{uuid.uuid4()}")
         request_id = f"{AGENT}:{session_id}:{tool_call_id}"
         intent = self.intent_provider(request) if self.intent_provider else None
         return approval_payload(

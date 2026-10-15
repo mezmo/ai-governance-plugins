@@ -434,5 +434,52 @@ class MiddlewareSyncTests(unittest.TestCase):
         self.assertEqual(ran, ["hi"])
 
 
+@unittest.skipUnless(ToolMessage is not None, "langchain is not installed")
+class MiddlewareIdentityTests(unittest.IsolatedAsyncioTestCase):
+    @patch.dict(os.environ, ENV)
+    async def test_missing_thread_id_uses_one_session_per_middleware(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        sent: list[Any] = []
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            sent.append(payload)
+            return 200, {"approved": True}
+
+        async def handler(_request: Any) -> ToolMessage:
+            return ToolMessage(content="hi", tool_call_id="call-1")
+
+        first = MezmoGovernanceMiddleware(http=http)
+        second = MezmoGovernanceMiddleware(http=http)
+        result = await first.awrap_tool_call(tool_request("call-1", thread_id=None), handler)
+        await first.awrap_tool_call(tool_request("call-2", thread_id=None), handler)
+        await second.awrap_tool_call(tool_request("call-1", thread_id=None), handler)
+
+        self.assertEqual(result.content, "hi")
+        sessions = [payload["scope"]["session_id"] for payload in sent]
+        self.assertEqual(sessions[0], sessions[1])
+        self.assertNotEqual(sessions[0], sessions[2])
+        self.assertNotEqual(sent[0]["decision_id"], sent[2]["decision_id"])
+
+    @patch.dict(os.environ, ENV)
+    async def test_tool_calls_without_id_never_share_a_decision(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        sent: list[Any] = []
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            sent.append(payload)
+            return 200, {"approved": True}
+
+        async def handler(_request: Any) -> ToolMessage:
+            return ToolMessage(content="hi", tool_call_id="")
+
+        middleware = MezmoGovernanceMiddleware(http=http)
+        await middleware.awrap_tool_call(tool_request(call_id=None), handler)
+        await middleware.awrap_tool_call(tool_request(call_id=None), handler)
+        self.assertNotEqual(sent[0]["decision_id"], sent[1]["decision_id"])
+        self.assertNotIn("None", sent[0]["request_id"])
+
+
 if __name__ == "__main__":
     unittest.main()
