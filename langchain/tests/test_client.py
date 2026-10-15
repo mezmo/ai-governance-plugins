@@ -83,6 +83,33 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["origin"]["matched_pattern"], "*")
         self.assertEqual(payload["items"][0]["tool_namespace"], "langchain")
 
+    def test_default_payload_has_only_protocol_fields(self) -> None:
+        payload = approval_payload(
+            session_id="sess-1",
+            tool_call_id="call-1",
+            tool_name="echo",
+            arguments={"text": "hi"},
+            matched_pattern="*",
+        )
+        self.assertEqual(
+            set(payload),
+            {"version", "decision_id", "request_id", "scope", "origin", "items"},
+        )
+        self.assertEqual(
+            set(payload["items"][0]),
+            {"id", "tool_namespace", "tool_name", "arguments"},
+        )
+
+    def test_intent_is_sent_only_when_given(self) -> None:
+        payload = approval_payload(
+            session_id="sess-1",
+            tool_call_id="call-1",
+            tool_name="echo",
+            arguments={"text": "hi"},
+            intent="say hi",
+        )
+        self.assertEqual(payload["items"][0]["tool_call_intent"], "say hi")
+
     @patch.dict(os.environ, ENV)
     async def test_allows(self) -> None:
         http = FakeHttp([(200, {"approved": True})])

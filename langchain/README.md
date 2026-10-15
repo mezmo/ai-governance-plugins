@@ -50,6 +50,11 @@ python3 example_agent.py
 `mcp__<server>__<tool>` use that MCP server as `tool_namespace`; everything else
 uses `langchain`.
 
+`intent_provider` is opt-in and off by default. When you pass one, its return
+value goes in `items[0].tool_call_intent`. That field is not in
+[docs/protocol.md](../docs/protocol.md); use it only with a Mezmo endpoint
+that accepts it.
+
 OpenTelemetry is optional. If `opentelemetry` is installed, approved calls are
 traced as `mcp.tool_call`.
 
