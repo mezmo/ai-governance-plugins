@@ -8,6 +8,7 @@ import math
 import os
 import socket
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -286,6 +287,8 @@ def poll_decision(
             raise HookContractError(
                 f"Mezmo Governance is unavailable: {error}"
             ) from error
+        # An answer that arrives after the deadline is too late to act on.
+        leftover = remaining_seconds(deadline, clock)
         if status == 404:
             sleep(min(interval, leftover))
             continue
@@ -296,8 +299,47 @@ def poll_decision(
         decided = decision_from_status_body(body)
         if decided is not None:
             return decided
-        leftover = remaining_seconds(deadline, clock)
         sleep(min(interval, leftover))
+
+
+def deadline_watchdog(seconds: float) -> Callable[[], None]:
+    """Deny and exit at the deadline, even while a socket read is still alive.
+
+    urlopen's timeout bounds each socket wait, not the whole answer, so a
+    server that sends one byte at a time could keep the hook past the
+    runtime's own hook timeout, and several runtimes then run the tool.
+    """
+    lock = threading.Lock()
+    finished = False
+
+    def fire() -> None:
+        with lock:
+            if finished:
+                return
+            reason = "Mezmo Governance: approval still pending"
+            try:
+                sys.stdout.write(
+                    json.dumps(deny_output(reason), separators=(",", ":")) + "\n"
+                )
+                sys.stdout.flush()
+                sys.stderr.write(reason + "\n")
+                sys.stderr.flush()
+            finally:
+                # Every supported runtime blocks the tool on exit code 2, so
+                # exit with it even when stdout is gone.
+                os._exit(2)
+
+    timer = threading.Timer(seconds, fire)
+    timer.daemon = True
+    timer.start()
+
+    def stop() -> None:
+        nonlocal finished
+        with lock:
+            finished = True
+        timer.cancel()
+
+    return stop
 
 
 def authorize(
@@ -306,19 +348,30 @@ def authorize(
     clock: Clock = time.monotonic,
     sleep: Sleeper = time.sleep,
 ) -> Decision:
-    deadline = clock() + timeout_seconds()
+    budget = timeout_seconds()
+    deadline = clock() + budget
     url = authorize_url()
-    leftover = remaining_seconds(deadline, clock)
+    stop_watchdog = deadline_watchdog(budget)
     try:
-        status, body = http("POST", url, payload, leftover)
-    except TimeoutError:
-        return poll_decision(str(payload["decision_id"]), deadline, http, clock, sleep)
+        leftover = remaining_seconds(deadline, clock)
+        try:
+            status, body = http("POST", url, payload, leftover)
+        except TimeoutError:
+            return poll_decision(
+                str(payload["decision_id"]), deadline, http, clock, sleep
+            )
 
-    if status == 409:
-        return poll_decision(str(payload["decision_id"]), deadline, http, clock, sleep)
-    if status != 200:
-        raise HookContractError(f"Mezmo Governance returned HTTP {status}")
-    return decision_from_post_body(body)
+        # An answer that arrives after the deadline is too late to act on.
+        remaining_seconds(deadline, clock)
+        if status == 409:
+            return poll_decision(
+                str(payload["decision_id"]), deadline, http, clock, sleep
+            )
+        if status != 200:
+            raise HookContractError(f"Mezmo Governance returned HTTP {status}")
+        return decision_from_post_body(body)
+    finally:
+        stop_watchdog()
 
 
 def result_preview(value: Any) -> str:
