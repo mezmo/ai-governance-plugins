@@ -268,6 +268,57 @@ class CodexGovernanceHookTests(unittest.TestCase):
             self.assertEqual(hook.authorization_header(), "Token sts_test")
 
 
+class DeadlineBoundsTests(unittest.TestCase):
+    def seconds(self, name: str, configured: str) -> float:
+        with patch.dict(os.environ, {**ENV, name: configured}):
+            if name == "MEZMO_GOVERNANCE_TIMEOUT_SECONDS":
+                return hook.timeout_seconds()
+            return hook.poll_interval_seconds()
+
+    def test_timeout_at_or_above_the_hook_budget_is_capped(self) -> None:
+        for configured in ("590", "600", "3600", "1e308"):
+            with self.subTest(configured=configured):
+                self.assertEqual(
+                    self.seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", configured),
+                    hook.MAX_TIMEOUT_SECONDS,
+                )
+        self.assertLess(hook.MAX_TIMEOUT_SECONDS, 600)
+
+    def test_small_positive_timeouts_are_kept(self) -> None:
+        for configured, expected in (("30", 30.0), ("5e-324", 5e-324)):
+            with self.subTest(configured=configured):
+                self.assertEqual(
+                    self.seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", configured),
+                    expected,
+                )
+
+    def test_rejects_seconds_that_are_not_finite_and_positive(self) -> None:
+        names = (
+            "MEZMO_GOVERNANCE_TIMEOUT_SECONDS",
+            "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
+        )
+        for name in names:
+            for configured in ("0", "-0", "-1", "nan", "inf", "-inf", "", "ten"):
+                with self.subTest(name=name, configured=configured):
+                    with self.assertRaises(hook.HookContractError):
+                        self.seconds(name, configured)
+
+    def test_poll_interval_has_a_floor(self) -> None:
+        for configured in ("5e-324", "0.001"):
+            with self.subTest(configured=configured):
+                self.assertEqual(
+                    self.seconds("MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS", configured),
+                    hook.MIN_POLL_INTERVAL_SECONDS,
+                )
+
+    def test_a_large_timeout_still_ends_before_the_runtime_kills_the_hook(self) -> None:
+        http = FakeHttp([(200, {"approved": True})])
+        env = {**ENV, "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "3600"}
+        with patch.dict(os.environ, env):
+            hook.authorize({"decision_id": "d"}, http=http)
+        self.assertLessEqual(http.calls[0][3], hook.MAX_TIMEOUT_SECONDS)
+
+
 HOOK_PATH = Path(__file__).resolve().with_name("mezmo_governance_hook.py")
 PYTHON_FLOOR = (3, 9)
 

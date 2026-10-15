@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import sys
@@ -19,7 +20,9 @@ from urllib.request import Request, urlopen
 
 AGENT = "cursor"
 DEFAULT_TIMEOUT_SECONDS = 590.0
+MAX_TIMEOUT_SECONDS = 590.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+MIN_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_AUDIT_LOG = Path.home() / ".mezmo" / "governance-audit.jsonl"
 MAX_RESULT_PREVIEW_CHARACTERS = 2_000
 MCP_TOOL_PREFIX = "mcp__"
@@ -105,25 +108,31 @@ def positive_seconds(environment_name: str, default: float) -> float:
     if configured is None:
         return default
     try:
-        timeout = float(configured)
+        seconds = float(configured)
     except ValueError as error:
         raise HookContractError(f"{environment_name} must be a number") from error
-    if timeout <= 0:
-        raise HookContractError(f"{environment_name} must be greater than zero")
-    return timeout
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise HookContractError(
+            f"{environment_name} must be a finite number greater than zero"
+        )
+    return seconds
 
 
 def timeout_seconds() -> float:
-    return positive_seconds(
-        "MEZMO_GOVERNANCE_TIMEOUT_SECONDS",
-        DEFAULT_TIMEOUT_SECONDS,
+    # The runtime kills the hook at its 600 second timeout; finish first.
+    return min(
+        positive_seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
+        MAX_TIMEOUT_SECONDS,
     )
 
 
 def poll_interval_seconds() -> float:
-    return positive_seconds(
-        "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
-        DEFAULT_POLL_INTERVAL_SECONDS,
+    return max(
+        positive_seconds(
+            "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
+            DEFAULT_POLL_INTERVAL_SECONDS,
+        ),
+        MIN_POLL_INTERVAL_SECONDS,
     )
 
 

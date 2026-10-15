@@ -141,9 +141,12 @@ MCP tool names of the form `mcp__<server>__<tool>` split into namespace
 | --- | --- | --- | --- |
 | `MEZMO_GOVERNANCE_URL` | yes | — | Full authorize URL |
 | `MEZMO_GOVERNANCE_ACCESS_KEY` | yes | — | Agent access key (plugins prefix `Token `) |
-| `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590` | Overall deadline, under Codex/Claude's 600s hook default |
-| `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` | Status poll spacing |
+| `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590` | Overall deadline, under the 600s hook timeout. Python hooks cap it at 590 |
+| `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` | Status poll spacing. Python hooks use at least 1 |
 | `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` | Local post-tool log |
+
+Both seconds values must be finite numbers greater than zero. Any other value
+makes the hook deny every call with an error that names the variable.
 
 ## Post-tool log
 
