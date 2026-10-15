@@ -76,6 +76,12 @@ The extension calls `ctx.ui.setStatus("mezmo-governance", ...)` while waiting.
 `request_id` is `pi:<sessionId>:<toolCallId>`. Built-in tools use namespace
 `pi`. Names of the form `mcp__<server>__<tool>` split the same way as Codex.
 
+### Tool names for policy
+
+Pi's built-in tools are `bash`, `powershell`, `read`, `edit`, `write`,
+`grep`, `find` and `ls`, in namespace `pi`. A live `pi -p -e` run with Pi
+1.3.0 against `tools/mock_governance.py` sent `pi:bash` and `pi:read`.
+
 ## Tests
 
 Node 22+ (type stripping):
