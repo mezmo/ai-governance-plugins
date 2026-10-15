@@ -4,7 +4,7 @@ Plugins that ask Mezmo Governance before a coding agent runs a tool. If Mezmo
 denies the call, or never answers, the tool does not run.
 
 ```text
-Claude Code / Codex / Cursor / Gemini CLI / Copilot / Pi / OpenCode / LangChain / Mastra
+Claude Code / Codex / Cursor / Gemini CLI / Copilot / Pi / OpenCode / LangChain / OpenAI Agents SDK / Mastra
         │  before the tool runs
         ▼
   plugin  ──POST /governance/workflow/authorize──►  Mezmo Governance
@@ -86,6 +86,7 @@ the system credential store. Details: [claude-code/](claude-code/).
 | [Pi](pi/) | `tool_call` extension | yes | copy the folder to `~/.pi/agent/extensions/` |
 | [OpenCode](opencode/) 1.x and 2.x | `tool.execute.before` plugin | yes | 2.x: copy the folder, name it in `opencode.json` `plugins` with options; 1.x: copy to `~/.config/opencode/plugins/` |
 | [LangChain](langchain/) v1 | `AgentMiddleware` (`wrap_tool_call` and `awrap_tool_call`) | yes | `pip install ./langchain` |
+| [OpenAI Agents SDK](openai-agents/) (Python) | tool input guardrail on function and MCP tools; hosted tools are not gated | yes | `pip install ./openai-agents` |
 | [Mastra](mastra/) | agent `hooks.beforeToolCall` | yes | copy the files, pass `hooks` |
 
 "Fails closed" means the tool does not run when the plugin itself crashes,
@@ -137,7 +138,9 @@ make test
 ```
 
 `make test` runs the LangChain middleware tests only when LangChain is
-installed in `langchain/.venv` (see [langchain/](langchain/)).
+installed in `langchain/.venv` (see [langchain/](langchain/)), and the
+OpenAI Agents SDK guardrail tests only when the SDK is installed in
+`openai-agents/.venv` (see [openai-agents/](openai-agents/)).
 
 ### What the tests confirm
 
@@ -160,8 +163,9 @@ A local HTTP server stands in for Mezmo. The tests confirm that:
 - the post-tool event writes an audit line and never blocks;
 - each example config registers every event and blocks on hook failure,
   including the `|| exit 2` guard for Codex and Gemini CLI;
-- the shared code is identical across the five Python hooks and across the
-  three `client.ts` copies, and the Python hooks import on Python 3.9.
+- the shared code is identical across the five Python hooks, across the
+  three `client.ts` copies and across the two Python `client.py` copies, and
+  the Python hooks import on Python 3.9.
 
 ### What they do not confirm
 
@@ -180,6 +184,7 @@ one shell call (expected: denied) and one file read (expected: approved):
 | Pi | 1.3.0 | pass | not checked |
 | Mastra | 1.77.0, `generate` and `stream` | pass | not checked |
 | LangChain | 1.4.6, `invoke` and `ainvoke` | pass | not checked |
+| OpenAI Agents SDK | 0.24.0, `run_sync`, `run_streamed` and `run` | pass | blocked, in the tests |
 
 The TypeScript plugins also pass `tsc --strict` against the real Pi, OpenCode
 (1.19.0 and 2.0.25) and Mastra types. That check is not part of `make test`.
@@ -187,9 +192,9 @@ The TypeScript plugins also pass `tsc --strict` against the real Pi, OpenCode
 Not checked at all: a real Mezmo Governance endpoint, a decision a person
 approves while the hook waits, Windows, the Copilot cloud agent and VS Code,
 and how each runtime behaves when the hook times out. To repeat a live check,
-start the mock and follow the smoke test in the adapter's README. For Mastra
-and LangChain, [examples/check.sh](examples/) runs a real agent and fails if
-the gate lets the wrong tool run.
+start the mock and follow the smoke test in the adapter's README. For Mastra,
+LangChain and the OpenAI Agents SDK, [examples/check.sh](examples/) runs a
+real agent and fails if the gate lets the wrong tool run.
 
 ## Security
 

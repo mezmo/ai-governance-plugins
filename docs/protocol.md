@@ -118,8 +118,9 @@ returns HTTP 409.
    `Mezmo Governance: approval still pending`.
    Every plugin treats an answer that arrives after the deadline as a deny,
    and bounds the whole answer, not each read: the TypeScript clients abort
-   the fetch, LangChain wraps the request in `asyncio.wait_for`, and a
-   watchdog thread in the Python hooks prints the deny and exits 2.
+   the fetch, LangChain and the OpenAI Agents SDK guardrail wrap the request
+   in `asyncio.wait_for`, and a watchdog thread in the Python hooks prints
+   the deny and exits 2.
 8. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
    env, or transport error: deny. The tool does not run.
 
@@ -139,6 +140,7 @@ and polls instead of opening a second decision.
 | Pi | `pi`, session id, `toolCallId` | `pi_extension` | `pi` |
 | OpenCode | `opencode`, `sessionID`, `callID`; on 2.x `<callID>#<random UUID>`, because Code Mode reuses one call id for many inner calls | `opencode_plugin` | `opencode` |
 | LangChain | `langchain`, `thread_id`, turn id, or one random id per middleware instance; tool call id, or a random id when it is missing | `langchain_middleware` | `langchain` |
+| OpenAI Agents SDK | `openai_agents`, `RunConfig.group_id`, the run's trace id, or one random id per `MezmoGovernance` instance; `call_id`, or a random id when it is missing | `openai_agents_guardrail` | `openai_agents`, the MCP server's `name`, or the SDK tool namespace |
 | Mastra | `mastra`, `threadId` or workflow `runId`, `toolCallId` or a random id when it is missing | `mastra_hooks` | `mastra` |
 
 MCP tool names of the form `mcp__<server>__<tool>` split into namespace
@@ -194,6 +196,7 @@ approval; on OpenCode 2.x this includes a tool rename). OpenCode also reads a
 failure from `metadata.exit`.
 
 LangChain writes no JSONL file; it can emit an OpenTelemetry span instead.
+The OpenAI Agents SDK guardrail writes none either.
 
 ## Optional item field
 
