@@ -191,5 +191,70 @@ class MiddlewareConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("decision_id=", urls[1])
 
 
+async def must_not_run(_request: Any) -> Any:
+    raise AssertionError("handler must not run")
+
+
+@unittest.skipUnless(ToolMessage is not None, "langchain is not installed")
+class MiddlewareFailClosedTests(unittest.IsolatedAsyncioTestCase):
+    async def assert_blocked(self, middleware: Any, request: Any) -> None:
+        result = await middleware.awrap_tool_call(request, must_not_run)
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(result.status, "error")
+        self.assertIn("could not authorize", result.content)
+
+    @patch.dict(os.environ, ENV)
+    async def test_transport_exception_returns_error_tool_message(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            raise ConnectionError("connection refused")
+
+        await self.assert_blocked(MezmoGovernanceMiddleware(http=http), tool_request())
+
+    @patch.dict(os.environ, ENV)
+    async def test_http_500_returns_error_tool_message(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            return 500, {}
+
+        await self.assert_blocked(MezmoGovernanceMiddleware(http=http), tool_request())
+
+    async def test_missing_configuration_returns_error_tool_message(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        with patch.dict(os.environ, {}, clear=True):
+            await self.assert_blocked(MezmoGovernanceMiddleware(), tool_request())
+
+    @patch.dict(os.environ, ENV)
+    async def test_non_object_arguments_return_error_tool_message(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            return 200, {"approved": True}
+
+        request = ToolCallRequest(
+            tool_call={"name": "echo", "args": ["hi"], "id": "call-1"},
+            tool=None,
+            state={},
+            runtime=SimpleNamespace(config={"configurable": {"thread_id": "t1"}}),
+        )
+        await self.assert_blocked(MezmoGovernanceMiddleware(http=http), request)
+
+    @patch.dict(os.environ, ENV)
+    async def test_failing_intent_provider_returns_error_tool_message(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            return 200, {"approved": True}
+
+        def intent(_request: Any) -> str:
+            raise KeyError("intent")
+
+        middleware = MezmoGovernanceMiddleware(http=http, intent_provider=intent)
+        await self.assert_blocked(middleware, tool_request())
+
+
 if __name__ == "__main__":
     unittest.main()

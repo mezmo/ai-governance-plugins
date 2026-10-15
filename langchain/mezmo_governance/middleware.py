@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
+import threading
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar, Token
@@ -18,6 +18,7 @@ from langgraph.types import Command
 from mezmo_governance.client import (
     AGENT,
     GovernanceError,
+    HttpJson,
     approval_payload,
     authorize,
     httpx_json,
@@ -47,15 +48,18 @@ class DecisionIdStore:
     """Process-local stable IDs for retried middleware calls."""
 
     def __init__(self) -> None:
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
         self._decision_ids: dict[str, str] = {}
 
-    async def get_or_create(self, request_id: str) -> str:
-        async with self._lock:
+    def get(self, request_id: str) -> str:
+        with self._lock:
             return self._decision_ids.setdefault(
                 request_id,
                 str(uuid.uuid5(uuid.NAMESPACE_URL, request_id)),
             )
+
+    async def get_or_create(self, request_id: str) -> str:
+        return self.get(request_id)
 
 
 def set_current_turn_id(turn_id: str) -> Token[str | None]:
@@ -128,6 +132,48 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
     ) -> None:
         return None
 
+    def _payload(self, request: ToolCallRequest) -> dict[str, Any]:
+        call = request.tool_call
+        arguments = call["args"]
+        if not isinstance(arguments, Mapping):
+            raise GovernanceError("tool arguments must be a JSON object")
+        session_id = session_id_from_request(request)
+        tool_call_id = str(call["id"])
+        request_id = f"{AGENT}:{session_id}:{tool_call_id}"
+        intent = self.intent_provider(request) if self.intent_provider else None
+        return approval_payload(
+            session_id=session_id,
+            tool_call_id=tool_call_id,
+            tool_name=str(call["name"]),
+            arguments=arguments,
+            matched_pattern=self.matched_pattern,
+            intent=intent,
+            decision_id=self.decision_ids.get(request_id),
+        )
+
+    def _transport(self) -> HttpJson:
+        if self.http is not None:
+            return self.http
+        access_key = self.access_key
+
+        async def http(
+            method: str,
+            url: str,
+            payload_body: Mapping[str, Any] | None,
+            timeout: float,
+        ) -> tuple[int, dict[str, Any]]:
+            return await httpx_json(method, url, payload_body, timeout, access_key=access_key)
+
+        return http
+
+    @staticmethod
+    def _blocked(request: ToolCallRequest, message: str) -> ToolMessage:
+        return ToolMessage(
+            content=message,
+            tool_call_id=str(request.tool_call.get("id") or ""),
+            status="error",
+        )
+
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
@@ -136,72 +182,30 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
             Awaitable[ToolMessage | Command],
         ],
     ) -> ToolMessage | Command:
-        call = request.tool_call
-        tool_name = str(call["name"])
-        arguments = call["args"]
-        tool_call_id = str(call["id"])
-
-        if not isinstance(arguments, Mapping):
-            raise GovernanceBlocked("Tool arguments are not a JSON object")
-
+        # Any failure before a decision blocks the call. The agent sees an error
+        # ToolMessage and keeps running, as with a deny.
         try:
-            session_id = session_id_from_request(request)
-        except GovernanceBlocked:
-            raise
-
-        request_id = f"{AGENT}:{session_id}:{tool_call_id}"
-        decision_id = await self.decision_ids.get_or_create(request_id)
-        intent = self.intent_provider(request) if self.intent_provider else None
-        payload = approval_payload(
-            session_id=session_id,
-            tool_call_id=tool_call_id,
-            tool_name=tool_name,
-            arguments=arguments,
-            matched_pattern=self.matched_pattern,
-            intent=intent,
-            decision_id=decision_id,
-        )
-
-        http = self.http
-        if http is None:
-
-            async def http(
-                method: str,
-                url: str,
-                payload_body: Mapping[str, Any] | None,
-                timeout: float,
-            ) -> tuple[int, dict[str, Any]]:
-                return await httpx_json(
-                    method,
-                    url,
-                    payload_body,
-                    timeout,
-                    access_key=self.access_key,
-                )
-
-        try:
-            decision = await authorize(payload, http=http, url=self.endpoint)
-        except (GovernanceError, TimeoutError, ValueError) as exc:
-            raise GovernanceBlocked(
-                "Mezmo Governance could not authorize this call"
-            ) from exc
-
-        if not decision.approved:
-            return ToolMessage(
-                content=(
-                    "Mezmo Governance denied this tool call: "
-                    f"{decision.reason or 'no reason provided'}"
-                ),
-                tool_call_id=tool_call_id,
-                status="error",
+            decision = await authorize(
+                self._payload(request),
+                http=self._transport(),
+                url=self.endpoint,
+            )
+        except Exception as exc:
+            return self._blocked(
+                request,
+                "Mezmo Governance could not authorize this tool call, "
+                f"so LangChain blocked it: {exc}",
             )
 
-        return await self._execute_with_trace(
-            request,
-            handler,
-            tool_name,
-            arguments,
-        )
+        if not decision.approved:
+            return self._blocked(
+                request,
+                "Mezmo Governance denied this tool call: "
+                f"{decision.reason or 'no reason provided'}",
+            )
+
+        call = request.tool_call
+        return await self._execute_with_trace(request, handler, str(call["name"]), call["args"])
 
     @staticmethod
     async def _execute_with_trace(
