@@ -31,6 +31,7 @@ call before you connect it to anything. You need Python 3.9+ and Claude Code
 2. In a second terminal, start Claude Code with the plugin loaded:
 
    ```bash
+   cd ai-governance-plugins
    export MEZMO_GOVERNANCE_URL=http://127.0.0.1:8787/governance/workflow/authorize
    export MEZMO_GOVERNANCE_ACCESS_KEY=local-test
    claude --plugin-dir ./claude-code

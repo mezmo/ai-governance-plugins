@@ -85,6 +85,18 @@ class MockGovernanceTests(unittest.TestCase):
         self.assertEqual(self.decision(result), "deny")
         self.assertIn("pending", result.stdout)
 
+    def test_arguments_are_not_printed(self) -> None:
+        import contextlib
+        import io
+
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            payload = event("Bash", "c6")
+            payload["tool_input"] = {"command": "export API_KEY=CANARY_SECRET"}
+            self.run_hook(payload)
+        self.assertIn("denied", captured.getvalue())
+        self.assertNotIn("CANARY_SECRET", captured.getvalue())
+
     def test_missing_key_is_rejected(self) -> None:
         self.env.pop("MEZMO_GOVERNANCE_ACCESS_KEY")
         self.env.pop("CLAUDE_PLUGIN_OPTION_ACCESS_KEY", None)
