@@ -9,8 +9,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from collections.abc import Mapping
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -435,6 +437,187 @@ class PythonFloorTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+PRE_EVENT = "PreToolUse"
+POST_EVENT = "PostToolUse"
+ALLOW_OUTPUT = None
+ORIGIN_KIND = "claude_code_hook"
+
+
+def deny_schema(reason: str) -> dict[str, Any]:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }
+
+
+class StubGovernance(ThreadingHTTPServer):
+    """Local Mezmo Governance stand-in that replays scripted answers."""
+
+    def __init__(self, answers: list[tuple[int, dict[str, Any]]]) -> None:
+        super().__init__(("127.0.0.1", 0), StubHandler)
+        self.answers = list(answers)
+        self.requests: list[dict[str, Any]] = []
+
+    def __enter__(self) -> StubGovernance:
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.shutdown()
+        self.server_close()
+
+    @property
+    def url(self) -> str:
+        return f"http://127.0.0.1:{self.server_address[1]}/governance/workflow/authorize"
+
+
+class StubHandler(BaseHTTPRequestHandler):
+    server: StubGovernance
+
+    def answer(self) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b""
+        self.server.requests.append(
+            {
+                "method": self.command,
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "body": json.loads(raw) if raw else None,
+            }
+        )
+        status, body = self.server.answers.pop(0)
+        encoded = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    do_GET = answer
+    do_POST = answer
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+
+class EndToEndTests(unittest.TestCase):
+    """Run the script as the runtime does: JSON on stdin, decision on stdout."""
+
+    def run_hook(
+        self,
+        event: dict[str, Any],
+        url: str | None,
+    ) -> subprocess.CompletedProcess[str]:
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("MEZMO_GOVERNANCE_")
+            and key.lower() not in {"http_proxy", "https_proxy", "all_proxy"}
+        }
+        env.update(
+            {
+                "NO_PROXY": "*",
+                "MEZMO_GOVERNANCE_ACCESS_KEY": "sts_test",
+                "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "20",
+                "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": "1",
+                "MEZMO_GOVERNANCE_AUDIT_LOG": str(Path(self.tmp.name) / "audit.jsonl"),
+            }
+        )
+        if url is not None:
+            env["MEZMO_GOVERNANCE_URL"] = url
+        return subprocess.run(
+            [sys.executable, str(HOOK_PATH)],
+            input=json.dumps(event),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_approved_call_runs(self) -> None:
+        with StubGovernance([(200, {"approved": True})]) as stub:
+            result = self.run_hook(hook_event(PRE_EVENT), stub.url)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stdout_json(result), ALLOW_OUTPUT)
+        self.assertEqual(stub.requests[0]["method"], "POST")
+        self.assertEqual(stub.requests[0]["authorization"], "Token sts_test")
+        self.assertEqual(stub.requests[0]["body"]["origin"]["kind"], ORIGIN_KIND)
+
+    def test_denied_call_prints_the_runtime_deny_schema(self) -> None:
+        with StubGovernance([(200, {"approved": False, "reason": "No."})]) as stub:
+            result = self.run_hook(hook_event(PRE_EVENT), stub.url)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            stdout_json(result),
+            deny_schema("Mezmo Governance denied this exact tool call: No."),
+        )
+
+    def test_conflict_polls_the_existing_decision(self) -> None:
+        answers = [(409, {"code": "ECONFLICT"}), (200, {"status": "denied", "reason": "No."})]
+        with StubGovernance(answers) as stub:
+            result = self.run_hook(hook_event(PRE_EVENT), stub.url)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            stdout_json(result),
+            deny_schema("Mezmo Governance denied this exact tool call: No."),
+        )
+        decision_id = stub.requests[0]["body"]["decision_id"]
+        self.assertEqual(stub.requests[1]["method"], "GET")
+        self.assertIn(f"decision_id={decision_id}", stub.requests[1]["path"])
+
+    def test_missing_url_denies(self) -> None:
+        result = self.run_hook(hook_event(PRE_EVENT), None)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = stdout_json(result)
+        self.assertEqual(set(output), set(deny_schema("x")))
+        self.assertIn("MEZMO_GOVERNANCE_URL", json.dumps(output))
+
+    def test_unreachable_governance_denies(self) -> None:
+        with StubGovernance([]) as stub:
+            url = stub.url
+        result = self.run_hook(hook_event(PRE_EVENT), url)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("unavailable", json.dumps(stdout_json(result)))
+
+    def test_unsupported_event_exits_2(self) -> None:
+        event = hook_event(PRE_EVENT)
+        event["hook_event_name"] = "SomethingElse"
+        result = self.run_hook(event, None)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("unsupported hook event", result.stderr)
+
+    def test_post_event_logs_without_calling_governance(self) -> None:
+        with StubGovernance([]) as stub:
+            result = self.run_hook(hook_event(POST_EVENT), stub.url)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(stub.requests, [])
+        log = Path(self.tmp.name) / "audit.jsonl"
+        self.assertEqual(json.loads(log.read_text(encoding="utf-8"))["agent"], hook.AGENT)
+
+
+def stdout_json(result: subprocess.CompletedProcess[str]) -> Any:
+    if not result.stdout.strip():
+        return None
+    return json.loads(result.stdout)
 
 
 if __name__ == "__main__":
