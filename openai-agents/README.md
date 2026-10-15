@@ -53,6 +53,10 @@ result = Runner.run_sync(agent, "Delete the note todo", run_config=RunConfig(gro
 - every MCP server in `mcp_servers`, so each tool the server lists is gated;
 - the same, in turn, for each handoff target and each agent behind `as_tool`.
 
+To reach the agent behind `as_tool` or `handoff()`, it reads private SDK
+fields. If they are missing, as in a newer SDK, `govern` raises
+`GovernanceError` rather than leave that agent's tools ungated.
+
 Call it once the agent's tools are final: a tool or server added later is not
 gated. It adds its guardrail to a tool once, so a second `govern` call (or a
 second `MezmoGovernance`) leaves the first in place.

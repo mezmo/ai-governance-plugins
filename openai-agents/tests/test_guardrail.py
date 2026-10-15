@@ -359,6 +359,33 @@ class GovernTests(unittest.TestCase):
                 names = [guardrail.get_name() for guardrail in tool.tool_input_guardrails]
                 self.assertEqual(names, [GUARDRAIL_NAME])
 
+    def test_an_agent_tool_whose_agent_it_cannot_find_is_refused(self) -> None:
+        # govern reads the SDK's private _agent_instance; if a release drops it,
+        # the inner agent's tools must not run ungated.
+        from mezmo_governance_openai_agents import GovernanceError, MezmoGovernance
+
+        inner = Agent(name="inner", tools=[function_tool(delete_note_impl)])
+        wrapped = inner.as_tool("ask_inner", "Ask inner.")
+        del wrapped._agent_instance
+        with self.assertRaisesRegex(GovernanceError, "cannot find the agent behind tool 'ask_inner'"):
+            MezmoGovernance().govern(Agent(name="main", tools=[wrapped]))
+
+    def test_a_function_tool_without_the_agent_tool_marker_is_refused(self) -> None:
+        # Without _is_agent_tool, govern cannot tell a plain tool from one that
+        # runs another agent, so it refuses every function tool.
+        from agents import FunctionTool
+        from mezmo_governance_openai_agents import GovernanceError, MezmoGovernance
+
+        tool = function_tool(read_note_impl, name_override="read_note")
+        del tool._is_agent_tool
+        marker = FunctionTool.__dict__["_is_agent_tool"]
+        delattr(FunctionTool, "_is_agent_tool")
+        try:
+            with self.assertRaisesRegex(GovernanceError, "cannot tell whether tool 'read_note' runs an agent"):
+                MezmoGovernance().govern(Agent(name="main", tools=[tool]))
+        finally:
+            setattr(FunctionTool, "_is_agent_tool", marker)
+
     def test_a_handoff_whose_agent_it_cannot_find_is_refused(self) -> None:
         from agents import Handoff
         from mezmo_governance_openai_agents import GovernanceError, MezmoGovernance

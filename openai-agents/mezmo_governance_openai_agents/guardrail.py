@@ -134,8 +134,8 @@ class MezmoGovernance:
                 )
             if isinstance(tool, FunctionTool):
                 attach(tool, self.guardrail)
-                nested = getattr(tool, "_agent_instance", None)
-                if isinstance(nested, Agent):
+                nested = agent_behind_tool(tool)
+                if nested is not None:
                     self._govern(nested, seen)
         for server in agent.mcp_servers:
             attach(server, lambda: self.guardrail(namespace=server.name))
@@ -188,6 +188,29 @@ def attach(owner: Any, make: Callable[[], ToolInputGuardrail[Any]]) -> None:
     if any(guardrail.get_name() == GUARDRAIL_NAME for guardrail in guardrails):
         return
     owner.tool_input_guardrails = [make(), *guardrails]
+
+
+def agent_behind_tool(tool: FunctionTool) -> Agent[Any] | None:
+    """The agent an ``as_tool`` tool runs, or None for a plain function tool.
+
+    Reads the SDK's private markers and raises when they are gone, so a later
+    SDK release cannot leave the inner agent's tools ungated without an error.
+    """
+    marker = getattr(tool, "_is_agent_tool", None)
+    if not isinstance(marker, bool):
+        raise GovernanceError(
+            f"cannot tell whether tool {tool.name!r} runs an agent; "
+            "this openai-agents version is not supported"
+        )
+    if not marker:
+        return None
+    nested = getattr(tool, "_agent_instance", None)
+    if not isinstance(nested, Agent):
+        raise GovernanceError(
+            f"cannot find the agent behind tool {tool.name!r}; "
+            "this openai-agents version is not supported"
+        )
+    return nested
 
 
 def handoff_agent(handoff: Any) -> Agent[Any] | None:
