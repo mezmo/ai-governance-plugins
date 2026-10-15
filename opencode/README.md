@@ -75,10 +75,10 @@ still be empty; run it again.
 
 ## What it sends
 
-`request_id` is `opencode:<sessionID>:<callID>`. OpenCode 2.x Code Mode runs
-every inner tool call of one `execute` call under that call's id, so the
-second and later calls under one id send `<callID>#2`, `<callID>#3` and so on:
-each gets its own decision. Built-in tools use namespace
+`request_id` is `opencode:<sessionID>:<callID>` on 1.x. OpenCode 2.x Code
+Mode runs every inner tool call of one `execute` call under that call's id,
+so on 2.x each call sends `<callID>#<random UUID>`: no two calls share a
+decision. Built-in tools use namespace
 `opencode`. Names of the form `mcp__<server>__<tool>` split into that server
 and tool. OpenCode MCP naming is not uniform across versions; unknown names stay
 in namespace `opencode`.

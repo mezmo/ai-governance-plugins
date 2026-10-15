@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   AGENT,
   appendAudit,
@@ -148,8 +150,8 @@ function after(input: AfterInput, output: AfterOutput | undefined, approved: App
 
 // OpenCode 2.x: tool.hook("execute.before") may throw to fail that call
 // alone. Code Mode runs every inner tool call of one `execute` call with the
-// outer call id, so the second and later calls under one id get `<id>#<n>`:
-// each gets its own decision, never a reused one.
+// outer call id, so each call sends `<id>#<random>`: no two calls can share a
+// decision, however many other calls run in between.
 type V2Before = { tool: string; sessionID: string; id: string; input: unknown };
 type V2After = V2Before &
   (
@@ -163,27 +165,30 @@ type V2Context = {
   };
 };
 type Pending = { tool: string; args: string; callId: string };
-// Keeps the last MAX_PENDING call ids. An id evicted while its `execute` call
-// still runs would count from 1 again and reuse `<id>`'s decision id.
-type Calls = Map<string, { count: number; pending: Pending[] }>;
+// Approved calls waiting for their after hook, per `<sessionID>:<id>`. Losing
+// an evicted entry only loses the audit line's pairing, never a decision.
+type Calls = Map<string, Pending[]>;
 
 async function beforeV2(event: V2Before, calls: Calls) {
-  const key = `${event.sessionID}:${event.id}`;
-  const entry = calls.get(key) ?? { count: 0, pending: [] };
-  entry.count += 1;
-  remember(calls, key, entry);
-  const callId = entry.count === 1 ? event.id : `${event.id}#${entry.count}`;
+  const callId = `${event.id}#${randomUUID()}`;
   const args = await gate(event.sessionID, callId, event.tool, event.input, "execute.before");
-  entry.pending.push({ tool: event.tool, args, callId });
+  const key = `${event.sessionID}:${event.id}`;
+  const pending = calls.get(key) ?? [];
+  pending.push({ tool: event.tool, args, callId });
+  remember(calls, key, pending);
 }
 
 function afterV2(event: V2After, calls: Calls) {
   return audit(() => {
-    const pending = calls.get(`${event.sessionID}:${event.id}`)?.pending ?? [];
+    const key = `${event.sessionID}:${event.id}`;
+    const pending = calls.get(key) ?? [];
     const args = JSON.stringify(event.input ?? {});
     const exact = pending.findIndex((item) => item.tool === event.tool && item.args === args);
     const index = exact >= 0 ? exact : pending.findIndex((item) => item.tool === event.tool);
     const [match] = pending.splice(index >= 0 ? index : 0, 1);
+    if (!pending.length) {
+      calls.delete(key);
+    }
     return {
       sessionId: event.sessionID,
       toolCallId: match?.callId ?? event.id,

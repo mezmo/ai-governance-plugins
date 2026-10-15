@@ -32,6 +32,7 @@ function recording(sent: any[], body: unknown = { approved: true }): FakeFetch {
 }
 
 // Fields from packages/core/src/tool.ts beforeExecute and executeTool.
+const CALL_1 = /^opencode:ses_1:call_1#[0-9a-f-]{36}$/;
 const BASE = { tool: "bash", sessionID: "ses_1", agent: "build", messageID: "msg_1", id: "call_1" };
 
 test("setup registers execute.before and execute.after", async () => {
@@ -45,7 +46,7 @@ test("execute.before resolves when Mezmo approves", async () => {
   await withV2(recording(sent), async (hooks) => {
     await hooks["execute.before"]({ ...BASE, input: { command: "ls" } });
   });
-  assert.equal(sent[0].request_id, "opencode:ses_1:call_1");
+  assert.match(sent[0].request_id, CALL_1);
   assert.equal(sent[0].origin.reason, "execute.before");
   assert.equal(sent[0].items[0].tool_name, "bash");
   assert.deepEqual(sent[0].items[0].arguments, { command: "ls" });
@@ -87,19 +88,32 @@ test("Code Mode inner calls under one id each get their own decision", async () 
     await hooks["execute.after"]({ ...BASE, tool: "github_issues", input: { repo: "a" }, ...done });
     await hooks["execute.after"]({ ...BASE, tool: "execute", input: { code: "..." }, ...done });
 
-    assert.deepEqual(
-      sent.map((payload) => payload.request_id),
-      ["opencode:ses_1:call_1", "opencode:ses_1:call_1#2", "opencode:ses_1:call_1#3"],
-    );
+    const ids = sent.map((payload) => payload.request_id);
+    assert.ok(ids.every((id) => CALL_1.test(id)), ids.join());
     assert.equal(new Set(sent.map((payload) => payload.decision_id)).size, 3);
     const lines = await auditLines(audit);
     assert.deepEqual(
       lines.map((line) => line.request_id),
-      ["opencode:ses_1:call_1#3", "opencode:ses_1:call_1#2", "opencode:ses_1:call_1"],
+      [ids[2], ids[1], ids[0]],
     );
-    assert.equal(lines[0].decision_id, callIdentity("ses_1", "call_1#3").decisionId);
+    const callId = ids[2].slice("opencode:ses_1:".length);
+    assert.equal(lines[0].decision_id, callIdentity("ses_1", callId).decisionId);
     assert.ok(lines.every((line) => line.status === "observed" && !line.arguments_changed));
   });
+});
+
+test("a Code Mode call never reuses a decision, even after 1,000 other calls", async () => {
+  const sent: any[] = [];
+  await withV2(recording(sent), async (hooks) => {
+    await hooks["execute.before"]({ ...BASE, tool: "execute", input: { code: "..." } });
+    for (let index = 0; index < 1000; index += 1) {
+      await hooks["execute.before"]({ ...BASE, id: `other_${index}`, input: { command: "ls" } });
+    }
+    await hooks["execute.before"]({ ...BASE, tool: "github_issues", input: { repo: "a" } });
+  });
+  const mine = sent.filter((payload) => payload.request_id.startsWith("opencode:ses_1:call_1"));
+  assert.equal(mine.length, 2);
+  assert.notEqual(mine[0].decision_id, mine[1].decision_id);
 });
 
 test("execute.after records a Tool.Error as failed with its message", async () => {
@@ -137,7 +151,7 @@ test("execute.after flags a tool or input a later hook changed after approval", 
     await hooks["execute.after"]({ ...event, status: "completed", result: { content: "" } });
     const [line] = await auditLines(audit);
     assert.equal(line.arguments_changed, true);
-    assert.equal(line.request_id, "opencode:ses_1:call_1");
+    assert.match(line.request_id, CALL_1);
   });
 });
 
