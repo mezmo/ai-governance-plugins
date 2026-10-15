@@ -156,7 +156,8 @@ async def httpx_json(
         "Authorization": authorization_header(access_key),
         "Accept": "application/json",
     }
-    try:
+
+    async def request() -> tuple[int, Any]:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.request(
                 method,
@@ -165,18 +166,23 @@ async def httpx_json(
                 headers=headers,
             )
             try:
-                body = response.json()
+                return response.status_code, response.json()
             except ValueError as error:
                 raise GovernanceError(
                     "Mezmo Governance returned an invalid JSON response"
                 ) from error
-            if not isinstance(body, dict):
-                raise GovernanceError("Mezmo Governance returned a non-object response")
-            return response.status_code, body
-    except httpx.TimeoutException as error:
-        raise TimeoutError(str(error)) from error
+
+    try:
+        # httpx timeouts apply to each read; wait_for bounds the whole response,
+        # so a server that drips its body cannot outlast the deadline.
+        status, body = await asyncio.wait_for(request(), timeout)
+    except (httpx.TimeoutException, asyncio.TimeoutError) as error:
+        raise TimeoutError(str(error) or "Mezmo Governance request timed out") from error
     except httpx.HTTPError as error:
         raise GovernanceError(f"Mezmo Governance is unavailable: {error}") from error
+    if not isinstance(body, dict):
+        raise GovernanceError("Mezmo Governance returned a non-object response")
+    return status, body
 
 
 def remaining_seconds(deadline: float, clock: Clock) -> float:
@@ -184,6 +190,12 @@ def remaining_seconds(deadline: float, clock: Clock) -> float:
     if leftover <= 0:
         raise GovernanceError("Mezmo Governance: approval still pending")
     return leftover
+
+
+def in_time(deadline: float, clock: Clock) -> None:
+    """Refuse a response that lands after the deadline, even an approval."""
+    if clock() >= deadline:
+        raise GovernanceError("Mezmo Governance answered after the deadline")
 
 
 def decision_from_post(body: Mapping[str, Any]) -> Decision:
@@ -223,6 +235,7 @@ async def poll_decision(
             status, body = await http("GET", url, None, leftover)
         except TimeoutError as error:
             raise GovernanceError(f"Mezmo Governance is unavailable: {error}") from error
+        in_time(deadline, clock)
         if status == 404:
             await sleep(min(interval, leftover))
             continue
@@ -262,6 +275,7 @@ async def authorize(
             sleep_fn,
             base_url,
         )
+    in_time(deadline, clock)
     if status == 409:
         return await poll_decision(
             str(payload["decision_id"]),

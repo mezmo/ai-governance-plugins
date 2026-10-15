@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -192,6 +195,97 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(GovernanceError):
             await authorize(payload, http=http)
+
+
+class LateHttp(FakeHttp):
+    """Each response takes ``delay`` seconds on the fake clock."""
+
+    def __init__(self, responses: list[tuple[int, dict[str, Any]]], clock: FakeClock, delay: float) -> None:
+        super().__init__(responses)
+        self.clock = clock
+        self.delay = delay
+
+    async def __call__(self, method: str, url: str, payload: Any, timeout: float) -> tuple[int, dict[str, Any]]:
+        self.clock.now += self.delay
+        return await super().__call__(method, url, payload, timeout)
+
+
+PAYLOAD = approval_payload(
+    session_id="sess-1",
+    tool_call_id="call-1",
+    tool_name="echo",
+    arguments={"text": "hi"},
+)
+
+
+class LateResponseTests(unittest.IsolatedAsyncioTestCase):
+    # A transport that ignores its timeout stands in for a response that lands
+    # after the deadline: the decision must still be refused.
+    @patch.dict(os.environ, ENV)
+    async def test_approval_after_the_deadline_is_refused(self) -> None:
+        clock = FakeClock()
+        http = LateHttp([(200, {"approved": True})], clock, 31.0)
+        with self.assertRaises(GovernanceError):
+            await authorize(PAYLOAD, http=http, clock=clock, sleep=clock.sleep)
+
+    @patch.dict(os.environ, ENV)
+    async def test_poll_approval_after_the_deadline_is_refused(self) -> None:
+        clock = FakeClock()
+        http = LateHttp([(409, {}), (200, {"status": "approved"})], clock, 16.0)
+        with self.assertRaises(GovernanceError):
+            await authorize(PAYLOAD, http=http, clock=clock, sleep=clock.sleep)
+
+
+BODY = b'{"approved": true}' + b" " * 40
+
+
+class DripHandler(BaseHTTPRequestHandler):
+    """Sends a valid approval one byte every 50 ms."""
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(BODY)))
+        self.end_headers()
+        try:
+            for index in range(len(BODY)):
+                self.wfile.write(BODY[index : index + 1])
+                self.wfile.flush()
+                time.sleep(0.05)
+        except OSError:
+            pass
+
+    def log_message(self, *args: object) -> None:
+        pass
+
+
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    httpx = None  # type: ignore[assignment]
+
+
+@unittest.skipUnless(httpx is not None, "httpx is not installed")
+class DripTests(unittest.IsolatedAsyncioTestCase):
+    # httpx timeouts apply to each read; the deadline must bound the whole body.
+    async def test_server_dripping_its_body_is_refused_at_the_deadline(self) -> None:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), DripHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        env = {
+            **ENV,
+            "MEZMO_GOVERNANCE_URL": f"http://127.0.0.1:{server.server_port}/governance/workflow/authorize",
+            "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "0.5",
+        }
+        try:
+            with patch.dict(os.environ, env):
+                started = time.monotonic()
+                with self.assertRaises(GovernanceError):
+                    await authorize(PAYLOAD)
+                self.assertLess(time.monotonic() - started, 2.0)
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 # Same bounds as the Python hooks: finish before a 600 s runtime kill, and
