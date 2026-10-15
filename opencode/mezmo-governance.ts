@@ -10,6 +10,7 @@ import {
   resultFailed,
   resultPreview,
   splitToolName,
+  withSettings,
 } from "./mezmo-governance/client.ts";
 
 type BeforeInput = {
@@ -159,6 +160,7 @@ type V2After = V2Before &
     | { status: "error"; error: unknown }
   );
 type V2Context = {
+  options?: Record<string, unknown>;
   tool: {
     hook(name: "execute.before", callback: (event: V2Before) => Promise<void>): Promise<unknown>;
     hook(name: "execute.after", callback: (event: V2After) => Promise<void>): Promise<unknown>;
@@ -201,11 +203,17 @@ function afterV2(event: V2After, calls: Calls) {
   });
 }
 
-export const MezmoGovernance = async () => {
+// Plugin options use the variable names as keys and win over the
+// environment: `"MEZMO_GOVERNANCE_ACCESS_KEY": "{file:~/.config/mezmo/key}"`.
+type Options = Record<string, unknown> | undefined;
+
+export const MezmoGovernance = async (_input?: unknown, options?: Options) => {
   const approved: Approved = new Map();
   return {
-    "tool.execute.before": (input: BeforeInput, output: BeforeOutput) => before(input, output, approved),
-    "tool.execute.after": (input: AfterInput, output: AfterOutput) => after(input, output, approved),
+    "tool.execute.before": (input: BeforeInput, output: BeforeOutput) =>
+      withSettings(options, () => before(input, output, approved)),
+    "tool.execute.after": (input: AfterInput, output: AfterOutput) =>
+      withSettings(options, () => after(input, output, approved)),
   };
 };
 
@@ -216,7 +224,8 @@ export default {
   server: MezmoGovernance,
   async setup(context: V2Context) {
     const calls: Calls = new Map();
-    await context.tool.hook("execute.before", (event) => beforeV2(event, calls));
-    await context.tool.hook("execute.after", (event) => afterV2(event, calls));
+    const options = context.options;
+    await context.tool.hook("execute.before", (event) => withSettings(options, () => beforeV2(event, calls)));
+    await context.tool.hook("execute.after", (event) => withSettings(options, () => afterV2(event, calls)));
   },
 };

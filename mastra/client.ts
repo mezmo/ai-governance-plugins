@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -47,8 +48,28 @@ export function uuid5(name: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
+// Settings handed to the plugin directly (OpenCode plugin options), keyed by
+// the variable names. They win over the environment, which a background
+// service does not share with the shell that started the agent. Scoped to one
+// call, so two plugin instances with different options never mix.
+const scoped = new AsyncLocalStorage<Record<string, string>>();
+
+export function withSettings<T>(values: Record<string, unknown> | undefined, fn: () => T): T {
+  const settings: Record<string, string> = {};
+  for (const [name, value] of Object.entries(values ?? {})) {
+    if (name.startsWith("MEZMO_GOVERNANCE_") && (typeof value === "string" || typeof value === "number")) {
+      settings[name] = String(value);
+    }
+  }
+  return scoped.run(settings, fn);
+}
+
+function setting(name: string): string | undefined {
+  return scoped.getStore()?.[name] ?? process.env[name];
+}
+
 function requiredEnv(name: string): string {
-  const value = process.env[name]?.trim();
+  const value = setting(name)?.trim();
   if (!value) {
     throw new GovernanceError(`${name} is required`);
   }
@@ -68,7 +89,7 @@ export function authorizationHeader(): string {
 }
 
 function positiveSeconds(name: string, fallback: number): number {
-  const configured = process.env[name];
+  const configured = setting(name);
   if (configured === undefined) {
     return fallback;
   }
@@ -95,7 +116,7 @@ export function pollIntervalSeconds(): number {
 
 export function auditLogPath(): string {
   return (
-    process.env.MEZMO_GOVERNANCE_AUDIT_LOG?.trim() ||
+    setting("MEZMO_GOVERNANCE_AUDIT_LOG")?.trim() ||
     join(homedir(), ".mezmo", "governance-audit.jsonl")
   );
 }
