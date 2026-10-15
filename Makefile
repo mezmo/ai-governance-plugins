@@ -1,9 +1,9 @@
-.PHONY: test test-codex test-claude-code test-cursor test-gemini-cli test-copilot test-pi test-opencode test-langchain test-openai-agents test-mastra test-tools
+.PHONY: test test-codex test-claude-code test-cursor test-gemini-cli test-copilot test-goose test-pi test-opencode test-langchain test-openai-agents test-mastra test-tools
 
 PYTHON ?= python3
 NODE ?= node
 
-test: test-codex test-claude-code test-cursor test-gemini-cli test-copilot test-pi test-opencode test-langchain test-openai-agents test-mastra test-tools
+test: test-codex test-claude-code test-cursor test-gemini-cli test-copilot test-goose test-pi test-opencode test-langchain test-openai-agents test-mastra test-tools
 
 test-codex:
 	cd codex && $(PYTHON) -m unittest test_hook.py -v
@@ -19,6 +19,9 @@ test-gemini-cli:
 
 test-copilot:
 	cd copilot && $(PYTHON) -m unittest test_hook.py -v
+
+test-goose:
+	cd goose && $(PYTHON) -m unittest test_hook.py -v
 
 test-pi:
 	cd pi && $(NODE) --test test/*.test.ts

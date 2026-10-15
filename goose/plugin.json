@@ -1,0 +1,5 @@
+{
+  "name": "mezmo-governance",
+  "version": "0.1.0",
+  "description": "Gate Goose tool calls through Mezmo Governance before they run"
+}

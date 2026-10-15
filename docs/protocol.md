@@ -137,6 +137,7 @@ and polls instead of opening a second decision.
 | Cursor | `cursor`, `conversation_id`, `tool_use_id`, or a fresh `run-<uuid>` when the event has none | `cursor_hook` | `cursor`, `mcp_server_name`, or `<server>` from `mcp__<server>__<tool>` |
 | Gemini CLI | `gemini_cli`, `session_id`, a fresh `run-<uuid>` (no call id) | `gemini_cli_hook` | `gemini_cli`, or `mcp_context.server_name` |
 | GitHub Copilot | `copilot`, `sessionId`, a fresh `run-<uuid>` (no call id) | `copilot_hook` | `copilot` |
+| Goose | `goose`, `session_id`, `tool_call_id` | `goose_hook` | `goose`, or `<extension>` from `<extension>__<tool>` |
 | Pi | `pi`, session id, `toolCallId` | `pi_extension` | `pi` |
 | OpenCode | `opencode`, `sessionID`, `callID`; on 2.x `<callID>#<random UUID>`, because Code Mode reuses one call id for many inner calls | `opencode_plugin` | `opencode` |
 | LangChain | `langchain`, `thread_id`, turn id, or one random id per middleware instance; tool call id, or a random id when it is missing | `langchain_middleware` | `langchain` |
@@ -187,7 +188,8 @@ event.
 `status` is `failed` when the result looks like an error (`isError`, `is_error`,
 or non-zero `exit_code` or `exitCode`), otherwise `observed`. A result sent as
 JSON text, such as Cursor's `tool_output`, is parsed first. Gemini CLI also marks a
-`tool_response` with an `error` field as failed. Failures writing the file go to
+`tool_response` with an `error` field as failed, and Goose a `PostToolUseFailure`
+event. Failures writing the file go to
 stderr and do not block the agent.
 
 Pi and OpenCode add `"arguments_changed": true` when the arguments the tool ran

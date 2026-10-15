@@ -629,7 +629,7 @@ class PythonFloorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
-# The three Python adapters are standalone copies. These shared parts must stay
+# The six Python adapters are standalone copies. These shared parts must stay
 # identical so a fix in one copy reaches the others.
 SHARED_DEFINITIONS = (
     "DEFAULT_TIMEOUT_SECONDS",
@@ -659,7 +659,7 @@ SHARED_DEFINITIONS = (
     "result_has_known_error",
     "append_audit",
 )
-SIBLING_ADAPTERS = ("codex", "cursor", "gemini-cli", "copilot")
+SIBLING_ADAPTERS = ("codex", "cursor", "gemini-cli", "copilot", "goose")
 # Claude Code also reads plugin options here, so only the siblings match.
 SIBLING_ONLY_DEFINITIONS = ("authorize_url", "authorization_header")
 
