@@ -124,5 +124,13 @@ class MockGovernanceTests(unittest.TestCase):
         self.assertEqual(self.decision(result), "deny")
 
 
+class CheckScriptTests(unittest.TestCase):
+    def test_exit_status_survives_cleanup(self) -> None:
+        # Stopping the mock must not replace the script's own exit status.
+        script = Path(__file__).parent.parent / "examples" / "check.sh"
+        result = subprocess.run(["sh", str(script), "no-such-example"], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 2, result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

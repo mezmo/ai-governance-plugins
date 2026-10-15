@@ -13,7 +13,8 @@ port=$(free_port)
 
 python3 -u "$here/../tools/mock_governance.py" --port "$port" --deny 'delete_*' > "$work/mock.log" 2>&1 &
 mock=$!
-trap 'kill $mock 2>/dev/null; wait $mock 2>/dev/null; rm -rf "$work"' EXIT
+# wait reports the killed mock as 143; under set -e that would replace the exit status.
+trap 'kill $mock 2>/dev/null; wait $mock 2>/dev/null || true; rm -rf "$work"' EXIT
 until grep -q "Mock Mezmo Governance" "$work/mock.log" 2>/dev/null; do
   kill -0 $mock 2>/dev/null || { cat "$work/mock.log"; exit 1; }
   sleep 0.2
@@ -25,7 +26,7 @@ export MEZMO_GOVERNANCE_AUDIT_LOG="$work/audit.jsonl"
 # Nothing listens on this port, so every call there must be blocked.
 export DOWN_URL="http://127.0.0.1:$(free_port)/governance/workflow/authorize"
 
-cd "$here/$example"
+cd "$here/$example" 2>/dev/null || { echo "unknown example: $example" >&2; exit 2; }
 case $example in
   mastra)
     [ -d node_modules ] || npm install --no-audit --no-fund --loglevel=error
