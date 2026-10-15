@@ -8,15 +8,17 @@ Official docs: https://opencode.ai/docs/plugins/
 
 ## Install
 
-Copy the TypeScript files into a plugin directory OpenCode loads automatically:
+Copy the plugin file and its `mezmo-governance/` folder into a plugin
+directory OpenCode loads automatically:
 
 ```bash
 mkdir -p ~/.config/opencode/plugins
-cp mezmo-governance.ts client.ts ~/.config/opencode/plugins/
+cp -R mezmo-governance.ts mezmo-governance ~/.config/opencode/plugins/
 ```
 
-Or put them in `.opencode/plugins/` of a project. Files there are loaded at
-startup. npm packages go in `opencode.json` under `"plugin"`.
+Or copy both into `.opencode/plugins/` of a project. OpenCode loads every
+`plugins/*.ts` file at startup as a plugin, so keep `client.ts` inside the
+`mezmo-governance/` folder: as a top-level file it fails to load.
 
 Then:
 

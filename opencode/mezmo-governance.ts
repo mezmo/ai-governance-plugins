@@ -8,7 +8,7 @@ import {
   resultFailed,
   resultPreview,
   splitToolName,
-} from "./client.ts";
+} from "./mezmo-governance/client.ts";
 
 type BeforeInput = {
   tool: string;

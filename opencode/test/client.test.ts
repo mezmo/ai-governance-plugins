@@ -13,7 +13,7 @@ import {
   callIdentity,
   GovernanceError,
   splitToolName,
-} from "../client.ts";
+} from "../mezmo-governance/client.ts";
 
 const URL = "https://api.example.test/governance/workflow/authorize";
 
