@@ -15,10 +15,10 @@ test-cursor:
 	cd cursor && $(PYTHON) -m unittest test_hook.py -v
 
 test-pi:
-	cd pi && $(NODE) --test test/client.test.ts
+	cd pi && $(NODE) --test test/*.test.ts
 
 test-opencode:
-	cd opencode && $(NODE) --test test/client.test.ts
+	cd opencode && $(NODE) --test test/*.test.ts
 
 test-langchain:
 	cd langchain && PYTHONPATH=. $(if $(wildcard langchain/.venv/bin/python),$(CURDIR)/langchain/.venv/bin/python,$(PYTHON)) -m unittest discover -s tests -p 'test_*.py' -v

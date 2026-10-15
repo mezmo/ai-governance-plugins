@@ -81,7 +81,7 @@ the system credential store. Details: [claude-code/](claude-code/).
 | [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | no: a timed-out hook lets the call run | copy the script, add `hooks.example.json` |
 | [Pi](pi/) | `tool_call` extension | yes | copy the folder to `~/.pi/agent/extensions/` |
 | [OpenCode](opencode/) 1.x | `tool.execute.before` plugin | yes | copy the folder to `.opencode/plugins/` |
-| [LangChain](langchain/) v1 | `AgentMiddleware` | yes | `pip install ./langchain` |
+| [LangChain](langchain/) v1 | `AgentMiddleware` (`wrap_tool_call` and `awrap_tool_call`) | yes | `pip install ./langchain` |
 | [Mastra](mastra/) | agent `hooks.beforeToolCall` | yes | copy the files, pass `hooks` |
 
 "Fails closed" means the tool does not run when the plugin itself crashes,
