@@ -569,8 +569,8 @@ SHARED_DEFINITIONS = (
     "result_has_known_error",
     "append_audit",
 )
-SIBLING_ADAPTERS = ("codex", "cursor")
-# Claude Code also reads plugin options here, so only codex and cursor match.
+SIBLING_ADAPTERS = ("codex", "cursor", "gemini-cli")
+# Claude Code also reads plugin options here, so only the siblings match.
 SIBLING_ONLY_DEFINITIONS = ("authorize_url", "authorization_header")
 
 
@@ -604,12 +604,12 @@ class SharedCoreDriftTests(unittest.TestCase):
             for name in SHARED_DEFINITIONS:
                 with self.subTest(adapter=path.parent.name, definition=name):
                     self.assertEqual(sibling.get(name), reference[name])
-        if len(present) == len(SIBLING_ADAPTERS):
-            codex, cursor = (top_level_definitions(path) for path in present)
-            for name in SIBLING_ONLY_DEFINITIONS:
-                with self.subTest(definition=name):
-                    self.assertIsNotNone(codex.get(name))
-                    self.assertEqual(codex.get(name), cursor.get(name))
+        first, *others = (top_level_definitions(path) for path in present)
+        for name in SIBLING_ONLY_DEFINITIONS:
+            self.assertIsNotNone(first.get(name))
+            for path, sibling in zip(present[1:], others):
+                with self.subTest(adapter=path.parent.name, definition=name):
+                    self.assertEqual(sibling.get(name), first[name])
 
 
 PRE_EVENT = "PreToolUse"

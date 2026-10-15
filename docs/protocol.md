@@ -130,6 +130,7 @@ and polls instead of opening a second decision.
 | Codex | `codex`, `session_id`, `tool_use_id` (plus `turn_id` when present) | `codex_hook` | `codex`, or MCP server from `mcp__<server>__<tool>` |
 | Claude Code | `claude_code`, `session_id`, `tool_use_id` (plus `turn_id` when present) | `claude_code_hook` | `claude_code`, or MCP server from `mcp__<server>__<tool>` |
 | Cursor | `cursor`, `conversation_id`, `tool_use_id`, or a fresh `run-<uuid>` when the event has none | `cursor_hook` | `cursor`, `mcp_server_name`, or `<server>` from `mcp__<server>__<tool>` |
+| Gemini CLI | `gemini_cli`, `session_id`, a fresh `run-<uuid>` (no call id) | `gemini_cli_hook` | `gemini_cli`, or `mcp_context.server_name` |
 | Pi | `pi`, session id, `toolCallId` | `pi_extension` | `pi` |
 | OpenCode | `opencode`, `sessionID`, `callID` | `opencode_plugin` | `opencode` |
 | LangChain | `langchain`, `thread_id` or turn id, tool call id | `langchain_middleware` | `langchain` |
@@ -169,11 +170,12 @@ After an approved tool runs, observe hooks append one JSON object per line:
 ```
 
 `decision_id` and `request_id` are `null` when the event carries no tool call
-id, as with Cursor's shell and MCP events.
+id, as with Cursor's shell and MCP events and every Gemini CLI event.
 
 `status` is `failed` when the result looks like an error (`isError`, `is_error`,
 or non-zero `exit_code` or `exitCode`), otherwise `observed`. A result sent as
-JSON text, such as Cursor's `tool_output`, is parsed first. Failures writing the file go to
+JSON text, such as Cursor's `tool_output`, is parsed first. Gemini CLI also marks a
+`tool_response` with an `error` field as failed. Failures writing the file go to
 stderr and do not block the agent.
 
 ## How policy shows up
