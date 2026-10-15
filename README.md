@@ -77,8 +77,8 @@ the system credential store. Details: [claude-code/](claude-code/).
 | --- | --- | --- | --- |
 | [Codex CLI](codex/) | `PreToolUse` command hook | no: a crashed hook lets the call run | copy the script, merge `hooks.example.json`, trust it in `/hooks` |
 | [Cursor](cursor/) | `preToolUse` hook | yes, with `failClosed: true` | copy the script, merge `hooks.example.json` |
-| [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | see its README | copy the script, merge `settings.example.json` |
-| [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | no: a timed-out hook lets the call run | copy the script, add `hooks.example.json` |
+| [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | no: a crashed or timed-out hook lets the call run | copy the script, merge `settings.example.json` |
+| [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | on a crash yes; on a timeout no | copy the script, add `hooks.example.json` |
 | [Pi](pi/) | `tool_call` extension | yes | copy the folder to `~/.pi/agent/extensions/` |
 | [OpenCode](opencode/) 1.x | `tool.execute.before` plugin | yes | copy the folder to `.opencode/plugins/` |
 | [LangChain](langchain/) v1 | `AgentMiddleware` (`wrap_tool_call` and `awrap_tool_call`) | yes | `pip install ./langchain` |
@@ -92,7 +92,7 @@ cannot be reached, or returns something it does not understand.
 
 Before each tool call, the plugin sends Mezmo the tool name and its full
 arguments: the shell command, the file path, and for write tools the file
-content. It also sends the session id and the tool call id. Tool results are
+content. It also sends the session id and the tool call id (Gemini CLI and Copilot send a fresh random id per call, because they expose none). Tool results are
 not sent: post-tool hooks only append a line to a local file.
 
 Write policy on the assumption that Mezmo sees every argument, and keep secrets
