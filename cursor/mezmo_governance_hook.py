@@ -387,11 +387,17 @@ def result_preview(value: Any) -> str:
 
 
 def result_has_known_error(value: Any) -> bool:
+    if isinstance(value, str):
+        # Some runtimes send the tool result as JSON text.
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return False
     if not isinstance(value, dict):
         return False
     if value.get("isError") is True or value.get("is_error") is True:
         return True
-    exit_code = value.get("exit_code")
+    exit_code = value.get("exit_code", value.get("exitCode"))
     return isinstance(exit_code, int) and exit_code != 0
 
 
@@ -406,7 +412,14 @@ def append_audit(record: Mapping[str, Any]) -> None:
 def handle_post_tool_use(event: Mapping[str, Any]) -> None:
     tool_call = normalize_tool_call(event)
     identity = call_identity(event)
-    response = event.get("tool_output", event.get("tool_response"))
+    response = next(
+        (
+            event[key]
+            for key in ("tool_output", "result_json", "output", "tool_response")
+            if event.get(key) is not None
+        ),
+        None,
+    )
     failed = (
         event.get("hook_event_name") == "postToolUseFailure"
         or result_has_known_error(response)

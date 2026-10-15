@@ -166,7 +166,8 @@ After an approved tool runs, observe hooks append one JSON object per line:
 ```
 
 `status` is `failed` when the result looks like an error (`isError`, `is_error`,
-or non-zero `exit_code`), otherwise `observed`. Failures writing the file go to
+or non-zero `exit_code` or `exitCode`), otherwise `observed`. A result sent as
+JSON text, such as Cursor's `tool_output`, is parsed first. Failures writing the file go to
 stderr and do not block the agent.
 
 ## How policy shows up

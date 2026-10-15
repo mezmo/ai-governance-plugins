@@ -331,11 +331,17 @@ def result_preview(value: Any) -> str:
 
 
 def result_has_known_error(value: Any) -> bool:
+    if isinstance(value, str):
+        # Some runtimes send the tool result as JSON text.
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return False
     if not isinstance(value, dict):
         return False
     if value.get("isError") is True or value.get("is_error") is True:
         return True
-    exit_code = value.get("exit_code")
+    exit_code = value.get("exit_code", value.get("exitCode"))
     return isinstance(exit_code, int) and exit_code != 0
 
 

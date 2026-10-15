@@ -173,6 +173,51 @@ class CursorGovernanceHookTests(unittest.TestCase):
             self.assertEqual(record["tool_name"], "pods_delete")
 
 
+class CursorToolOutputTests(unittest.TestCase):
+    def audit(self, event: dict[str, Any]) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "audit.jsonl"
+            env = {**ENV, "MEZMO_GOVERNANCE_AUDIT_LOG": str(log_path)}
+            with patch.dict(os.environ, env):
+                self.assertIsNone(hook.handle_event(event))
+            lines = log_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 1)
+        return json.loads(lines[0])
+
+    def test_json_string_tool_output_with_an_error_is_failed(self) -> None:
+        for output in (
+            {"exitCode": 1, "stdout": "", "stderr": "boom"},
+            {"exit_code": 2},
+            {"isError": True, "content": []},
+        ):
+            with self.subTest(output=output):
+                event = hook_event("postToolUse")
+                event["tool_output"] = json.dumps(output)
+                self.assertEqual(self.audit(event)["status"], "failed")
+
+    def test_json_string_tool_output_without_an_error_is_observed(self) -> None:
+        for text in (json.dumps({"exitCode": 0}), "not json", "", "[1, 2]"):
+            with self.subTest(text=text):
+                event = hook_event("postToolUse")
+                event["tool_output"] = text
+                self.assertEqual(self.audit(event)["status"], "observed")
+
+    def test_after_mcp_result_json_with_an_error_is_failed(self) -> None:
+        event = hook_event("beforeMCPExecution")
+        event["hook_event_name"] = "afterMCPExecution"
+        event["result_json"] = json.dumps({"isError": True, "content": []})
+        record = self.audit(event)
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("isError", record["result_preview"])
+
+    def test_after_shell_output_is_previewed(self) -> None:
+        event = hook_event("afterShellExecution")
+        event["output"] = "pod \"demo-pod\" deleted"
+        record = self.audit(event)
+        self.assertEqual(record["status"], "observed")
+        self.assertIn("demo-pod", record["result_preview"])
+
+
 class DeadlineBoundsTests(unittest.TestCase):
     def seconds(self, name: str, configured: str) -> float:
         with patch.dict(os.environ, {**ENV, name: configured}):
