@@ -27,7 +27,8 @@ cp -R mezmo-governance.ts mezmo-governance ~/.config/opencode/plugins/
 
 Or copy both into `.opencode/plugins/` of a project. OpenCode loads every
 `plugins/*.ts` file at startup as a plugin, so keep `client.ts` inside the
-`mezmo-governance/` folder: as a top-level file it fails to load.
+`mezmo-governance/` folder: as a top-level file it fails to load. If an
+earlier install left `plugins/client.ts` behind, delete it.
 
 Then:
 
