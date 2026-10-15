@@ -569,7 +569,7 @@ SHARED_DEFINITIONS = (
     "result_has_known_error",
     "append_audit",
 )
-SIBLING_ADAPTERS = ("codex", "cursor", "gemini-cli")
+SIBLING_ADAPTERS = ("codex", "cursor", "gemini-cli", "copilot")
 # Claude Code also reads plugin options here, so only the siblings match.
 SIBLING_ONLY_DEFINITIONS = ("authorize_url", "authorization_header")
 

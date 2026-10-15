@@ -1,0 +1,128 @@
+# GitHub Copilot + Mezmo Governance
+
+A GitHub Copilot command hook that asks Mezmo Governance before each tool
+runs. If Mezmo denies the call, or the hook cannot get an answer, the hook
+prints a deny and Copilot skips the tool. After a tool finishes, the same
+script appends a local JSONL record.
+
+It works with Copilot CLI, Copilot cloud agent, and VS Code sessions that use
+the Copilot harness. The VS Code Local harness uses its own payloads, which
+this hook does not read.
+
+Official docs: https://docs.github.com/en/copilot/reference/hooks-configuration
+
+The script needs Python 3.9 or later and uses only the standard library.
+
+Tested version: none against a live session. Copilot CLI 1.0.95 was installed,
+but a test run needs a signed-in account and a model call. The tests run the
+script against the input and output the docs give.
+
+## Fail behavior
+
+Copilot fails closed for a `preToolUse` command hook that crashes, cannot
+start, or exits non-zero: the tool does not run. It fails open on a timeout:
+the call goes on to the normal permission flow. The example sets
+`timeoutSec` to `600`, so the script's own 590 second deadline ends first and
+returns a clear deny. Do not lower it below the deadline.
+
+`disableAllHooks: true` in a hooks file or in repository `settings.json` turns
+the hook off.
+
+## Install
+
+1. Copy the hook:
+
+```bash
+mkdir -p ~/.copilot/hooks
+cp mezmo_governance_hook.py ~/.copilot/hooks/
+```
+
+2. Copy [hooks.example.json](hooks.example.json) to
+   `~/.copilot/hooks/mezmo-governance.json`. The example path starts at
+   `$HOME`, so it works from any directory. To keep the script elsewhere, set
+   `MEZMO_GOVERNANCE_HOOK` to its absolute path.
+
+3. Export the settings in the shell that starts `copilot`:
+
+```bash
+export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
+export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+```
+
+Each command passes the event name as its last argument, for example
+`preToolUse`. The hook needs it: the camelCase payload does not name the event.
+Use the camelCase event names. The PascalCase names (`PreToolUse`) send
+another payload, which this hook rejects, so Copilot denies every call.
+
+## Cloud agent
+
+The cloud agent reads only `.github/hooks/*.json` in the repository. Commit
+the script as `.github/hooks/mezmo_governance_hook.py`, and point the `bash`
+command at it from the repository root:
+
+```json
+"bash": "python3 .github/hooks/mezmo_governance_hook.py preToolUse"
+```
+
+The agent's firewall blocks hosts other than GitHub and Copilot by default.
+An admin must allow the Mezmo host, or every call is denied. The docs do not
+say how a hook gets a secret such as the access key; this is not verified.
+The audit log is lost when the job ends.
+
+## MCP tools
+
+The Copilot docs do not give the tool name format for MCP tools. The hook
+sends every tool with namespace `copilot` and the name Copilot gives it, so a
+policy keyed on the MCP server name does not match. This is not verified.
+
+## Windows
+
+The example has a `powershell` command that uses `py -3` and `$HOME`. It was
+not run on Windows. In PowerShell, set the variables with
+`$env:MEZMO_GOVERNANCE_URL = "..."` and `$env:MEZMO_GOVERNANCE_ACCESS_KEY = "..."`
+before you start Copilot.
+
+## Smoke test
+
+Run these from the directory that holds the script. First check that the hook
+denies when Mezmo cannot be reached. Nothing listens on port 9:
+
+```bash
+echo '{"sessionId":"smoke","timestamp":0,"cwd":".","toolName":"bash","toolArgs":"{\"command\":\"echo hi\"}"}' \
+  | MEZMO_GOVERNANCE_URL="http://127.0.0.1:9/governance/workflow/authorize" \
+    MEZMO_GOVERNANCE_ACCESS_KEY="test" python3 mezmo_governance_hook.py preToolUse
+```
+
+It exits 0 and prints a deny. The text after `unavailable:` varies by platform:
+
+```json
+{"permissionDecision":"deny","permissionDecisionReason":"Mezmo Governance could not authorize this exact tool call, so Copilot blocked it: Mezmo Governance is unavailable: <urlopen error [Errno 61] Connection refused>"}
+```
+
+Then run the same line without the two inline variables, with your settings
+exported. No output means Mezmo allowed the call, and Copilot goes on with its
+normal permission flow. A deny prints the shape above with your policy's
+reason.
+
+## Output
+
+Allow prints nothing. Deny:
+
+```json
+{ "permissionDecision": "deny", "permissionDecisionReason": "Mezmo Governance denied this exact tool call: …" }
+```
+
+Copilot sends no tool call id. Each run uses a fresh `run-<uuid>`, so
+`request_id` is `copilot:<sessionId>:run-<uuid>`. A repeated identical call
+gets its own decision. Post-tool records have `decision_id: null`.
+
+`toolArgs` may arrive as JSON text or as an object; the hook accepts both.
+`postToolUse` and `postToolUseFailure` only append the local JSONL audit log.
+A failure event, or a `toolResult.resultType` other than `success`, is
+recorded as `failed`.
+
+## Tests
+
+```bash
+python3 -m unittest test_hook.py -v
+```
