@@ -95,6 +95,12 @@ must not run.
 `mcp__<server>__<tool>` use that MCP server as `tool_namespace`; everything else
 uses `langchain`.
 
+### Tool names for policy
+
+`tool_name` is the LangChain tool's `name` (for a `@tool` function, the
+function name), in namespace `langchain`. Write policy for
+`langchain:<tool name>`.
+
 `intent_provider` is opt-in and off by default. When you pass one, its return
 value goes in `items[0].tool_call_intent`. That field is not in
 [docs/protocol.md](../docs/protocol.md); use it only with a Mezmo endpoint

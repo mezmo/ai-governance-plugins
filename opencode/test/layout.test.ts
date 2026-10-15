@@ -6,11 +6,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
+// `mezmo-governance.ts` is the file the README copies into `plugins/`;
+// `index.ts` is the entry when opencode.json names this folder.
 async function topLevelPlugins() {
   const files = (await readdir(ROOT)).filter((name) => name.endsWith(".ts"));
-  assert.deepEqual(files, ["mezmo-governance.ts"]);
+  assert.deepEqual(files.sort(), ["index.ts", "mezmo-governance.ts"]);
   return Promise.all(
-    files.map(async (file) => ({
+    ["mezmo-governance.ts"].map(async (file) => ({
       file,
       mod: (await import(pathToFileURL(join(ROOT, file)).href)) as Record<string, unknown>,
     })),
@@ -50,4 +52,12 @@ test("the helper folder has no OpenCode 2.x entrypoint", async () => {
   for (const name of await readdir(join(ROOT, "mezmo-governance"))) {
     assert.ok(!["server", "index"].includes(parse(name).name), name);
   }
+});
+
+// OpenCode 2.x resolves a configured folder to its `server` or `index` file.
+test("index.ts exports the same plugin for a configured 2.x folder", async () => {
+  const index = await import(pathToFileURL(join(ROOT, "index.ts")).href);
+  const main = await import(pathToFileURL(join(ROOT, "mezmo-governance.ts")).href);
+  assert.equal(index.default, main.default);
+  assert.deepEqual(Object.keys(index), ["default"]);
 });

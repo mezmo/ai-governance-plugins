@@ -7,19 +7,70 @@ JSONL record.
 One file serves both majors. Its default export carries `server` for
 OpenCode 1.x and `setup` for OpenCode 2.x; each version ignores the other key.
 
-| OpenCode | Copy | Entry it calls | Block hook |
+| OpenCode | Install | Settings from | Block hook |
 | --- | --- | --- | --- |
-| 1.x, tested 1.19.0 | `mezmo-governance.ts` and `mezmo-governance/` | `server` | `tool.execute.before` |
-| 2.x, tested 2.0.25 | the same two | `setup` | `tool.hook("execute.before")` |
+| 1.x, tested 1.19.0 | `mezmo-governance.ts` and `mezmo-governance/` in `plugins/` | environment | `tool.execute.before` |
+| 2.x, tested 2.0.25 | this folder, named in `opencode.json` `plugins` | plugin options | `tool.hook("execute.before")` |
 
 Tested with a type check against `@opencode-ai/plugin` 1.19.0 and
 `@opencode/plugin` 2.0.25, tests with fake runtimes that follow each
 version's loader and hook call sites, and a load check on the real 1.19.0
-and 2.0.25 binaries.
+and 2.0.25 binaries. On 2.x, a live `opencode run` through the background
+service, against `tools/mock_governance.py`, denied `shell` and allowed
+`read`.
 
 Official docs: https://opencode.ai/docs/plugins/
 
-## Install
+## Background service (2.x)
+
+OpenCode 2.x runs tools in a background service (`opencode serve
+--service`). The service starts once, on its own, so it does not see the
+variables you export in the shell that runs `opencode`. With only
+environment variables, every call is blocked with
+`MEZMO_GOVERNANCE_URL is required`: safe, but nothing runs. Use plugin
+options on 2.x. `opencode run --standalone` starts a private server from
+your shell, so the environment works there.
+
+Plugin options use the variable names as keys and win over the environment.
+OpenCode 2.x passes options only to a plugin folder named in `opencode.json`,
+not to files it finds in `plugins/`.
+
+## Install on 2.x
+
+1. Copy this folder out of any `plugins/` folder, and put the key in a file
+   only you can read:
+
+   ```bash
+   cp -R opencode ~/.config/opencode/mezmo-governance
+   mkdir -p ~/.config/mezmo
+   printf '%s\n' '<agent access key>' > ~/.config/mezmo/governance-key
+   chmod 600 ~/.config/mezmo/governance-key
+   ```
+
+2. Name the folder in `~/.config/opencode/opencode.json` (or a project's
+   `opencode.json`; a relative path starts at that file's folder):
+
+   ```json
+   {
+     "plugins": [
+       {
+         "package": "./mezmo-governance",
+         "options": {
+           "MEZMO_GOVERNANCE_URL": "https://api.mezmo.com/governance/workflow/authorize",
+           "MEZMO_GOVERNANCE_ACCESS_KEY": "{file:~/.config/mezmo/governance-key}"
+         }
+       }
+     ]
+   }
+   ```
+
+   OpenCode replaces `{file:...}` with the file's content, so the key stays
+   out of the config. A missing file becomes an empty key, which blocks every
+   call. `index.ts` is the folder's entry. Do not also copy the plugin into
+   `plugins/`: OpenCode would load it twice, and the copy without options
+   blocks every call.
+
+## Install on 1.x
 
 Copy the plugin file and its `mezmo-governance/` folder into a plugin
 directory OpenCode loads automatically:
@@ -32,9 +83,8 @@ cp -R mezmo-governance.ts mezmo-governance ~/.config/opencode/plugins/
 Or copy both into `.opencode/plugins/` of a project. OpenCode loads every
 `plugins/*.ts` file at startup as a plugin, so keep `client.ts` inside the
 `mezmo-governance/` folder: as a top-level file it fails to load. If an
-earlier install left `plugins/client.ts` behind, delete it. OpenCode 2.x also
-loads a folder that holds a `server` or `index` file, so add neither to
-`mezmo-governance/`.
+earlier install left `plugins/client.ts` behind, delete it. Do not copy
+`index.ts` there: it would load the plugin a second time.
 
 Then:
 
@@ -46,32 +96,35 @@ export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
 ## Verify it works
 
 1. From the plugin directory, check the URL, the key and your policy. This
-   prints the decision for one `bash` call, or why there is none (Node 22+):
+   prints the decision for one shell call, or why there is none (Node 22+):
 
    ```bash
    node --input-type=module -e 'import { approvalPayload, authorize } from "./mezmo-governance/client.ts";
-   authorize(approvalPayload({ sessionId: "verify", toolCallId: crypto.randomUUID(), toolName: "bash", arguments: { command: "ls" } }))
+   authorize(approvalPayload({ sessionId: "verify", toolCallId: crypto.randomUUID(), toolName: "shell", arguments: { command: "ls" } }))
      .then(console.log, (error) => console.log("no decision:", error.message));'
    ```
 
-2. Check that OpenCode blocks when Mezmo cannot answer. Point the plugin at a
-   closed port and ask for a tool call:
-
-   ```bash
-   MEZMO_GOVERNANCE_URL=http://127.0.0.1:9/authorize opencode run "Run ls in the shell"
-   ```
-
-   The tool error must say `Mezmo Governance could not authorize this exact
-   tool call, so OpenCode blocked it`. If `ls` output appears, the plugin did
-   not load.
+2. Check that OpenCode blocks when Mezmo cannot answer. Set the URL to a
+   closed port, such as `http://127.0.0.1:9/authorize` (on 2.x in the plugin
+   options, on 1.x in `MEZMO_GOVERNANCE_URL`), and ask for a tool call:
+   `opencode run "Run ls in the shell"`. The tool error must say
+   `Mezmo Governance could not authorize this exact tool call, so OpenCode
+   blocked it`. If `ls` output appears, the plugin did not load.
 
 3. With the real URL, run any tool, then read the last audit line:
    `tail -1 ~/.mezmo/governance-audit.jsonl`.
 
 On OpenCode 2.x, `opencode plugin list` shows `mezmo-governance` in the ID
-column once the plugin has loaded. An ID of `-` for this file means it failed
-to load, and tools run ungated. Right after the server starts, the list can
-still be empty; run it again.
+column once the plugin has loaded. An ID of `-` means it failed to load, and
+tools run ungated. Right after the server starts, the list can still be
+empty; run it again.
+
+## Tool names for policy
+
+OpenCode sends built-in tools in namespace `opencode`. The shell tool is
+`shell` on 2.x and `bash` on 1.x; files are read with `read`. Live on 2.x,
+the plugin sent `opencode:shell` and `opencode:read`. Write policy for both
+shell names if you run both majors.
 
 ## What it sends
 

@@ -83,6 +83,12 @@ last audit line: `tail -1 ~/.mezmo/governance-audit.jsonl`.
 Built-in tools use namespace `mastra`. Names of the form `mcp__<server>__<tool>`
 split into that server and tool.
 
+### Tool names for policy
+
+Mastra has no built-in shell or file tools: `tool_name` is the id you gave
+`createTool`, such as `weatherTool`, in namespace `mastra`. Write policy for
+`mastra:<tool id>`.
+
 `request_id` is `mastra:<session_id>:<toolCallId>`. `session_id` is the memory
 `threadId` when present, otherwise the workflow `runId`, then `agentId`. A
 call without a `toolCallId` (outside an agent loop) gets a random id, so it
