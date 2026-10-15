@@ -5,6 +5,8 @@ script can be installed as a project/user hook or as a Claude Code plugin.
 
 Official docs: https://code.claude.com/docs/en/hooks
 
+The script needs Python 3.9 or later and uses only the standard library.
+
 ## Install as settings
 
 1. Copy the hook:

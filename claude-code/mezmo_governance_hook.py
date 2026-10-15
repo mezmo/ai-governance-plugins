@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
@@ -24,7 +24,7 @@ DEFAULT_AUDIT_LOG = Path.home() / ".mezmo" / "governance-audit.jsonl"
 MAX_RESULT_PREVIEW_CHARACTERS = 2_000
 MCP_TOOL_PREFIX = "mcp__"
 
-HttpJson = Callable[[str, str, Mapping[str, Any] | None, float], tuple[int, dict[str, Any]]]
+HttpJson = Callable[[str, str, Optional[Mapping[str, Any]], float], tuple[int, dict[str, Any]]]
 Sleeper = Callable[[float], None]
 Clock = Callable[[], float]
 

@@ -7,6 +7,8 @@ script appends a local JSONL record.
 Requires Codex with hooks enabled. Official docs:
 https://developers.openai.com/codex/hooks
 
+The script needs Python 3.9 or later and uses only the standard library.
+
 ## Install
 
 1. Copy the hook next to Codex config:

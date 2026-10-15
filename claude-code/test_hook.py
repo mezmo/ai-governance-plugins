@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -263,6 +266,82 @@ class ClaudeCodeGovernanceHookTests(unittest.TestCase):
             {**ENV, "MEZMO_GOVERNANCE_ACCESS_KEY": "Token sts_test"},
         ):
             self.assertEqual(hook.authorization_header(), "Token sts_test")
+
+
+HOOK_PATH = Path(__file__).resolve().with_name("mezmo_governance_hook.py")
+PYTHON_FLOOR = (3, 9)
+
+
+def runtime_union_lines(source: str) -> list[int]:
+    """Lines that evaluate `X | Y` at runtime, which Python 3.9 rejects for types."""
+    tree = ast.parse(source)
+    annotations: set[int] = set()
+    for node in ast.walk(tree):
+        roots: list[ast.AST | None] = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            arguments = node.args
+            every = [
+                *arguments.posonlyargs,
+                *arguments.args,
+                *arguments.kwonlyargs,
+                arguments.vararg,
+                arguments.kwarg,
+            ]
+            roots.extend(argument.annotation for argument in every if argument)
+            roots.append(node.returns)
+        elif isinstance(node, ast.AnnAssign):
+            roots.append(node.annotation)
+        for root in roots:
+            if root is not None:
+                annotations.update(id(child) for child in ast.walk(root))
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.BinOp)
+        and isinstance(node.op, ast.BitOr)
+        and id(node) not in annotations
+    ]
+
+
+def floor_interpreter() -> str | None:
+    for candidate in ("python3.9", "/usr/bin/python3"):
+        path = shutil.which(candidate)
+        if path is None:
+            continue
+        probe = subprocess.run(
+            [path, "-c", "import sys; print(sys.version_info[:2] == (3, 9))"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if probe.stdout.strip() == "True":
+            return path
+    return None
+
+
+class PythonFloorTests(unittest.TestCase):
+    def test_hook_has_no_runtime_union_syntax(self) -> None:
+        source = HOOK_PATH.read_text(encoding="utf-8")
+        self.assertEqual(runtime_union_lines(source), [])
+
+    def test_hook_imports_on_the_oldest_supported_python(self) -> None:
+        interpreter = floor_interpreter()
+        if interpreter is None:
+            self.skipTest("no Python 3.9 interpreter on PATH")
+        result = subprocess.run(
+            [
+                interpreter,
+                "-I",
+                "-c",
+                "import sys; sys.path.insert(0, sys.argv[1]); "
+                "import mezmo_governance_hook",
+                str(HOOK_PATH.parent),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

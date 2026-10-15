@@ -11,6 +11,8 @@ a hook crashes unless that flag is on.
 
 Official docs: https://cursor.com/docs/hooks
 
+The script needs Python 3.9 or later and uses only the standard library.
+
 ## Install
 
 ```bash
