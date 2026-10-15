@@ -480,6 +480,44 @@ class MiddlewareIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(sent[0]["decision_id"], sent[1]["decision_id"])
         self.assertNotIn("None", sent[0]["request_id"])
 
+    @patch.dict(os.environ, ENV)
+    async def test_retried_call_reuses_its_decision_without_per_call_state(self) -> None:
+        from mezmo_governance.client import call_identity
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        sent: list[Any] = []
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            sent.append(payload)
+            return 200, {"approved": True}
+
+        async def handler(_request: Any) -> ToolMessage:
+            return ToolMessage(content="hi", tool_call_id="call-1")
+
+        middleware = MezmoGovernanceMiddleware(http=http)
+        await middleware.awrap_tool_call(tool_request("call-1"), handler)
+        held = state_size(middleware)
+        for index in range(50):
+            await middleware.awrap_tool_call(tool_request(f"call-{index}"), handler)
+        await middleware.awrap_tool_call(tool_request("call-1"), handler)
+
+        session_id = sent[0]["scope"]["session_id"]
+        self.assertEqual(sent[0]["decision_id"], sent[-1]["decision_id"])
+        self.assertEqual(sent[-1]["decision_id"], call_identity(session_id, "call-1")[0])
+        # The decision id is recomputed from the request id; nothing grows per call.
+        self.assertEqual(state_size(middleware), held)
+
+
+def state_size(obj: Any, depth: int = 2) -> int:
+    """Count container entries reachable from obj's attributes."""
+    total = 0
+    for value in vars(obj).values():
+        if isinstance(value, (dict, list, set, tuple)):
+            total += len(value)
+        elif depth and hasattr(value, "__dict__") and not callable(value):
+            total += state_size(value, depth - 1)
+    return total
+
 
 if __name__ == "__main__":
     unittest.main()

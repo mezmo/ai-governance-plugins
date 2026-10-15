@@ -17,7 +17,6 @@ __all__ = [
 try:
     from mezmo_governance.middleware import (
         CURRENT_TURN_ID,
-        DecisionIdStore,
         MezmoGovernanceMiddleware,
         reset_current_turn_id,
         set_current_turn_id,
@@ -27,7 +26,6 @@ except ImportError:
 else:
     __all__ += [
         "CURRENT_TURN_ID",
-        "DecisionIdStore",
         "MezmoGovernanceMiddleware",
         "reset_current_turn_id",
         "set_current_turn_id",

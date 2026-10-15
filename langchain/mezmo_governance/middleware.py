@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -19,7 +18,6 @@ from langchain.tools.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from mezmo_governance.client import (
-    AGENT,
     GovernanceError,
     HttpJson,
     approval_payload,
@@ -42,24 +40,6 @@ except ImportError:  # optional
 
 TRACE_OPERATION = "mcp.tool_call"
 T = TypeVar("T")
-
-
-class DecisionIdStore:
-    """Process-local stable IDs for retried middleware calls."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._decision_ids: dict[str, str] = {}
-
-    def get(self, request_id: str) -> str:
-        with self._lock:
-            return self._decision_ids.setdefault(
-                request_id,
-                str(uuid.uuid5(uuid.NAMESPACE_URL, request_id)),
-            )
-
-    async def get_or_create(self, request_id: str) -> str:
-        return self.get(request_id)
 
 
 def set_current_turn_id(turn_id: str) -> Token[str | None]:
@@ -103,7 +83,6 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
         endpoint: str | None = None,
         *,
         access_key: str | None = None,
-        decision_ids: DecisionIdStore | None = None,
         matched_pattern: str = "*",
         intent_provider: Callable[[ToolCallRequest], str | None] | None = None,
         http: Callable[
@@ -120,7 +99,6 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
         self.session_id = f"middleware-{uuid.uuid4()}"
         self.matched_pattern = matched_pattern
         self.access_key = access_key
-        self.decision_ids = decision_ids or DecisionIdStore()
         self.intent_provider = intent_provider
         self.http = http
 
@@ -143,7 +121,6 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
         session_id = session_id_from_request(request, self.session_id)
         # A call without an id gets a random one, so it never reuses a decision.
         tool_call_id = str(call.get("id") or f"generated-{uuid.uuid4()}")
-        request_id = f"{AGENT}:{session_id}:{tool_call_id}"
         intent = self.intent_provider(request) if self.intent_provider else None
         return approval_payload(
             session_id=session_id,
@@ -152,7 +129,6 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
             arguments=arguments,
             matched_pattern=self.matched_pattern,
             intent=intent,
-            decision_id=self.decision_ids.get(request_id),
         )
 
     def _transport(self) -> HttpJson:
