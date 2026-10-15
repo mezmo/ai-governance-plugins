@@ -136,6 +136,55 @@ make test
 `make test` runs the LangChain middleware tests only when LangChain is
 installed in `langchain/.venv` (see [langchain/](langchain/)).
 
+### What the tests confirm
+
+Each adapter's tests feed it the payload its runtime sends and run the real
+entry point: the hook script as a subprocess, or the plugin's exported hooks.
+A local HTTP server stands in for Mezmo. The tests confirm that:
+
+- an approved call runs unchanged, and a denied call is blocked with Mezmo's
+  reason in the runtime's own deny format;
+- the call is blocked when the URL or key is missing, Mezmo cannot be
+  reached, a decision stays pending, or an answer arrives (or drips in)
+  after the deadline; the Python hooks also block on malformed input from
+  the runtime;
+- a `409` falls into polling, and a call without a call id never reuses an
+  earlier decision;
+- the timeout is capped below the runtime's hook timeout, and `nan`, `inf`
+  and negative values are refused;
+- the post-tool event writes an audit line and never blocks;
+- each example config registers every event and blocks on hook failure,
+  including the `|| exit 2` guard for Codex and Gemini CLI;
+- the shared code is identical across the five Python hooks and across the
+  three `client.ts` copies, and the Python hooks import on Python 3.9.
+
+### What they do not confirm
+
+The tests cannot show that a runtime calls the hook, or how it treats the
+answer. That was checked by hand, against `tools/mock_governance.py`, with
+one shell call (expected: denied) and one file read (expected: approved):
+
+| Agent | Version | Deny and allow | Hook crash |
+| --- | --- | --- | --- |
+| Claude Code | 2.1.296 | pass | blocked |
+| Codex CLI | 0.162.1 | pass | blocked with the guard; runs without it |
+| Cursor CLI | 2026.10.14 | pass | blocked |
+| Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
+| Copilot CLI | 1.0.95 | pass, with user-level hooks | blocked |
+| OpenCode | 2.0.25 | pass with `opencode run --standalone` | not checked |
+| Pi | 1.3.0 | pass | not checked |
+| Mastra | 1.77.0 | pass | not checked |
+| LangChain | 1.4.6, sync `invoke` | pass | not checked |
+
+The TypeScript plugins also pass `tsc --strict` against the real Pi, OpenCode
+(1.19.0 and 2.0.25) and Mastra types. That check is not part of `make test`.
+
+Not checked at all: a real Mezmo Governance endpoint, a reply from Mezmo
+that is not valid JSON or lacks `approved`, a decision a person
+approves while the hook waits, Windows, the Copilot cloud agent and VS Code,
+and how each runtime behaves when the hook times out. To repeat a live check,
+start the mock and follow the smoke test in the adapter's README.
+
 ## Security
 
 Report a vulnerability as described in [SECURITY.md](SECURITY.md), not in a
