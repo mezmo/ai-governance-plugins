@@ -31,8 +31,27 @@ export const agent = new Agent({
 });
 ```
 
-You can also pass `hooks` to `.generate()` or `.stream()`. Those override matching
-agent-level hooks for that run.
+### Run-level hooks bypass the gate
+
+Mastra merges run-level `hooks` from `.generate()` or `.stream()` over the
+agent's hooks, key by key. A run-level `beforeToolCall` replaces the
+governance hook for that run, and tools then run without asking Mezmo. To add
+your own hook, compose it so the governance hook runs last and sees the final
+input:
+
+```typescript
+import { mezmoGovernanceHooks } from "./mezmo-governance.ts";
+
+await agent.generate(prompt, {
+  hooks: {
+    ...mezmoGovernanceHooks,
+    async beforeToolCall(ctx) {
+      const mine = await myBeforeToolCall(ctx); // may return { proceed: false, output }
+      return mine ?? mezmoGovernanceHooks.beforeToolCall(ctx);
+    },
+  },
+});
+```
 
 `createMezmoGovernanceHooks()` builds a fresh hook pair if you need to inject a
 custom fetch in tests.
