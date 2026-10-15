@@ -1,9 +1,12 @@
 #!/bin/sh
 # Run an example agent with a real model against the local mock.
-# Usage: examples/check.sh mastra|langchain|openai-agents   (needs OPENAI_API_KEY, or MODEL plus that provider's key)
+# Usage: examples/check.sh mastra|langchain|openai-agents|claude-agent-sdk
+# (mastra, langchain and openai-agents need OPENAI_API_KEY, or MODEL plus that
+# provider's key; claude-agent-sdk needs Claude Code credentials, such as
+# ANTHROPIC_API_KEY)
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
-example=${1:?usage: check.sh mastra|langchain|openai-agents}
+example=${1:?usage: check.sh mastra|langchain|openai-agents|claude-agent-sdk}
 work=$(mktemp -d)
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
 port=$(free_port)
@@ -27,7 +30,7 @@ case $example in
   mastra)
     [ -d node_modules ] || npm install --no-audit --no-fund --loglevel=error
     status=0; node check.ts || status=$? ;;
-  langchain|openai-agents)
+  langchain|openai-agents|claude-agent-sdk)
     [ -d .venv ] || { python3 -m venv .venv && .venv/bin/pip install -q -r requirements.txt; }
     status=0; .venv/bin/python check.py || status=$? ;;
   *) echo "unknown example: $example" >&2; exit 2 ;;
