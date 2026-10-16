@@ -20,8 +20,15 @@ hook exits 1, for example on a crash (verified live). The example
 2, which Gemini CLI treats as a block:
 
 ```bash
-|| { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }
+|| { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }
 ```
+
+The hook exits 2 itself when it blocks on purpose, for example when a call is
+still pending at its deadline. The guard keeps that exit and prints nothing
+more, so the agent shows only the hook's reason. Any other non-zero exit, such
+as a Python error or a missing `python3`, prints the message above. A missing
+hook script makes Python exit 2 too; Python then names the file it could not
+open.
 
 The docs say exit 2 blocks. The guard itself was verified live in Codex, not
 in Gemini CLI. With it, a crash, a wrong path or a missing `python3` blocks

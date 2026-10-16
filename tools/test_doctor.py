@@ -448,7 +448,7 @@ class ClaudeCodeTests(DoctorTestCase):
 
 CODEX_COMMAND = (
     'python3 "${MEZMO_GOVERNANCE_HOOK:-$HOME/.codex/hooks/mezmo_governance_hook.py}"'
-    " || { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
+    " || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
 )
 
 

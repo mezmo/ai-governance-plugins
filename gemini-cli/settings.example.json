@@ -7,7 +7,7 @@
           {
             "name": "mezmo-governance",
             "type": "command",
-            "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.gemini/hooks/mezmo_governance_hook.py}\" || { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }",
+            "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.gemini/hooks/mezmo_governance_hook.py}\" || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }",
             "timeout": 600000,
             "description": "Ask Mezmo Governance before the tool runs"
           }

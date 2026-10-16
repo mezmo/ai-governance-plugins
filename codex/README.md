@@ -17,8 +17,15 @@ with a guard that turns any non-zero exit into exit 2, which Codex treats as
 a block:
 
 ```bash
-|| { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }
+|| { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }
 ```
+
+The hook exits 2 itself when it blocks on purpose, for example when a call is
+still pending at its deadline. The guard keeps that exit and prints nothing
+more, so the agent shows only the hook's reason. Any other non-zero exit, such
+as a Python error or a missing `python3`, prints the message above. A missing
+hook script makes Python exit 2 too; Python then names the file it could not
+open.
 
 With the guard, a crash blocks the call (verified live: `hook: PreToolUse
 Blocked`). A wrong path or a missing `python3` also exits non-zero, so the

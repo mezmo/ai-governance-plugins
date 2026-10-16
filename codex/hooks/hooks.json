@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/mezmo_governance_hook.py\" || { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }",
+            "command": "python3 \"${PLUGIN_ROOT}/mezmo_governance_hook.py\" || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }",
             "timeout": 600,
             "statusMessage": "Checking Mezmo Governance"
           }

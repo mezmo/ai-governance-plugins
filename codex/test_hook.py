@@ -473,7 +473,7 @@ CODEX_HANDLER_KEYS = {
 }
 
 # Codex and Gemini CLI run the tool when a hook exits 1, for example on a crash.
-CRASH_GUARD = " || { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
+CRASH_GUARD = " || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
 
 
 class HookConfigTests(unittest.TestCase):
@@ -504,7 +504,7 @@ class HookConfigTests(unittest.TestCase):
             config["PostToolUse"][0]["hooks"][0]["command"],
         )
 
-    def run_command(self, command: str, hook_path: Path) -> subprocess.CompletedProcess[str]:
+    def run_command(self, command: str, hook_path: Path, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
         env = {
             key: value
             for key, value in os.environ.items()
@@ -513,7 +513,7 @@ class HookConfigTests(unittest.TestCase):
         env["MEZMO_GOVERNANCE_HOOK"] = str(hook_path)
         return subprocess.run(
             ["/bin/sh", "-c", command],
-            input=json.dumps(hook_event("PreToolUse")),
+            input=json.dumps(hook_event("PreToolUse")) if stdin is None else stdin,
             env=env,
             capture_output=True,
             text=True,
@@ -534,6 +534,31 @@ class HookConfigTests(unittest.TestCase):
             crashing.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
             result = self.run_command(pre, crashing)
 
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Mezmo Governance hook failed; blocking", result.stderr)
+
+    def test_a_deliberate_block_prints_no_crash_message(self) -> None:
+        # The deadline watchdog writes its reason and exits 2; so does the hook on input it cannot read.
+        pre, _ = self.pre_and_post_commands()
+        with tempfile.TemporaryDirectory() as tmp:
+            watchdog = Path(tmp) / "watchdog.py"
+            watchdog.write_text(
+                "import os, sys\nsys.stderr.write('Mezmo Governance: approval still pending\\n')\nos._exit(2)\n",
+                encoding="utf-8",
+            )
+            for path, stdin in ((watchdog, None), (HOOK_PATH, "not json")):
+                with self.subTest(path=path.name):
+                    result = self.run_command(pre, path, stdin)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertNotIn("hook failed", result.stderr)
+
+    def test_a_hook_that_does_not_run_still_blocks(self) -> None:
+        pre, _ = self.pre_and_post_commands()
+        # Python names a missing script itself, and exits 2.
+        result = self.run_command(pre, Path("/nonexistent/mezmo_governance_hook.py"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("/nonexistent/mezmo_governance_hook.py", result.stderr)
+        result = self.run_command(pre.replace("python3", "python3-not-on-path", 1), HOOK_PATH)
         self.assertEqual(result.returncode, 2)
         self.assertIn("Mezmo Governance hook failed; blocking", result.stderr)
 
