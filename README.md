@@ -217,10 +217,11 @@ the system credential store. Details: [claude-code/](claude-code/).
 
 The same repository is a marketplace for each, and each reads its own manifest
 and gets its own adapter. Use this or `./mezmo-governance install`, not both:
-both run the hook twice. `doctor` and `smoke` check only the file install.
+both run the hook twice. `smoke` checks only the file install; `doctor` also checks the native Codex plugin.
 
 - Codex CLI: `codex plugin marketplace add mezmo/ai-governance-plugins`, then `codex plugin add mezmo-governance@mezmo`, then trust both hooks in `/hooks`.
   **Until you trust them, Codex skips the hooks without a warning and every tool runs ungoverned** (seen live on 0.163.0).
+  `doctor` asks `codex app-server` for the trust state and fails when the PreToolUse hook is not trusted or changed since you trusted it.
   For a headless setup, `codex app-server` method `hooks/list` gives each hook's key and current hash; add a
   `[hooks.state."<key>"]` table with `trusted_hash = "<hash>"` to `$CODEX_HOME/config.toml` for each.
 - Copilot CLI: `copilot plugin marketplace add mezmo/ai-governance-plugins`, then `copilot plugin install mezmo-governance@mezmo`.
