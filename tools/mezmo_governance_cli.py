@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -100,9 +101,17 @@ def backup(path: Path) -> Path:
 
 
 def write_json(path: Path, data: Any) -> None:
+    """Write data in the file's own indent and line endings, so the lines install did not change stay the same."""
+    indent, newline, ending = "  ", "\n", "\n"
+    if path.is_file():
+        text = path.read_bytes().decode("utf-8")
+        found = re.search(r"\n([ \t]*)\S", text)
+        indent, ending = (found.group(1) if found else None), text[len(text.rstrip()):]
+        newline = "\r\n" if "\r\n" in text else "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(path.name + ".mezmo-partial")
-    partial.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    output = json.dumps(data, indent=indent, ensure_ascii=False).replace("\n", newline) + ending
+    partial.write_bytes(output.encode("utf-8"))
     os.replace(partial, path)
 
 

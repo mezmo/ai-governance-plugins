@@ -247,6 +247,25 @@ class InstallTests(CliTestCase):
                     self.assertEqual(after[copies[0]], original[name])
                     self.assertRegex(first.stdout, rf"backup: \S*{Path(copies[0]).name}\n")
 
+    def test_install_and_uninstall_keep_the_users_json_formatting(self) -> None:
+        # Each user writes a different indent and line ending, non-ASCII text and no final newline.
+        texts = {}
+        for agent, indent, newline in (("codex", "    ", "\n"), ("cursor", "\t", "\n"), ("opencode", " ", "\r\n")):
+            ((name, content),) = ORIGINALS[agent].items()
+            texts[name] = json.dumps({"note": "café", **content}, indent=indent, ensure_ascii=False).replace("\n", newline)
+            (self.tmp / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.tmp / name).write_bytes(texts[name].encode("utf-8"))
+        result = self.cli("install", "codex", "cursor", "opencode")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name, text in texts.items():
+            installed = (self.tmp / name).read_bytes().decode("utf-8")
+            self.assertTrue(installed.startswith(text.split("\n")[0] + "\n" + text.split("\n")[1] + "\n"), installed)
+            self.assertFalse(installed.endswith("\n"), name)
+        result = self.cli("uninstall", "codex", "cursor", "opencode")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name, text in texts.items():
+            self.assertEqual((self.tmp / name).read_bytes().decode("utf-8"), text, name)
+
     def test_the_installed_files_are_what_each_readme_installs(self) -> None:
         result = self.cli("install", "--all")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
