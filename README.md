@@ -3,6 +3,8 @@
 Plugins that ask Mezmo Governance before a coding agent runs a tool. If Mezmo
 denies the call, or never answers, the tool does not run.
 
+To get access to Mezmo Governance, see [mezmo.com/platform/governance](https://www.mezmo.com/platform/governance).
+
 ```text
 Claude Code / Claude Agent SDK / Codex / Cursor / Gemini CLI / Copilot / Goose / Pi / OpenCode / LangChain / OpenAI Agents SDK / Mastra
         │  before the tool runs
