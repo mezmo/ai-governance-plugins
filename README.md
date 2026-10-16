@@ -62,7 +62,22 @@ can watch the plugin wait and then deny.
    export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
    ```
 
-4. Run one tool call your policy denies, and check that the agent shows the
+4. Check your setup from this repository, with the variables exported:
+
+   ```bash
+   python3 tools/doctor.py
+   ```
+
+   It checks the settings, that Mezmo answers and takes the key, and, for
+   each coding agent on your `PATH`, its version, the user-level install and
+   its fail-closed setting. It also runs each installed Python hook against a
+   closed port and checks that the hook denies. It reads the agent configs and
+   changes nothing. Each check prints one `ok`, `warn`, `FAIL` or `skip` line
+   with a fix, and the exit code is 1 when a check fails. A key can pass the
+   key check and still belong to no agent. Add `--probe` to send Mezmo one
+   test call for the tool `doctor:probe`, which shows up in Mezmo like any
+   other call.
+5. Run one tool call your policy denies, and check that the agent shows the
    reason. Then check `~/.mezmo/governance-audit.jsonl` for the approved calls.
 
 ### Claude Code
@@ -124,6 +139,11 @@ The hook examples set a 600 second hook timeout, so the plugin's own deadline
 ends first and returns a clear deny.
 
 ## Troubleshooting
+
+Start with `python3 tools/doctor.py --probe`: it names most of the causes
+below. It does not check the LangChain, OpenAI Agents SDK, Claude Agent SDK
+or Mastra setup, which lives in app code; for those, run
+[examples/check.sh](examples/).
 
 | You see | Cause | Fix |
 | --- | --- | --- |
