@@ -6,10 +6,11 @@ import json
 import os
 import pathlib
 import string
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Dict, Mapping, Optional, Tuple
+from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 MEZMO_OTEL_ENDPOINT = "https://logs.mezmo.com/otel"
 MEZMO_AUTH_HEADER = "apikey"
@@ -106,3 +107,19 @@ def http_request(
             return response.status, response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as err:
         return err.code, err.read().decode("utf-8", "replace")
+
+
+def run_claude(args: Sequence[str], stdin: Optional[str] = None) -> Tuple[int, str]:
+    """Run the claude CLI and return (exit code, stdout and stderr).
+
+    Inside a Claude Code session, use the binary running that session, which matches its
+    version even when the `claude` on PATH is another install.
+    """
+    binary = os.environ.get("CLAUDE_CODE_EXECPATH") or "claude"
+    try:
+        done = subprocess.run([binary, *args], input=stdin, capture_output=True, text=True, timeout=90)
+    except FileNotFoundError:
+        return 127, "The claude command isn't on PATH."
+    except subprocess.TimeoutExpired:
+        return 124, f"claude {' '.join(args[:2])} timed out."
+    return done.returncode, (done.stdout or "") + (done.stderr or "")

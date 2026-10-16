@@ -1,12 +1,13 @@
 ---
 name: test
-description: Check the Mezmo setup for Claude Code. Shows the Mezmo Governance configuration with the governance hook's last result, and the telemetry settings with a test of the ingestion key against Mezmo's OpenTelemetry endpoint. Use when the user asks why a tool call was blocked by Mezmo Governance, whether Mezmo governance or telemetry works, or why Claude data is missing in Mezmo.
+description: Check the Mezmo setup for Claude Code. Shows the Mezmo Governance configuration with the governance hook's last result, the telemetry settings with a test of the ingestion key against Mezmo's OpenTelemetry endpoint, and whether Claude Code connects to Mezmo's MCP server. Use when the user asks why a tool call was blocked by Mezmo Governance, whether Mezmo governance, telemetry or MCP works, or why Claude data is missing in Mezmo.
 argument-hint: "[--check-only]"
 allowed-tools:
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" status*)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" check*)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" status*)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" *)
+  - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" status*)
 ---
 
 # Test the Mezmo setup
@@ -78,3 +79,20 @@ Arguments: $ARGUMENTS
      ```bash
      claude -p "hello" --debug-file /tmp/claude-otel-debug.log && grep "3P telemetry" /tmp/claude-otel-debug.log
      ```
+
+## MCP
+
+1. Show whether the server is set up and connects:
+
+   ```bash
+   python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" status
+   ```
+
+2. Explain the result:
+
+   | What you see | What to tell the user |
+   | --- | --- |
+   | Not set up | Run `/mezmo:setup mcp` to add it. |
+   | `✔ Connected` | Claude Code connects. New sessions have tools named `mcp__mezmo__<tool>`. |
+   | Failed to connect, `401` | Mezmo rejected the service key. Run `/mezmo:setup mcp` with a current key and replace the server. |
+   | A server called `mezmo` with another URL | Something else uses the name `mezmo`. `/mezmo:setup mcp` can replace it if it's in user scope. |

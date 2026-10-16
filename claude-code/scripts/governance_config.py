@@ -18,13 +18,14 @@ import dataclasses
 import json
 import os
 import pathlib
-import subprocess
 import sys
 import uuid
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import claude_code_otel as cco
 import mezmo_common as mc
+
+run_claude = mc.run_claude
 
 DEFAULT_URL = "https://api.mezmo.com/governance/workflow/authorize"
 PLUGIN_ID = "mezmo@mezmo"
@@ -56,22 +57,6 @@ class CheckResult:
 
 class NotInstalled(Exception):
     pass
-
-
-def run_claude(args: Sequence[str], stdin: Optional[str] = None) -> Tuple[int, str]:
-    """Run the claude CLI and return (exit code, stdout and stderr).
-
-    Inside a Claude Code session, use the binary running that session, which matches its
-    version even when the `claude` on PATH is another install.
-    """
-    binary = os.environ.get("CLAUDE_CODE_EXECPATH") or "claude"
-    try:
-        done = subprocess.run([binary, *args], input=stdin, capture_output=True, text=True, timeout=60)
-    except FileNotFoundError:
-        return 127, "The claude command isn't on PATH."
-    except subprocess.TimeoutExpired:
-        return 124, "claude plugin configure timed out."
-    return done.returncode, (done.stdout or "") + (done.stderr or "")
 
 
 def authorization(key: str) -> str:

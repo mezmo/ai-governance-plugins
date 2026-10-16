@@ -28,7 +28,7 @@ Request shape, polling, and identity rules are in
 | Directory | Mechanism | Stops the tool | After the tool | Install |
 | --- | --- | --- | --- | --- |
 | [codex](codex/) | `PreToolUse` / `PostToolUse` command hooks | yes | local JSONL | `~/.codex/hooks.json` or `.codex/hooks.json` |
-| [claude-code](claude-code/) | Claude Code plugin: `PreToolUse` hook, a status display, optional Mezmo telemetry | yes | local JSONL | `claude plugin marketplace add mezmo/ai-governance-plugins`, then `claude plugin install mezmo@mezmo` |
+| [claude-code](claude-code/) | Claude Code plugin: `PreToolUse` hook, a status display, optional Mezmo telemetry and MCP | yes | local JSONL | `claude plugin marketplace add mezmo/ai-governance-plugins`, then `claude plugin install mezmo@mezmo` |
 | [cursor](cursor/) | `preToolUse` (optional MCP/shell hooks) | yes (`failClosed: true`) | local JSONL | `~/.cursor/hooks.json` or `.cursor/hooks.json` |
 | [pi](pi/) | `tool_call` / `tool_result` extension | yes | local JSONL | `~/.pi/agent/extensions/` or `.pi/extensions/` |
 | [opencode](opencode/) | `tool.execute.before` / `tool.execute.after` plugin | yes (throw to block) | local JSONL | `.opencode/plugins/` |
