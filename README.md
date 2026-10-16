@@ -279,6 +279,7 @@ or Mastra setup, which lives in app code; for those, run
 | `Mezmo Governance returned HTTP 401 EAUTH` | wrong or revoked service account token, or a service account without Governance permissions | give the agent's service account Governance permissions, then copy a fresh token from the service account in Mezmo |
 | `Mezmo Governance returned HTTP 403 ENOAGENT: no agent is registered for these credentials` | Mezmo accepts the token, but no agent uses its service account | register an agent in Mezmo Governance and use the token of the service account that agent uses |
 | `Mezmo Governance returned HTTP 403 EPOLICYUNASSIGNED: this agent has no policy assigned` | the agent exists but has no policy | assign a policy to the agent in Mezmo Governance |
+| `Mezmo Governance returned HTTP 400 EINVAL: Bad Request` for one tool only | Mezmo accepts argument names made of letters, digits and `_` only, and the tool has one with `-` or `.` | none on the plugin side yet: the plugins send arguments exactly as the tool gets them; ask Mezmo to accept the name |
 | `approval still pending` | policy needs a person and nobody decided in time | decide in Mezmo, or raise `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` (max 590) |
 | `SyntaxError` or `TypeError` on start | `python3` is older than 3.9 | install a newer Python, or point the hook command at it |
 
