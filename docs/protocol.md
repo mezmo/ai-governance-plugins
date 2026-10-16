@@ -151,9 +151,9 @@ still pending. Plugins send no `response_type`, so they get `poll`.
 the first 16 hex characters of SHA-256 over the JSON array
 `[tool_namespace, tool_name, arguments]`, with sorted keys and no spaces.
 `decision_id` is `uuid5(NAMESPACE_URL, <full id>)`, where `<full id>` is that
-string before any cut. Over 128 characters, the sent `request_id` keeps the
-first part and the `#<digest>` end, so two long ids can share a `request_id`;
-their `decision_id` values still differ.
+string before any cut. Over 128 characters, the sent `request_id` is the first
+part, then `~` and the first 16 hex of SHA-256 over everything before `#`, then
+the `#<digest>` end, so two long ids still differ.
 
 A retry of the same call, with the same id and the same arguments, reuses the
 id and polls instead of opening a second decision. A call that keeps its id

@@ -177,8 +177,10 @@ MAX_REQUEST_ID_CHARACTERS = 128
 def bounded_request_id(request_id: str) -> str:
     if len(request_id) <= MAX_REQUEST_ID_CHARACTERS:
         return request_id
+    # A hash of the whole head keeps two cut ids apart.
     head, digest = request_id.rsplit("#", 1)
-    return head[: MAX_REQUEST_ID_CHARACTERS - len(digest) - 1] + "#" + digest
+    tail = "~" + hashlib.sha256(head.encode()).hexdigest()[:16] + "#" + digest
+    return head[: MAX_REQUEST_ID_CHARACTERS - len(tail)] + tail
 
 
 def call_identity(

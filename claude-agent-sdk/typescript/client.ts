@@ -170,8 +170,10 @@ export function callIdentity(sessionId: string, toolCallId: string, toolName: st
   const fullId = `${AGENT}:${sessionId}:${toolCallId}#${digest}`;
   // Mezmo answers HTTP 400 to a longer request_id. The decision id hashes the full id,
   // so a cut id still gets its own decision.
-  const requestId =
-    fullId.length <= MAX_REQUEST_ID ? fullId : `${fullId.slice(0, MAX_REQUEST_ID - digest.length - 1)}#${digest}`;
+  // A hash of the whole head keeps two cut ids apart.
+  const head = fullId.slice(0, -digest.length - 1);
+  const tail = `~${createHash("sha256").update(head).digest("hex").slice(0, 16)}#${digest}`;
+  const requestId = fullId.length <= MAX_REQUEST_ID ? fullId : head.slice(0, MAX_REQUEST_ID - tail.length) + tail;
   return {
     sessionId,
     requestId,

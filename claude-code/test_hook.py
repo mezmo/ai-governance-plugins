@@ -136,6 +136,7 @@ class ClaudeCodeGovernanceHookTests(unittest.TestCase):
         self.assertEqual(len(identity.request_id), 128)
         self.assertTrue(identity.request_id.endswith("#" + hook.call_digest(*tool_call)))
         self.assertNotEqual(identity.decision_id, other.decision_id)
+        self.assertNotEqual(identity.request_id, other.request_id)
 
     def test_approval_payload_identifies_claude_code_and_the_mcp_namespace(self) -> None:
         payload = hook.approval_payload(hook_event("PreToolUse"))

@@ -63,6 +63,7 @@ test("a long request id fits Mezmo's 128 characters and keeps its digest", () =>
   assert.equal(first.requestId.length, 128);
   assert.ok(first.requestId.endsWith(`#${callDigest("bash", {})}`));
   assert.notEqual(first.decisionId, second.decisionId);
+  assert.notEqual(first.requestId, second.requestId);
 });
 
 test("payload origin is pi_extension", () => {
