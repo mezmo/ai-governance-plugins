@@ -53,8 +53,8 @@ cp mezmo_governance_hook.py ~/.copilot/hooks/
 
 2. Copy [hooks.example.json](hooks.example.json) to
    `~/.copilot/hooks/mezmo-governance.json`. The example path starts at
-   `$HOME`, so it works from any directory. To keep the script elsewhere, set
-   `MEZMO_GOVERNANCE_HOOK` to its absolute path.
+   `$HOME/.copilot`, so it works from any directory. With `COPILOT_HOME` set,
+   or to keep the script elsewhere, set `MEZMO_GOVERNANCE_HOOK` to its absolute path.
 
 3. Export the settings in the shell that starts `copilot`:
 

@@ -217,7 +217,11 @@ and gets its own adapter. Use this or `./mezmo-governance install`, not both:
 both run the hook twice. `doctor` and `smoke` check only the file install.
 
 - Codex CLI: `codex plugin marketplace add mezmo/ai-governance-plugins`, then `codex plugin add mezmo-governance@mezmo`, then trust both hooks in `/hooks`.
+  **Until you trust them, Codex skips the hooks without a warning and every tool runs ungoverned** (seen live on 0.163.0).
+  For a headless setup, `codex app-server` method `hooks/list` gives each hook's key and current hash; add a
+  `[hooks.state."<key>"]` table with `trusted_hash = "<hash>"` to `$CODEX_HOME/config.toml` for each.
 - Copilot CLI: `copilot plugin marketplace add mezmo/ai-governance-plugins`, then `copilot plugin install mezmo-governance@mezmo`.
+  A local-path marketplace loads the hook from that checkout, so editing it or switching its branch changes the hook.
 
 ### Install by hand
 

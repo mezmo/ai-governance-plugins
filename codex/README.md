@@ -78,7 +78,8 @@ To gate only some tools, change `matcher`. Examples: `Bash`, `^apply_patch$`,
 
 Mezmo sees the Codex tool name with namespace `codex`. Names seen live in
 Codex 0.162.1: `Bash` for shell commands and `apply_patch` for file edits. An
-MCP tool arrives with its server as the namespace.
+MCP tool arrives with its server as the namespace. Codex has no read tool: it
+reads files with `Bash` (`cat`), so a policy that denies `Bash` also blocks reads.
 
 ## Windows
 
