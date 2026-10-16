@@ -79,9 +79,8 @@ def make_handler(deny: list[str], hold: list[str]) -> type[BaseHTTPRequestHandle
             sys.stdout.write(f"{status:8} {label}\n")
             sys.stdout.flush()
             if status == "pending":
-                # The real service holds the POST open for a person; answer 409
-                # so the plugin falls into its poll loop right away.
-                return self.reply(409, {"error": "waiting for a person"})
+                # Like Mezmo: 207 means sent for approval; the plugin then polls.
+                return self.reply(207, {"approved": False, "reason": "sent for approval"})
             reason = f"mock policy: {label} is denied" if status == "denied" else None
             self.reply(200, {"approved": status == "approved", "reason": reason})
 
@@ -94,7 +93,9 @@ def make_handler(deny: list[str], hold: list[str]) -> type[BaseHTTPRequestHandle
             decision_id = parse_qs(url.query).get("decision_id", [""])[0]
             if decision_id not in decisions:
                 return self.reply(404, {"error": "unknown decision_id"})
-            self.reply(200, {"status": decisions[decision_id], "reason": None})
+            status = decisions[decision_id]
+            # The mock never decides a held call, so it stays 207 until the plugin gives up.
+            self.reply(207 if status == "pending" else 200, {"approved": status == "approved", "reason": None})
 
         def log_message(self, *args: object) -> None:
             pass

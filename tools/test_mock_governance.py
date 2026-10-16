@@ -85,6 +85,29 @@ class MockGovernanceTests(unittest.TestCase):
         self.assertEqual(self.decision(result), "deny")
         self.assertIn("pending", result.stdout)
 
+    def test_held_call_answers_like_mezmo(self) -> None:
+        # Mezmo answers 207 while a call waits for a person, on the POST and on each poll.
+        from urllib.error import HTTPError
+        from urllib.request import Request, urlopen
+
+        url = self.env["MEZMO_GOVERNANCE_URL"]
+        headers = {"Authorization": "Token local-test", "Content-Type": "application/json"}
+
+        def call(method: str, query: str = "", body: dict | None = None) -> tuple[int, dict]:
+            data = json.dumps(body).encode() if body is not None else None
+            try:
+                with urlopen(Request(url + query, data=data, headers=headers, method=method)) as reply:
+                    return reply.status, json.loads(reply.read())
+            except HTTPError as error:
+                return error.code, json.loads(error.read())
+
+        post = {"decision_id": "d1", "items": [{"tool_name": "Write"}]}
+        self.assertEqual(call("POST", body=post)[0], 207)
+        self.assertEqual(call("POST", body=post)[0], 409)
+        self.assertEqual(call("GET", "?decision_id=d1"), (207, {"approved": False, "reason": None}))
+        self.assertEqual(call("POST", body={"decision_id": "d2", "items": [{"tool_name": "Read"}]})[0], 200)
+        self.assertEqual(call("GET", "?decision_id=d2"), (200, {"approved": True, "reason": None}))
+
     def test_arguments_are_not_printed(self) -> None:
         import contextlib
         import io
