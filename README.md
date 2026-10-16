@@ -87,7 +87,7 @@ the system credential store. Details: [claude-code/](claude-code/).
 | [Pi](pi/) | `tool_call` extension | yes | copy the folder to `~/.pi/agent/extensions/` |
 | [OpenCode](opencode/) 1.x and 2.x | `tool.execute.before` plugin | yes | 2.x: copy the folder, name it in `opencode.json` `plugins` with options; 1.x: copy to `~/.config/opencode/plugins/` |
 | [LangChain](langchain/) v1 | `AgentMiddleware` (`wrap_tool_call` and `awrap_tool_call`) | yes | `pip install ./langchain` |
-| [OpenAI Agents SDK](openai-agents/) (Python) | tool input guardrail on function and MCP tools; hosted tools are not gated | yes | `pip install ./openai-agents` |
+| [OpenAI Agents SDK](openai-agents/) (Python) | tool input guardrail on function and MCP tools; refuses hosted MCP; other hosted tools are not gated | yes | `pip install ./openai-agents` |
 | [Mastra](mastra/) | agent `hooks.beforeToolCall` | yes | copy the files, pass `hooks` |
 | [Claude Agent SDK](claude-agent-sdk/) (Python and TypeScript) | `PreToolUse` callback in the agent options | yes | Python: `pip install ./claude-agent-sdk/python`; TypeScript: copy the files; pass the hooks in `hooks` |
 

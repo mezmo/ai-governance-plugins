@@ -72,12 +72,18 @@ are not gated:
 
 | Tool kind | Where it runs | What `govern` does |
 | --- | --- | --- |
-| `WebSearchTool`, `FileSearchTool`, `CodeInterpreterTool`, `ImageGenerationTool`, `HostedMCPTool`, `ToolSearchTool`, `ProgrammaticToolCallingTool` | on OpenAI's servers; no call reaches your process before it runs | leaves them in place |
+| `WebSearchTool`, `FileSearchTool`, `CodeInterpreterTool`, `ImageGenerationTool`, `ToolSearchTool` | on OpenAI's servers; no call reaches your process before it runs | leaves them in place, not gated |
+| `HostedMCPTool` | on OpenAI's servers, which call the remote MCP server's tools, side effects included | raises `GovernanceError`; connect the server through `Agent(mcp_servers=[...])`, which is gated |
 | `ShellTool`, `LocalShellTool`, `ComputerTool`, `ApplyPatchTool`, `CustomTool` | on your machine, with no guardrail | raises `GovernanceError`, so the agent never runs them ungated |
 
-For a hosted MCP server, use the SDK's own `require_approval` and
-`on_approval_request`. For the local kinds, the SDK's `needs_approval` and
-`on_approval` decide per call; this package does not wire those to Mezmo.
+`ProgrammaticToolCallingTool` stays. Its hosted program calls your function
+tools through the runner, and openai-agents 0.24.0 runs their input
+guardrails as for a direct call: a test sends a program-owned call to a
+denied tool and the tool does not run. Other hosted tools the program
+calls are not gated, as above.
+
+For the local kinds, the SDK's `needs_approval` and `on_approval` decide per
+call; this package does not wire those to Mezmo.
 
 A handoff itself (the `transfer_to_<agent>` call) is not sent to Mezmo; the
 tools of the agent it hands to are. Realtime and voice agents are not tested.

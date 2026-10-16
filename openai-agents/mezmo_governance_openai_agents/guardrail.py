@@ -13,6 +13,7 @@ from agents import (
     ComputerTool,
     CustomTool,
     FunctionTool,
+    HostedMCPTool,
     LocalShellTool,
     ShellTool,
     ToolGuardrailFunctionOutput,
@@ -32,6 +33,9 @@ from mezmo_governance_openai_agents.client import (
 GUARDRAIL_NAME = "mezmo_governance"
 # These run on this machine, but the SDK runs no tool input guardrail for them.
 UNGATED_LOCAL_TOOLS = (ComputerTool, ShellTool, LocalShellTool, ApplyPatchTool, CustomTool)
+# A hosted MCP server runs its tools, side effects included, on OpenAI's side
+# with no guardrail; the agent's mcp_servers run them here, where one applies.
+UNGATED_REMOTE_TOOLS = (HostedMCPTool,)
 # The SDK's id for a run with tracing turned off: every run shares it.
 NO_OP_TRACE_ID = "no-op"
 
@@ -116,8 +120,9 @@ class MezmoGovernance:
         """Add the guardrail to every function tool and MCP server of ``agent``.
 
         Also governs handoff targets and agents wrapped with ``as_tool``. Raises
-        GovernanceError for a local tool kind the SDK cannot guard, so it never
-        runs ungated. Call it after the agent's tools are final.
+        GovernanceError for a local tool kind or a hosted MCP server the SDK
+        cannot guard, so it never runs ungated. Call it after the agent's tools
+        are final.
         """
         self._govern(agent, set())
         return agent
@@ -131,6 +136,12 @@ class MezmoGovernance:
                 raise GovernanceError(
                     f"{type(tool).__name__} {tool.name!r} on agent {agent.name!r} cannot be "
                     "gated by a tool input guardrail; remove it or gate it with needs_approval"
+                )
+            if isinstance(tool, UNGATED_REMOTE_TOOLS):
+                raise GovernanceError(
+                    f"{type(tool).__name__} {tool.name!r} on agent {agent.name!r} cannot be "
+                    "gated by a tool input guardrail; connect the server through "
+                    "Agent(mcp_servers=[...]) instead"
                 )
             if isinstance(tool, FunctionTool):
                 attach(tool, self.guardrail)

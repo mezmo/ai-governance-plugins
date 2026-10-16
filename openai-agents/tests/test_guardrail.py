@@ -430,6 +430,84 @@ class GovernTests(unittest.TestCase):
         with self.assertRaisesRegex(GovernanceError, "ShellTool 'shell' on agent 'shell' cannot be gated"):
             MezmoGovernance().govern(agent)
 
+    def test_a_hosted_mcp_server_is_refused(self) -> None:
+        from agents import HostedMCPTool
+
+        from mezmo_governance_openai_agents import GovernanceError, MezmoGovernance
+
+        hosted = HostedMCPTool(
+            tool_config={
+                "type": "mcp",
+                "server_label": "notes",
+                "server_url": "https://mcp.example.test/sse",
+                "require_approval": "never",
+            }
+        )
+        agent = Agent(name="remote", tools=[function_tool(read_note_impl, name_override="read_note"), hosted])
+        with self.assertRaisesRegex(GovernanceError, "HostedMCPTool 'hosted_mcp' on agent 'remote' cannot be gated"):
+            MezmoGovernance().govern(agent)
+
+    def test_hosted_tools_without_side_effects_on_this_machine_stay(self) -> None:
+        from agents import (
+            CodeInterpreterTool,
+            FileSearchTool,
+            ImageGenerationTool,
+            ProgrammaticToolCallingTool,
+            ToolSearchTool,
+            WebSearchTool,
+        )
+
+        from mezmo_governance_openai_agents import MezmoGovernance
+
+        hosted = [
+            WebSearchTool(),
+            FileSearchTool(vector_store_ids=["vs_1"]),
+            CodeInterpreterTool(tool_config={"type": "code_interpreter", "container": {"type": "auto"}}),
+            ImageGenerationTool(tool_config={"type": "image_generation"}),
+            ToolSearchTool(),
+            ProgrammaticToolCallingTool(),
+        ]
+        agent = Agent(name="hosted", tools=list(hosted))
+        self.assertIs(MezmoGovernance().govern(agent), agent)
+        self.assertEqual(agent.tools, hosted)
+
+    def test_a_programmatic_inner_call_still_passes_the_guardrail(self) -> None:
+        # A hosted program calls a function tool through the runner, which runs
+        # the tool's input guardrails as for a direct call (openai-agents 0.24.0).
+        from agents import ProgrammaticToolCallingTool
+        from openai.types.responses import ResponseFunctionToolCall
+        from openai.types.responses.response_output_item import Program
+
+        from mezmo_governance_openai_agents import MezmoGovernance
+
+        ran.clear()
+
+        def delete_note(name: str) -> str:
+            """Delete a note by name."""
+            ran.append("delete_note")
+            return "deleted"
+
+        program = Program(id="prog-1", call_id="prog-1", code="await delete_note({name: 'x'})", fingerprint="f", type="program")
+        inner = ResponseFunctionToolCall(
+            arguments='{"name": "x"}',
+            call_id="call-1",
+            name="delete_note",
+            type="function_call",
+            id="call-1",
+            caller={"type": "program", "caller_id": "prog-1"},
+        )
+        model = ScriptedModel([[program, inner], [assistant_message("done")]])
+        tool = function_tool(delete_note, allowed_callers=["direct", "programmatic"])
+        http = RecordingTransport((200, {"approved": False, "reason": "nope"}))
+        agent = MezmoGovernance(http=http).govern(
+            Agent(name="program", model=model, tools=[tool, ProgrammaticToolCallingTool()])
+        )
+        with patch.dict(os.environ, ENV):
+            result = Runner.run_sync(agent, "delete x", run_config=RUN_CONFIG)
+        self.assertEqual(ran, [])
+        self.assertEqual(http.calls[0]["payload"]["items"][0]["tool_name"], "delete_note")
+        self.assertEqual(tool_outputs(result), ["Mezmo Governance denied this tool call: nope"])
+
 
 if __name__ == "__main__":
     unittest.main()
