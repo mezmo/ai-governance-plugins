@@ -16,6 +16,8 @@ The script needs Python 3.9 or later and uses only the standard library.
 
 ## Install
 
+`./mezmo-governance install cursor` from the repository root does this for you, and `uninstall` undoes it. The steps below are the manual way.
+
 ```bash
 mkdir -p ~/.cursor/hooks
 cp mezmo_governance_hook.py ~/.cursor/hooks/

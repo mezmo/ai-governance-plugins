@@ -25,7 +25,7 @@ call before you connect it to anything. You need Python 3.9+ and Claude Code
    ```bash
    git clone https://github.com/mezmo/ai-governance-plugins
    cd ai-governance-plugins
-   python3 tools/mock_governance.py --deny Bash
+   ./mezmo-governance mock --deny Bash
    ```
 
 2. In a second terminal, start Claude Code with the plugin loaded:
@@ -50,7 +50,17 @@ can watch the plugin wait and then deny.
 1. In Mezmo Governance, create a policy and register one agent per coding
    tool, so each has its own policy and log. Copy the agent's access key:
    Mezmo shows it once.
-2. Install the plugin for your agent (table below).
+2. Install the plugin for your agent, from this repository. See the change
+   first with `--dry-run`:
+
+   ```bash
+   ./mezmo-governance install claude-code --dry-run
+   ./mezmo-governance install claude-code
+   ```
+
+   Name one or more agents, or pass `--all` for every agent on your `PATH`.
+   `./mezmo-governance agents` lists them; [the table below](#the-mezmo-governance-command)
+   says what `install` does for each.
 3. Give it the URL and key. Claude Code prompts for both when you enable the
    plugin. OpenCode 2.x takes them as plugin options in `opencode.json`
    (see [opencode/](opencode/)), because its tools run in a background
@@ -62,23 +72,60 @@ can watch the plugin wait and then deny.
    export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
    ```
 
-4. Check your setup from this repository, with the variables exported:
+4. Check your setup, with the variables exported:
 
    ```bash
-   python3 tools/doctor.py
+   ./mezmo-governance doctor
+   ./mezmo-governance smoke
    ```
 
-   It checks the settings, that Mezmo answers and takes the key, and, for
-   each coding agent on your `PATH`, its version, the user-level install and
-   its fail-closed setting. It also runs each installed Python hook against a
-   closed port and checks that the hook denies. It reads the agent configs and
-   changes nothing. Each check prints one `ok`, `warn`, `FAIL` or `skip` line
-   with a fix, and the exit code is 1 when a check fails. A key can pass the
-   key check and still belong to no agent. Add `--probe` to send Mezmo one
-   test call for the tool `doctor:probe`, which shows up in Mezmo like any
-   other call.
+   `doctor` (also `python3 tools/doctor.py`) checks the settings, that Mezmo
+   answers and takes the key, and, for each coding agent on your `PATH`, its
+   version, the user-level install and its fail-closed setting. It also runs
+   each installed Python hook against a closed port and checks that the hook
+   denies. It reads the agent configs and changes nothing. Each check prints
+   one `ok`, `warn`, `FAIL` or `skip` line with a fix, and the exit code is 1
+   when a check fails. A key can pass the key check and still belong to no
+   agent. Add `--probe` to send Mezmo one test call for the tool
+   `doctor:probe`, which shows up in Mezmo like any other call.
+
+   `smoke` starts its own mock, sends each installed hook or plugin one shell
+   call (it must be denied) and one read (it must be approved), and prints a
+   line for each. It calls no model and never sends your key.
 5. Run one tool call your policy denies, and check that the agent shows the
    reason. Then check `~/.mezmo/governance-audit.jsonl` for the approved calls.
+
+### The mezmo-governance command
+
+`./mezmo-governance help` lists the commands: `agents`, `install`,
+`uninstall`, `doctor`, `mock` and `smoke`. It needs Python 3.9 or later, and
+node for the OpenCode and Pi smoke test.
+
+`install` writes into each agent's user config folder and honors the agent's
+own override: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`,
+`COPILOT_HOME`, `GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME` (OpenCode) and
+`PI_CODING_AGENT_DIR`. Before it edits a JSON file, it saves a copy next to it
+as `<name>.mezmo-backup-<time>` and prints the path. It never writes the
+access key. Running it twice changes nothing. `uninstall` removes only the
+entries and files `install` added.
+
+| Agent | `install` runs | Why this way |
+| --- | --- | --- |
+| Claude Code | `claude plugin install mezmo-governance --marketplace <this repo> -s user` | `claude plugin install --help`: the marketplace may be "a path" |
+| Codex CLI | copies the hook, merges `codex/hooks.example.json` into `hooks.json` | `codex plugin marketplace add` of this repo picks the Claude Code plugin |
+| Cursor | copies the hook, merges `cursor/hooks.example.json` into `~/.cursor/hooks.json` | `cursor-agent plugin` only adds marketplaces from a git URL |
+| Gemini CLI | `gemini extensions install ./gemini-cli --consent --skip-settings` | `gemini extensions install --help`: "from a git repository URL or a local path" |
+| Copilot CLI | copies the hook and `hooks.example.json` to `~/.copilot/hooks/` | `copilot plugin install` takes no local path, and its marketplace picks the Claude Code plugin |
+| Goose | copies the plugin to `~/.agents/plugins/mezmo-governance/` | `goose plugin install` takes a git URL whose root is the plugin |
+| OpenCode 2.x | copies `opencode/` and names it in `opencode.json` with options; the key stays in a file you write | `opencode plugin add` takes an npm or git package only |
+| Pi | `pi install ./pi` | `pi install --help`: `pi install ./local/path` |
+
+Gemini CLI asks you to trust the `gemini-cli/` folder during the install.
+Codex skips the hook until you trust it in `/hooks`. Pi loads the extension
+from this checkout, and Claude Code keeps it as the marketplace, so keep the
+checkout where it is. The
+libraries (LangChain, OpenAI Agents SDK, Claude Agent SDK and Mastra) are set
+up in app code; `install` points to their READMEs.
 
 ### Claude Code
 
@@ -90,16 +137,19 @@ can watch the plugin wait and then deny.
 Claude Code asks for the authorize URL and the access key and keeps the key in
 the system credential store. Details: [claude-code/](claude-code/).
 
-### Other agents
+### Install by hand
+
+Each adapter's README has the manual steps, the fallback when the command
+does not fit your setup.
 
 | Agent | Hook | Fails closed? | Install |
 | --- | --- | --- | --- |
 | [Codex CLI](codex/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | copy the script, merge `hooks.example.json`, trust it in `/hooks` |
 | [Cursor](cursor/) | `preToolUse` hook | yes, with `failClosed: true` | copy the script, merge `hooks.example.json` |
-| [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | copy the script, merge `settings.example.json` |
+| [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | `gemini extensions install ./gemini-cli`, or copy the script and merge `settings.example.json` |
 | [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | on a crash yes; on a timeout no | copy the script, add `hooks.example.json` to `~/.copilot/hooks/` |
 | [Goose](goose/) | `PreToolUse` plugin hook | yes, with `on_failure: block` | copy the plugin to `~/.agents/plugins/mezmo-governance/` |
-| [Pi](pi/) | `tool_call` extension | yes | copy the folder to `~/.pi/agent/extensions/` |
+| [Pi](pi/) | `tool_call` extension | yes | `pi install ./pi`, or copy the folder to `~/.pi/agent/extensions/` |
 | [OpenCode](opencode/) 1.x and 2.x | `tool.execute.before` plugin | yes | 2.x: copy the folder, name it in `opencode.json` `plugins` with options; 1.x: copy to `~/.config/opencode/plugins/` |
 | [LangChain](langchain/) v1 | `AgentMiddleware` (`wrap_tool_call` and `awrap_tool_call`) | yes | `pip install ./langchain` |
 | [OpenAI Agents SDK](openai-agents/) (Python) | tool input guardrail on function and MCP tools; refuses hosted MCP; other hosted tools are not gated | yes | `pip install ./openai-agents` |
@@ -140,7 +190,7 @@ ends first and returns a clear deny.
 
 ## Troubleshooting
 
-Start with `python3 tools/doctor.py --probe`: it names most of the causes
+Start with `./mezmo-governance doctor --probe` (or `python3 tools/doctor.py --probe`): it names most of the causes
 below. It does not check the LangChain, OpenAI Agents SDK, Claude Agent SDK
 or Mastra setup, which lives in app code; for those, run
 [examples/check.sh](examples/).
@@ -193,6 +243,12 @@ A local HTTP server stands in for Mezmo. The tests confirm that:
 - the post-tool event writes an audit line and never blocks;
 - each example config registers every event and blocks on hook failure,
   including the `|| exit 2` guard for Codex and Gemini CLI;
+- `./mezmo-governance` installs each agent, finds it installed, changes
+  nothing on a second install, and on uninstall leaves each config as it was,
+  with the user's other entries and a backup; a run stopped between two steps
+  is finished by the next one; `--dry-run` changes nothing; the key is in no
+  file or output (`tools/test_mezmo_governance_cli.py`, with fake `claude`,
+  `gemini` and `pi` binaries);
 - the shared code is identical across the six Python hooks, across the
   four `client.ts` copies, and between the LangChain Python client and its
   OpenAI Agents SDK and Claude Agent SDK copies; the Python hooks import on

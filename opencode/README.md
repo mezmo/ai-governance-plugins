@@ -37,6 +37,8 @@ not to files it finds in `plugins/`.
 
 ## Install on 2.x
 
+`./mezmo-governance install opencode` from the repository root does this for you, and `uninstall` undoes it. The steps below are the manual way.
+
 1. Copy this folder out of any `plugins/` folder, and put the key in a file
    only you can read:
 

@@ -14,6 +14,8 @@ Official docs: https://pi.dev/docs/latest/extensions
 
 ## Install
 
+`./mezmo-governance install pi` from the repository root runs `pi install` on this folder, and `uninstall` runs `pi remove`. Pi then loads the extension from the checkout. The steps below copy it instead.
+
 Copy the extension into its own folder under a trusted extension path:
 
 ```bash

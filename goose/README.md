@@ -41,6 +41,8 @@ second deadline ends first and returns a clear deny.
 
 ## Install
 
+`./mezmo-governance install goose` from the repository root does this for you, and `uninstall` undoes it. The steps below are the manual way.
+
 1. Copy the plugin into Goose's user plugin folder:
 
 ```bash

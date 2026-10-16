@@ -30,6 +30,8 @@ the hook off.
 
 ## Install
 
+`./mezmo-governance install copilot` from the repository root does this for you, and `uninstall` undoes it. The steps below are the manual way.
+
 Install the hook at user level, in `~/.copilot/hooks/` or
 `$COPILOT_HOME/hooks/`. Copilot CLI 1.0.95 skipped a repository
 `.github/hooks/*.json` file in an untrusted folder without any warning: under
