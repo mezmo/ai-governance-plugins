@@ -243,14 +243,14 @@ class CopilotGovernanceHookTests(unittest.TestCase):
 
 class PollingTests(unittest.TestCase):
     @patch.dict(os.environ, ENV)
-    def test_a_207_hold_polls_until_mezmo_decides(self) -> None:
+    def test_a_call_sent_for_approval_polls_until_mezmo_decides(self) -> None:
         # Live Mezmo, 2026-10-16: a call sent for approval answers 207 with
         # approved false, polls 207 while pending, then 200 once decided.
         pending = {"approved": False, "reason": None}
-        held = {"approved": False, "reason": "No rule in this policy covers this request."}
+        sent = {"approved": False, "reason": "No rule in this policy covers this request."}
         for approved in (True, False):
             with self.subTest(approved=approved):
-                http = FakeHttp([(207, held), (207, pending), (200, {"approved": approved, "reason": None})])
+                http = FakeHttp([(207, sent), (207, pending), (200, {"approved": approved, "reason": None})])
                 clock = FakeClock()
 
                 decision = hook.authorize(

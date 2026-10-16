@@ -151,7 +151,7 @@ test(
 );
 
 test(
-  "a 207 hold polls until Mezmo decides",
+  "a call sent for approval polls until Mezmo decides",
   () =>
     withEnv(ENV, async () => {
       // Live Mezmo, 2026-10-16: a call sent for approval answers 207 with

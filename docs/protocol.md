@@ -74,7 +74,7 @@ Rules:
 
 ## Authorize response
 
-Immediate or held `POST` body:
+`POST` body, at once or after a person decides:
 
 ```json
 { "approved": true }
