@@ -1,0 +1,5 @@
+{
+  "name": "mezmo-governance",
+  "version": "0.1.0",
+  "description": "Ask Mezmo Governance before each tool call runs; block it on deny"
+}

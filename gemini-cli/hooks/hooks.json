@@ -1,0 +1,32 @@
+{
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "mezmo-governance",
+            "type": "command",
+            "command": "python3 \"${extensionPath}${/}mezmo_governance_hook.py\" || { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }",
+            "timeout": 600000,
+            "description": "Ask Mezmo Governance before the tool runs"
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "name": "mezmo-governance-audit",
+            "type": "command",
+            "command": "python3 \"${extensionPath}${/}mezmo_governance_hook.py\"",
+            "timeout": 15000,
+            "description": "Record the governed result locally"
+          }
+        ]
+      }
+    ]
+  }
+}

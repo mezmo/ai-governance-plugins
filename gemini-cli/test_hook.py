@@ -422,6 +422,18 @@ class HookConfigTests(unittest.TestCase):
                                 hook.MAX_TIMEOUT_SECONDS * 1000,
                             )
 
+    def test_extension_hooks_match_the_example_config(self) -> None:
+        # `gemini extensions install` loads hooks/hooks.json and fills in ${extensionPath}.
+        example = (ADAPTER_DIR / "settings.example.json").read_text(encoding="utf-8")
+        example = example.replace(
+            "${MEZMO_GOVERNANCE_HOOK:-$HOME/.gemini/hooks/mezmo_governance_hook.py}",
+            "${extensionPath}${/}mezmo_governance_hook.py",
+        )
+        extension = json.loads((ADAPTER_DIR / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        self.assertEqual(extension, json.loads(example))
+        manifest = json.loads((ADAPTER_DIR / "gemini-extension.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["name"], "mezmo-governance")
+
     def pre_and_post_commands(self) -> tuple[str, str]:
         with (ADAPTER_DIR / "settings.example.json").open(encoding="utf-8") as handle:
             config = json.load(handle)["hooks"]

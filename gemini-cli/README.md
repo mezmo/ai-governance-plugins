@@ -35,6 +35,19 @@ each install.
 
 ## Install
 
+`./mezmo-governance install gemini-cli` from the repository root installs
+this folder as a Gemini CLI extension:
+
+```bash
+gemini extensions install ./gemini-cli --consent --skip-settings
+```
+
+Gemini CLI asks you to trust the folder, copies it to
+`~/.gemini/extensions/mezmo-governance/`, and loads the extension's
+`hooks/hooks.json`, the same two hooks as `settings.example.json`.
+`gemini extensions uninstall mezmo-governance` removes it. Without the
+extension:
+
 1. Copy the hook:
 
 ```bash
