@@ -123,6 +123,8 @@ returns HTTP 409.
    the Python hooks prints the deny and exits 2.
 8. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
    env, or transport error: deny. The tool does not run.
+9. No client follows a redirect, on the `POST` or the poll `GET`. A 3xx is
+   a deny, so the access key never goes to a second URL.
 
 ## Identity
 

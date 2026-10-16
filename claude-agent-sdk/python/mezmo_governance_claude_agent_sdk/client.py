@@ -158,7 +158,8 @@ async def httpx_json(
     }
 
     async def request() -> tuple[int, Any]:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        # A 3xx comes back as itself and denies, so the key never goes elsewhere.
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
             response = await client.request(
                 method,
                 url,

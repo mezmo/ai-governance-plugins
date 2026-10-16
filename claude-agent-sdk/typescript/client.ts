@@ -22,6 +22,7 @@ export type FetchLike = (
     headers?: Record<string, string>;
     body?: string;
     signal?: AbortSignal;
+    redirect?: "manual";
   },
 ) => Promise<{
   status: number;
@@ -221,6 +222,9 @@ export async function httpJson(
       headers,
       body: payload === null ? undefined : JSON.stringify(payload),
       signal: controller.signal,
+      // A 3xx comes back as itself and denies, so the access key never goes
+      // to another URL.
+      redirect: "manual",
     });
     return { status: response.status, body: await parseObject(response) };
   } catch (error) {

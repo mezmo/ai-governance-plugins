@@ -335,6 +335,62 @@ class UnreadableReplyTests(unittest.IsolatedAsyncioTestCase):
                     server.shutdown()
                     server.server_close()
 
+
+class RedirectHandler(BaseHTTPRequestHandler):
+    """Replays queued (status, body, location) answers and records each request."""
+
+    def answer(self) -> None:
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.server.seen.append(self.headers.get("Authorization"))  # type: ignore[attr-defined]
+        status, body, location = self.server.answers.pop(0)  # type: ignore[attr-defined]
+        self.send_response(status)
+        if location:
+            self.send_header("Location", location)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = answer
+    do_POST = answer
+
+    def log_message(self, *args: object) -> None:
+        pass
+
+
+def redirect_server(answers: list[tuple[int, bytes, str | None]]) -> ThreadingHTTPServer:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    server.answers = list(answers)  # type: ignore[attr-defined]
+    server.seen = []  # type: ignore[attr-defined]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@unittest.skipUnless(httpx is not None, "httpx is not installed")
+class RedirectTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_redirect_denies_and_never_sends_the_key_elsewhere(self) -> None:
+        cases = [
+            ([], b'{"approved": true}'),
+            ([(409, b"{}", None)], b'{"status": "approved"}'),
+        ]
+        for before, approval in cases:
+            with self.subTest(after_conflict=bool(before)):
+                elsewhere = redirect_server([(200, approval, None)])
+                target = f"http://127.0.0.1:{elsewhere.server_port}/governance/workflow/authorize"
+                governance = redirect_server([*before, (302, b"{}", target)])
+                url = f"http://127.0.0.1:{governance.server_port}/governance/workflow/authorize"
+                try:
+                    with patch.dict(os.environ, {**ENV, "MEZMO_GOVERNANCE_URL": url}):
+                        with self.assertRaisesRegex(GovernanceError, "HTTP 302"):
+                            await authorize(PAYLOAD)
+                    self.assertEqual(len(governance.seen), len(before) + 1)  # type: ignore[attr-defined]
+                    self.assertEqual(elsewhere.seen, [])  # type: ignore[attr-defined]
+                finally:
+                    for server in (governance, elsewhere):
+                        server.shutdown()
+                        server.server_close()
+
+
 # Same bounds as the Python hooks: finish before a 600 s runtime kill, and
 # never poll more than once a second.
 MAX_TIMEOUT_SECONDS = 590.0

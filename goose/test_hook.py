@@ -603,6 +603,8 @@ class StubHandler(BaseHTTPRequestHandler):
         # Bytes are sent as they are, to stand in for a broken reply.
         encoded = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(status)
+        if isinstance(body, dict) and "Location" in body:
+            self.send_header("Location", body["Location"])
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
@@ -718,6 +720,23 @@ class EndToEndTests(unittest.TestCase):
             stdout_json(result),
             deny_schema("Mezmo Governance denied this exact tool call: No."),
         )
+
+    def test_a_redirect_denies_and_never_sends_the_key_elsewhere(self) -> None:
+        cases = [
+            ([], (200, {"approved": True})),
+            ([(409, {})], (200, {"status": "approved"})),
+        ]
+        for before, approval in cases:
+            with self.subTest(after_conflict=bool(before)):
+                with StubGovernance([approval]) as elsewhere:
+                    redirect = (302, {"Location": elsewhere.url})
+                    with StubGovernance([*before, redirect]) as stub:
+                        result = self.run_hook(hook_event(PRE_EVENT), stub.url)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotEqual(stdout_json(result), ALLOW_OUTPUT)
+                self.assertIn("HTTP 302", json.dumps(stdout_json(result)))
+                self.assertEqual(elsewhere.requests, [])
 
     def test_conflict_polls_the_existing_decision(self) -> None:
         answers = [(409, {"code": "ECONFLICT"}), (200, {"status": "denied", "reason": "No."})]

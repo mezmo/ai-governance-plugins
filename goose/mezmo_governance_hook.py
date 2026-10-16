@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 AGENT = "goose"
 EXTENSION_SEPARATOR = "__"
@@ -196,6 +196,13 @@ def approval_payload(event: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+class RefuseRedirect(HTTPRedirectHandler):
+    """Hand a 3xx back as an error, so the access key never goes to another URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
 def http_json(
     method: str,
     url: str,
@@ -215,7 +222,7 @@ def http_json(
         headers["Content-Type"] = "application/json"
     request = Request(url, data=body, headers=headers, method=method)
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with build_opener(RefuseRedirect).open(request, timeout=timeout) as response:
             return response.status, parse_object(response.read())
     except HTTPError as error:
         try:
@@ -301,7 +308,7 @@ def poll_decision(
 def deadline_watchdog(seconds: float) -> Callable[[], None]:
     """Deny and exit at the deadline, even while a socket read is still alive.
 
-    urlopen's timeout bounds each socket wait, not the whole answer, so a
+    The opener's timeout bounds each socket wait, not the whole answer, so a
     server that sends one byte at a time could keep the hook past the
     runtime's own hook timeout, and several runtimes then run the tool.
     """
