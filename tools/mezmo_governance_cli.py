@@ -67,6 +67,9 @@ Commands:
                            installed agent's shell and read tool
   policy apply [agent...]  add a deny rule for the shell tools and an allow rule for the read tools
                            that no rule covers; --yes writes them through a Mezmo draft
+                           Both take --agent NAME|ID: the Mezmo agent whose policy applies to every
+                           installed agent. Without it, the only Mezmo agent, else the one whose
+                           Runtime Name is the agent's.
 
 Agents: {', '.join(agent.readme for agent in doctor.AGENTS)}
   install --all picks every agent whose binary is on PATH; uninstall --all picks every installed agent.
@@ -985,13 +988,29 @@ def kept_text(rule: Any) -> str:
     return f"{rule_text(as_dict(as_dict(rule).get('definition')))} (rule_id {as_dict(rule).get('rule_id')})"
 
 
-def assigned(name: str, records: list, policies: list) -> tuple:
-    """The policies of the Mezmo agents whose Runtime Name is the agent's, or ([], why not)."""
-    ids = {str(as_dict(record).get("policy_id")) for record in records if as_dict(record).get("runtime_name") == name}
-    if not ids:
-        return [], f"no Mezmo agent has Runtime Name {name}"
+def mezmo_agent(records: list, chosen: Optional[str]) -> Optional[dict]:
+    """The Mezmo agent every installed agent maps to: --agent, else the only one; None maps by Runtime Name.
+
+    Mezmo picks the policy from the token's service account, and every adapter may send one agent's token.
+    """
+    if chosen:
+        found = [record for record in map(as_dict, records) if chosen in (record.get("name"), record.get("agent_id"))]
+        if not found:
+            raise Failure(f"no Mezmo agent has the name or agent_id {chosen}")
+        if len(found) > 1:
+            raise Failure(f"{len(found)} Mezmo agents are named {chosen}; pass its agent_id")
+        return found[0]
+    return as_dict(records[0]) if len(records) == 1 else None
+
+
+def assigned(name: str, records: list, policies: list, fixed: Optional[dict]) -> tuple:
+    """The policies the agent's token gets, from the fixed Mezmo agent or by Runtime Name, or ([], why not)."""
+    matched = [fixed] if fixed else [record for record in map(as_dict, records) if record.get("runtime_name") == name]
+    if not matched:
+        return [], f"no Mezmo agent has Runtime Name {name}; pass --agent <name or agent_id>"
+    ids = {str(record.get("policy_id")) for record in matched}
     found = [policy for policy in policies if str(as_dict(policy).get("policy_id")) in ids]
-    return found, "" if found else "its Mezmo agent has no policy that this key can read"
+    return found, "" if found else f"Mezmo agent {matched[0].get('name')} has no policy that this key can read"
 
 
 def starter_rules(rules: list, names: list) -> list:
@@ -1009,7 +1028,7 @@ def draft_of(policy: dict) -> str:
     return str((as_dict(draft).get("draft_id") if isinstance(draft, dict) else draft) or "")
 
 
-def policy_show(records: list, policies: list) -> int:
+def policy_show(records: list, policies: list, fixed: Optional[dict]) -> int:
     for record in map(as_dict, records):
         print(f"agent   {record.get('name')}  runtime {record.get('runtime_name')}  policy {record.get('policy_id') or '-'}", flush=True)
     if not records:
@@ -1023,7 +1042,7 @@ def policy_show(records: list, policies: list) -> int:
         print(f"  default  {default.get('recourse')}: {default.get('error_message') or '-'}", flush=True)
     for name in [name for name in AGENTS if installed_at(name)]:
         agent = AGENTS[name]
-        found, why = assigned(name, records, policies)
+        found, why = assigned(name, records, policies, fixed)
         if not found:
             print(f"cover   {name}: {why}", flush=True)
         for policy in found:
@@ -1074,13 +1093,13 @@ def write_rules(base: str, key: str, policy: dict, names: list) -> tuple:
     return added, kept
 
 
-def policy_apply(base: str, key: str, records: list, policies: list, names: list, yes: bool) -> int:
+def policy_apply(base: str, key: str, records: list, policies: list, fixed: Optional[dict], names: list, yes: bool) -> int:
     failed = False
     plans: dict = {}
     for name in names:
-        found, why = assigned(name, records, policies)
+        found, why = assigned(name, records, policies, fixed)
         if not found:
-            print(f"FAIL  {name}: {why}; register it in Mezmo with that Runtime Name", flush=True)
+            print(f"FAIL  {name}: {why}", flush=True)
             failed = True
         for policy in found:
             plans.setdefault(str(policy.get("policy_id")), (policy, []))[1].append(name)
@@ -1115,13 +1134,14 @@ def policy_args(args: list) -> tuple:
     action = args.pop(0) if args else ""
     if action not in ("show", "apply"):
         raise Usage("policy: say show or apply")
-    url = None
-    if "--url" in args:
-        at = args.index("--url")
-        if at + 1 == len(args):
-            raise Usage("policy: --url needs the policy API base URL")
-        url = args.pop(at + 1)
-        args.pop(at)
+    values: dict = {}
+    for option in ("--url", "--agent"):
+        if option in args:
+            at = args.index(option)
+            if at + 1 == len(args):
+                raise Usage(f"policy: {option} needs a value")
+            values[option] = args.pop(at + 1)
+            args.pop(at)
     flags = [arg for arg in args if arg.startswith("-")]
     names = [arg for arg in args if not arg.startswith("-")]
     unknown = set(flags) - ({"--yes"} if action == "apply" else set())
@@ -1130,22 +1150,23 @@ def policy_args(args: list) -> tuple:
     if action == "show" and names:
         raise Usage("policy show: takes no agent names")
     pick(names, False, "policy")
-    return action, names, "--yes" in flags, url
+    return action, names, "--yes" in flags, values.get("--url"), values.get("--agent")
 
 
-def policy(action: str, names: list, yes: bool, url: Optional[str]) -> int:
+def policy(action: str, names: list, yes: bool, url: Optional[str], chosen_agent: Optional[str]) -> int:
     try:
         base = policy_base(url)
         key = admin_key()
         records = listed(base, key, "/agent", "read agents")
         policies = listed(base, key, "/policy", "read policies")
+        fixed = mezmo_agent(records, chosen_agent)
         if action == "show":
-            return policy_show(records, policies)
+            return policy_show(records, policies, fixed)
         chosen = names or [name for name in AGENTS if installed_at(name)]
         if not chosen:
             print("ok    policy apply: no agent is installed; name the agents to add rules for", flush=True)
             return 0
-        return policy_apply(base, key, records, policies, chosen, yes)
+        return policy_apply(base, key, records, policies, fixed, chosen, yes)
     except Failure as error:
         print(f"FAIL  policy {action}: {error}", flush=True)
         return 1

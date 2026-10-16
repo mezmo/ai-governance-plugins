@@ -197,10 +197,14 @@ and policy.
 `policy show` changes nothing. It prints each Mezmo agent with its runtime
 and policy, each policy's rules (recourse, tool space or `*`, tool, message,
 `rule_id`) and fallthrough, then for each agent installed here whether a rule
-covers its shell tool and its read tool. It ties an installed agent to the
-Mezmo agents whose Runtime Name is the adapter folder name, such as
-`claude-code`. A rule covers a tool when it names the tool with `eq` or `in`,
-has no tool space or the agent's, and checks no arguments.
+covers its shell tool and its read tool. Mezmo picks the policy from the
+token's service account, and every agent here may send the same token. So
+when Mezmo has one agent, every installed agent gets its policy. With several,
+an installed agent maps to the Mezmo agents whose Runtime Name is its adapter
+folder name, such as `claude-code`; pass `--agent <name or agent_id>` to use one
+Mezmo agent's policy for all of them. A rule covers a tool when it names the
+tool with `eq` or `in`, has no tool space or the agent's, and checks no
+arguments.
 
 `policy apply [agent...]` plans two rules for the named agents, or for every
 installed agent: deny their shell tools with `FORBIDDEN_TOOL` and the message

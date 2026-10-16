@@ -432,7 +432,7 @@ class CommandTests(CliTestCase):
             with self.subTest(args=args):
                 result = self.cli(*args)
                 self.assertEqual(result.returncode, 0)
-                for word in ("agents", "install", "uninstall", "doctor", "mock", "smoke", "policy show", "policy apply", "smoke [agent...] [--live]",
+                for word in ("agents", "install", "uninstall", "doctor", "mock", "smoke", "policy show", "policy apply", "--agent NAME|ID", "smoke [agent...] [--live]",
                              "MEZMO_GOVERNANCE_ADMIN_KEY", *AGENTS, "CODEX_HOME"):
                     self.assertIn(word, result.stdout)
 
@@ -635,7 +635,8 @@ class PolicyTests(CliTestCase):
         self.assertIn(f"  rule     allow doctor tool eq probe: - (rule_id {self.seeded['rule_id']})", result.stdout)
         self.assertIn("  default  approval_required: No rule in this policy covers this request.", result.stdout)
         self.assertIn("cover   claude-code in Mock policy: shell Bash not covered; read Read not covered", result.stdout)
-        self.assertIn("cover   codex: no Mezmo agent has Runtime Name codex", result.stdout)
+        # Mezmo has one agent, so every installed agent, which sends its token, gets its policy.
+        self.assertIn("cover   codex in Mock policy: shell Bash not covered; read apply_patch not covered", result.stdout)
         self.assertNotIn("cursor", result.stdout)
         self.assertEqual(self.writes(), [])
 
@@ -705,6 +706,41 @@ class PolicyTests(CliTestCase):
         self.assertEqual(again.returncode, 0, again.stdout)
         self.assertIn("nothing to add", again.stdout)
         self.assertEqual(self.writes(), [])
+
+    def test_with_one_mezmo_agent_apply_covers_every_installed_agent(self) -> None:
+        # Live setup on 2026-10-16: one Mezmo agent, runtime claude-code, and Codex sends its token.
+        self.cli("install", "codex")
+        result = self.policy("apply", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"policy  Mock policy ({self.mock_policy['policy_id']}) for codex:", result.stdout)
+        tools = [rule["definition"]["tool"]["value"] for rule in self.mock_policy["rules"][1:]]
+        self.assertEqual(tools, [["Bash"], ["apply_patch"]])
+
+    def test_with_several_mezmo_agents_runtime_name_picks_unless_agent_is_given(self) -> None:
+        self.cli("install", "codex")
+        other = {**json.loads(json.dumps(self.mock_policy)), "policy_id": mock_governance.object_id(), "name": "Other policy"}
+        self.governance["policies"].append(other)
+        self.governance["agents"].append({"agent_id": mock_governance.object_id(), "name": "Cursor on example.test",
+                                          "runtime_name": "cursor", "policy_id": other["policy_id"]})
+        result = self.policy("show")
+        self.assertIn("cover   codex: no Mezmo agent has Runtime Name codex; pass --agent", result.stdout)
+        result = self.policy("apply")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL  codex: no Mezmo agent has Runtime Name codex; pass --agent", result.stdout)
+        claude = self.governance["agents"][0]
+        for chosen, policy in ((claude["name"], "Mock policy"), (claude["agent_id"], "Mock policy"), ("Cursor on example.test", "Other policy")):
+            with self.subTest(agent=chosen):
+                result = self.policy("show", "--agent", chosen)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn(f"cover   codex in {policy}: shell Bash not covered", result.stdout)
+        result = self.policy("apply", "--agent", "Cursor on example.test", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(len(other["rules"]), 3)
+        self.assertEqual(self.mock_policy["rules"], [self.seeded])
+        result = self.policy("show", "--agent", "nobody")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL  policy show: no Mezmo agent has the name or agent_id nobody", result.stdout)
+        self.assertEqual(self.cli("policy", "show", "--agent").returncode, 2)
 
     def test_apply_skips_a_tool_a_rule_already_covers(self) -> None:
         self.cli("install", "claude-code")
