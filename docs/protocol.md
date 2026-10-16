@@ -11,8 +11,6 @@ Set `MEZMO_GOVERNANCE_URL` to the full authorize URL:
 https://api.mezmo.com/governance/workflow/authorize
 ```
 
-Development uses `https://api.use.dev.mezmo.it`. The path is the same.
-
 | Method | URL | When |
 | --- | --- | --- |
 | `POST` | `$MEZMO_GOVERNANCE_URL` | Before the tool runs |
