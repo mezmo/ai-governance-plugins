@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -100,9 +101,17 @@ def backup(path: Path) -> Path:
 
 
 def write_json(path: Path, data: Any) -> None:
+    """Write data in the file's own indent and line endings, so the lines install did not change stay the same."""
+    indent, newline, ending = "  ", "\n", "\n"
+    if path.is_file():
+        text = path.read_bytes().decode("utf-8")
+        found = re.search(r"\n([ \t]*)\S", text)
+        indent, ending = (found.group(1) if found else None), text[len(text.rstrip()):]
+        newline = "\r\n" if "\r\n" in text else "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(path.name + ".mezmo-partial")
-    partial.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    output = json.dumps(data, indent=indent, ensure_ascii=False).replace("\n", newline) + ending
+    partial.write_bytes(output.encode("utf-8"))
     os.replace(partial, path)
 
 
@@ -177,7 +186,11 @@ def merged(config: dict, example: dict, field: str) -> dict:
 
 
 def without_hook(config: dict, field: str) -> dict:
-    """The config with every entry that runs the hook taken out."""
+    """The config with every entry that runs the hook taken out.
+
+    Codex keys hook trust by group index, so a removed group that has groups after it
+    leaves an empty group in its place: the later groups keep their index and their trust.
+    """
     result = json.loads(json.dumps(config))
     hooks = as_dict(result.get("hooks"))
     for event in list(hooks):
@@ -185,12 +198,15 @@ def without_hook(config: dict, field: str) -> dict:
         for group in as_list(hooks[event]):
             if isinstance(group, dict) and isinstance(group.get("hooks"), list):
                 inner = [handler for handler in group["hooks"] if not runs_hook(handler, field)]
-                if inner:
+                if inner or not group["hooks"]:
                     kept.append({**group, "hooks": inner})
-                elif not group["hooks"]:
-                    kept.append(group)
+                else:
+                    kept.append(None)
             elif not runs_hook(group, field):
                 kept.append(group)
+        while kept and kept[-1] is None:
+            kept.pop()
+        kept = [{"hooks": []} if group is None else group for group in kept]
         if kept:
             hooks[event] = kept
         else:

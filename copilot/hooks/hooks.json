@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 \"${PLUGIN_ROOT}/mezmo_governance_hook.py\" preToolUse",
+        "powershell": "py -3 \"$env:PLUGIN_ROOT/mezmo_governance_hook.py\" preToolUse",
+        "timeoutSec": 600
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 \"${PLUGIN_ROOT}/mezmo_governance_hook.py\" postToolUse",
+        "powershell": "py -3 \"$env:PLUGIN_ROOT/mezmo_governance_hook.py\" postToolUse",
+        "timeoutSec": 15
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "type": "command",
+        "bash": "python3 \"${PLUGIN_ROOT}/mezmo_governance_hook.py\" postToolUseFailure",
+        "powershell": "py -3 \"$env:PLUGIN_ROOT/mezmo_governance_hook.py\" postToolUseFailure",
+        "timeoutSec": 15
+      }
+    ]
+  }
+}

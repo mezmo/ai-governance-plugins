@@ -247,6 +247,40 @@ class InstallTests(CliTestCase):
                     self.assertEqual(after[copies[0]], original[name])
                     self.assertRegex(first.stdout, rf"backup: \S*{Path(copies[0]).name}\n")
 
+    def test_install_and_uninstall_keep_the_users_json_formatting(self) -> None:
+        # Each user writes a different indent and line ending, non-ASCII text and no final newline.
+        texts = {}
+        for agent, indent, newline in (("codex", "    ", "\n"), ("cursor", "\t", "\n"), ("opencode", " ", "\r\n")):
+            ((name, content),) = ORIGINALS[agent].items()
+            texts[name] = json.dumps({"note": "café", **content}, indent=indent, ensure_ascii=False).replace("\n", newline)
+            (self.tmp / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.tmp / name).write_bytes(texts[name].encode("utf-8"))
+        result = self.cli("install", "codex", "cursor", "opencode")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name, text in texts.items():
+            installed = (self.tmp / name).read_bytes().decode("utf-8")
+            self.assertTrue(installed.startswith(text.split("\n")[0] + "\n" + text.split("\n")[1] + "\n"), installed)
+            self.assertFalse(installed.endswith("\n"), name)
+        result = self.cli("uninstall", "codex", "cursor", "opencode")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name, text in texts.items():
+            self.assertEqual((self.tmp / name).read_bytes().decode("utf-8"), text, name)
+
+    def test_codex_uninstall_keeps_the_place_of_later_hook_groups(self) -> None:
+        # Codex keys hook trust by group index (hooks.state."<file>:pre_tool_use:<group>:<handler>").
+        self.write(ORIGINALS["codex"])
+        self.assertEqual(self.cli("install", "codex").returncode, 0)
+        path = self.tmp / "codex/hooks.json"
+        later = {"matcher": "Edit", "hooks": [{"type": "command", "command": "later-hook"}]}
+        config = json.loads(path.read_text())
+        config["hooks"]["PreToolUse"].append(later)
+        path.write_text(json.dumps(config, indent=2))
+        result = self.cli("uninstall", "codex")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        hooks = json.loads(path.read_text())["hooks"]
+        self.assertEqual(hooks["PreToolUse"], ORIGINALS["codex"]["codex/hooks.json"]["hooks"]["PreToolUse"] + [{"hooks": []}, later])
+        self.assertNotIn("PostToolUse", hooks)
+
     def test_the_installed_files_are_what_each_readme_installs(self) -> None:
         result = self.cli("install", "--all")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -462,6 +496,31 @@ class KeyTests(CliTestCase):
             self.cli(*args)
             leaked = [name for name, content in self.files().items() if CANARY.encode() in content]
             self.assertEqual(leaked, [], args)
+
+
+class ManifestTests(unittest.TestCase):
+    def test_each_native_plugin_points_at_its_own_adapter_and_hook(self) -> None:
+        # marketplace, plugin manifest, hook config, and the example's hook path the plugin swaps out.
+        cases = (
+            (".agents/plugins/marketplace.json", ".codex-plugin/plugin.json", "codex",
+             {'${MEZMO_GOVERNANCE_HOOK:-$HOME/.codex/hooks/mezmo_governance_hook.py}': "${PLUGIN_ROOT}/mezmo_governance_hook.py"}),
+            (".github/plugin/marketplace.json", "plugin.json", "copilot",
+             {'${MEZMO_GOVERNANCE_HOOK:-$HOME/.copilot/hooks/mezmo_governance_hook.py}': "${PLUGIN_ROOT}/mezmo_governance_hook.py",
+              "$HOME/.copilot/hooks/mezmo_governance_hook.py": "$env:PLUGIN_ROOT/mezmo_governance_hook.py"}),
+        )
+        for marketplace, manifest, adapter, swaps in cases:
+            with self.subTest(adapter=adapter):
+                market = json.loads((REPO / marketplace).read_text())
+                (entry,) = market["plugins"]
+                self.assertEqual((market["name"], entry["name"], entry["source"]), ("mezmo", "mezmo-governance", f"./{adapter}"))
+                root = REPO / entry["source"]
+                self.assertEqual(json.loads((root / manifest).read_text())["name"], "mezmo-governance")
+                self.assertTrue((root / "mezmo_governance_hook.py").is_file())
+                text = (root / "hooks.example.json").read_text()
+                for old, new in swaps.items():
+                    text = text.replace(old, new)
+                plugin = json.loads((root / "hooks/hooks.json").read_text())
+                self.assertEqual(plugin["hooks"], json.loads(text)["hooks"])
 
 
 class WrapperTests(CliTestCase):
