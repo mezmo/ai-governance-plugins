@@ -13,7 +13,8 @@ Official docs: https://docs.github.com/en/copilot/reference/hooks-configuration
 
 The script needs Python 3.9 or later and uses only the standard library.
 
-Tested version: Copilot CLI 1.0.95, run live with `copilot -p` against
+Tested versions: Copilot CLI 1.0.95, and 1.0.98 for deny and allow, also with
+`--autopilot --allow-all`, run live with `copilot -p` against
 `tools/mock_governance.py`.
 
 ## Fail behavior
@@ -70,7 +71,9 @@ another payload, which this hook rejects, so Copilot denies every call.
 ## Tool names in policy
 
 Mezmo sees every tool with namespace `copilot`. Names seen live in Copilot CLI
-1.0.95: `bash` for shell commands and `view` for reads.
+1.0.95: `bash` for shell commands and `view` for reads. In Autopilot, Copilot
+also sends its `task_complete` tool through the hook, so a policy that denies
+every tool stops Autopilot from finishing.
 
 ## Cloud agent
 

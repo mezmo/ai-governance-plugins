@@ -345,7 +345,7 @@ one shell call (expected: denied) and one file read (expected: approved):
 | Codex CLI | 0.162.1 | pass | blocked with the guard; runs without it |
 | Cursor CLI | 2026.10.14 | pass | blocked |
 | Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
-| Copilot CLI | 1.0.95 | pass, with user-level hooks | blocked |
+| Copilot CLI | 1.0.95, 1.0.98 | pass, with user-level hooks | blocked (1.0.95) |
 | Goose CLI | 1.54.0 | pass | blocked with `on_failure: block`, also on a timeout; runs without it |
 | OpenCode | 2.0.25 | pass, through the background service with plugin options | not checked |
 | Pi | 1.3.0 | pass | not checked |
