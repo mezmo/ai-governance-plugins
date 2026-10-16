@@ -382,6 +382,7 @@ def check_mezmo(report: Report, ready: bool, probe: bool) -> None:
         return
     fixes = {
         "ENOAGENT": "register an agent in Mezmo Governance with this service account, or use the token of the service account an agent uses",
+        "EPOLICYUNASSIGNED": "assign a policy to the agent in Mezmo Governance",
         "EINVAL": "Mezmo refused the request format; update these plugins",
     }
     fix = fixes.get(hook.error_detail(body.get("code")), "check the agent and its policy in Mezmo")

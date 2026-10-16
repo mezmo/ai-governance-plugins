@@ -265,6 +265,17 @@ class MezmoTests(DoctorTestCase):
         self.assertIn("fresh token", line)
         self.assertIn("service account has Governance permissions", line)
 
+    def test_probe_names_epolicyunassigned_and_its_fix(self) -> None:
+        unassigned = {"status": 403, "code": "EPOLICYUNASSIGNED", "message": "this agent has no policy assigned"}
+        self.stub.answers[("POST", True)] = (403, unassigned)
+
+        result = self.doctor("--probe")
+
+        self.assertEqual(result.returncode, 1)
+        line = self.assertStatus(result, "Mezmo agent", "FAIL")
+        self.assertIn("HTTP 403 EPOLICYUNASSIGNED: this agent has no policy assigned", line)
+        self.assertIn("assign a policy to the agent", line)
+
     def test_probe_names_enoagent_and_its_fix(self) -> None:
         self.stub.answers[("POST", True)] = (403, ENOAGENT)
 

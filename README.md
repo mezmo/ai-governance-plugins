@@ -67,7 +67,8 @@ can watch the plugin wait and then deny.
    Governance and give it Governance permissions and nothing else, so a
    leaked token cannot reach the rest of your Mezmo account. An account
    without Governance permissions gets `401 EAUTH` on every call. Then add
-   policies. The last page shows a `config.toml` for Aura; the plugins need
+   policies and assign one to the agent: an agent without one gets
+   `403 EPOLICYUNASSIGNED`. The last page shows a `config.toml` for Aura; the plugins need
    only two values from it, the `url` (your `MEZMO_GOVERNANCE_URL`) and
    `MEZMO_GOVERNANCE_TOKEN`.
 
@@ -230,6 +231,7 @@ or Mastra setup, which lives in app code; for those, run
 | Every call is denied: `MEZMO_GOVERNANCE_URL must be a non-empty string` | the agent did not inherit the variables | export them in the shell that starts the agent, or use the agent's own settings `env` block |
 | `Mezmo Governance returned HTTP 401 EAUTH` | wrong or revoked service account token, or a service account without Governance permissions | give the agent's service account Governance permissions, then copy a fresh token from the service account in Mezmo |
 | `Mezmo Governance returned HTTP 403 ENOAGENT: no agent is registered for these credentials` | Mezmo accepts the token, but no agent uses its service account | register an agent in Mezmo Governance and use the token of the service account that agent uses |
+| `Mezmo Governance returned HTTP 403 EPOLICYUNASSIGNED: this agent has no policy assigned` | the agent exists but has no policy | assign a policy to the agent in Mezmo Governance |
 | `approval still pending` | policy needs a person and nobody decided in time | decide in Mezmo, or raise `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` (max 590) |
 | `SyntaxError` or `TypeError` on start | `python3` is older than 3.9 | install a newer Python, or point the hook command at it |
 
