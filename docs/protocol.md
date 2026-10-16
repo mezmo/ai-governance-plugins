@@ -122,7 +122,10 @@ returns HTTP 409.
    clients wrap the request in `asyncio.wait_for`, and a watchdog thread in
    the Python hooks prints the deny and exits 2.
 8. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
-   env, or transport error: deny. The tool does not run.
+   env, or transport error: deny. The tool does not run. On a 4xx, the deny
+   reason adds Mezmo's `code` and `message`, each on one line and cut at 200
+   characters, such as `Mezmo Governance returned HTTP 403 ENOAGENT: no agent
+   is registered for these credentials`. Nothing else from the reply is shown.
 9. No client follows a redirect, on the `POST` or the poll `GET`. A 3xx is
    a deny, so the access key never goes to a second URL.
 

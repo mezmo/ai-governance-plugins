@@ -259,6 +259,32 @@ def http_json(
         raise TimeoutError(str(error)) from error
 
 
+MAX_ERROR_DETAIL_CHARACTERS = 200
+
+
+def error_detail(value: Any) -> str:
+    """Mezmo's own error text on one bounded line, or "" when there is none."""
+    if not isinstance(value, str):
+        return ""
+    printable = "".join(ch if ch.isprintable() else " " for ch in value)
+    return " ".join(printable.split())[:MAX_ERROR_DETAIL_CHARACTERS]
+
+
+def http_failure(status: int, body: Mapping[str, Any], when: str = "") -> str:
+    """Name the status and, on a 4xx, Mezmo's code and message; nothing else."""
+    code = message = ""
+    if 400 <= status < 500:
+        code = error_detail(body.get("code"))
+        message = error_detail(body.get("message"))
+    text = f"Mezmo Governance returned HTTP {status}"
+    if code:
+        text += f" {code}"
+    text += when
+    if message:
+        text += f": {message}"
+    return text
+
+
 def remaining_seconds(deadline: float, clock: Clock) -> float:
     leftover = deadline - clock()
     if leftover <= 0:
@@ -312,9 +338,7 @@ def poll_decision(
             sleep(min(interval, leftover))
             continue
         if status != 200:
-            raise HookContractError(
-                f"Mezmo Governance returned HTTP {status} while polling"
-            )
+            raise HookContractError(http_failure(status, body, " while polling"))
         decided = decision_from_status_body(body)
         if decided is not None:
             return decided
@@ -387,7 +411,7 @@ def authorize(
                 str(payload["decision_id"]), deadline, http, clock, sleep
             )
         if status != 200:
-            raise HookContractError(f"Mezmo Governance returned HTTP {status}")
+            raise HookContractError(http_failure(status, body))
         return decision_from_post_body(body)
     finally:
         stop_watchdog()

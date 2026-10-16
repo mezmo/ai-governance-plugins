@@ -288,6 +288,22 @@ class RealTransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(message, reason(output))
 
 
+    async def test_a_mezmo_error_shows_its_code_and_message(self) -> None:
+        answers = [
+            (403, b'{"status":403,"code":"ENOAGENT","message":"no agent is registered for these credentials"}')
+        ]
+        server = serve(answers)
+        try:
+            with patch.dict(os.environ, {**ENV, "MEZMO_GOVERNANCE_URL": url_of(server)}):
+                output = await create_pre_tool_use()(pre_event(), "toolu_01", {"signal": None})
+        finally:
+            server.shutdown()
+            server.server_close()
+        self.assertIn(
+            "Mezmo Governance returned HTTP 403 ENOAGENT: no agent is registered for these credentials",
+            reason(output),
+        )
+
 def post_event(**overrides: Any) -> dict[str, Any]:
     event = pre_event(hook_event_name="PostToolUse", tool_response={"content": [{"type": "text", "text": "ok"}]})
     event.update(overrides)

@@ -201,6 +201,44 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             await authorize(payload, http=http)
 
 
+    @patch.dict(os.environ, ENV)
+    async def test_a_mezmo_error_shows_its_code_and_message(self) -> None:
+        enoagent = {
+            "status": 403,
+            "code": "ENOAGENT",
+            "message": "no agent is registered for these credentials",
+        }
+        noisy = {"code": "EINVAL", "message": "bad\nline\x1b[2J " + "x" * 500, "errors": ["secret-arg"]}
+        cases = [
+            (
+                [(403, enoagent)],
+                "Mezmo Governance returned HTTP 403 ENOAGENT: "
+                "no agent is registered for these credentials",
+            ),
+            (
+                [(409, {}), (401, {"code": "EAUTH", "message": "Unauthorized"})],
+                "Mezmo Governance returned HTTP 401 EAUTH while polling: Unauthorized",
+            ),
+            ([(400, noisy)], "Mezmo Governance returned HTTP 400 EINVAL: bad line [2J xxx"),
+        ]
+        payload = approval_payload(
+            session_id="sess-1",
+            tool_call_id="call-1",
+            tool_name="echo",
+            arguments={"text": "hi"},
+        )
+        for answers, message in cases:
+            with self.subTest(answers=answers):
+                with self.assertRaises(GovernanceError) as caught:
+                    await authorize(payload, http=FakeHttp(answers))
+                shown = str(caught.exception)
+                self.assertIn(message, shown)
+                # One line, bounded, and nothing beyond code and message.
+                self.assertNotIn("\n", shown)
+                self.assertNotIn("\x1b", shown)
+                self.assertNotIn("x" * 201, shown)
+                self.assertNotIn("secret-arg", shown)
+
 class PolicyGovernance:
     """Keeps decisions by decision_id as Mezmo does: a second POST gets 409."""
 

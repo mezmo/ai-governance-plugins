@@ -206,6 +206,32 @@ async def httpx_json(
     return status, body
 
 
+MAX_ERROR_DETAIL_CHARACTERS = 200
+
+
+def error_detail(value: Any) -> str:
+    """Mezmo's own error text on one bounded line, or "" when there is none."""
+    if not isinstance(value, str):
+        return ""
+    printable = "".join(ch if ch.isprintable() else " " for ch in value)
+    return " ".join(printable.split())[:MAX_ERROR_DETAIL_CHARACTERS]
+
+
+def http_failure(status: int, body: Mapping[str, Any], when: str = "") -> str:
+    """Name the status and, on a 4xx, Mezmo's code and message; nothing else."""
+    code = message = ""
+    if 400 <= status < 500:
+        code = error_detail(body.get("code"))
+        message = error_detail(body.get("message"))
+    text = f"Mezmo Governance returned HTTP {status}"
+    if code:
+        text += f" {code}"
+    text += when
+    if message:
+        text += f": {message}"
+    return text
+
+
 def remaining_seconds(deadline: float, clock: Clock) -> float:
     leftover = deadline - clock()
     if leftover <= 0:
@@ -261,9 +287,7 @@ async def poll_decision(
             await sleep(min(interval, leftover))
             continue
         if status != 200:
-            raise GovernanceError(
-                f"Mezmo Governance returned HTTP {status} while polling"
-            )
+            raise GovernanceError(http_failure(status, body, " while polling"))
         decided = decision_from_status(body)
         if decided is not None:
             return decided
@@ -307,5 +331,5 @@ async def authorize(
             base_url,
         )
     if status != 200:
-        raise GovernanceError(f"Mezmo Governance returned HTTP {status}")
+        raise GovernanceError(http_failure(status, body))
     return decision_from_post(body)

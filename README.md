@@ -129,7 +129,8 @@ ends first and returns a clear deny.
 | --- | --- | --- |
 | Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice; Copilot: install in `~/.copilot/hooks/`, not `.github/hooks/`; Gemini CLI: use `~/.gemini/settings.json` or trust the folder; Goose: put the plugin in `~/.agents/plugins/` and use no `"*"` matcher |
 | Every call is denied: `MEZMO_GOVERNANCE_URL must be a non-empty string` | the agent did not inherit the variables | export them in the shell that starts the agent, or use the agent's own settings `env` block |
-| `Mezmo Governance returned HTTP 401` | wrong or revoked access key | copy a fresh key from the agent in Mezmo |
+| `Mezmo Governance returned HTTP 401 EAUTH` | wrong or revoked access key | copy a fresh key from the agent in Mezmo |
+| `Mezmo Governance returned HTTP 403 ENOAGENT: no agent is registered for these credentials` | Mezmo accepts the key, but no agent owns it | register an agent in Mezmo Governance and use that agent's access key |
 | `approval still pending` | policy needs a person and nobody decided in time | decide in Mezmo, or raise `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` (max 590) |
 | `SyntaxError` or `TypeError` on start | `python3` is older than 3.9 | install a newer Python, or point the hook command at it |
 

@@ -264,6 +264,29 @@ export class TimeoutError extends Error {
   }
 }
 
+const MAX_ERROR_DETAIL = 200;
+
+// Mezmo's own error text on one bounded line, or "" when there is none.
+function errorDetail(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.replace(/[\p{C}\p{Z}]+/gu, " ").trim().slice(0, MAX_ERROR_DETAIL);
+}
+
+// Name the status and, on a 4xx, Mezmo's code and message; nothing else.
+function httpFailure(status: number, body: Record<string, unknown>, when = ""): string {
+  const detailed = status >= 400 && status < 500;
+  const code = detailed ? errorDetail(body.code) : "";
+  const message = detailed ? errorDetail(body.message) : "";
+  return (
+    `Mezmo Governance returned HTTP ${status}` +
+    (code ? ` ${code}` : "") +
+    when +
+    (message ? `: ${message}` : "")
+  );
+}
+
 function remainingMs(deadline: number, now: Clock): number {
   const leftover = deadline - now();
   if (leftover <= 0) {
@@ -332,7 +355,7 @@ async function pollDecision(
       continue;
     }
     if (status !== 200) {
-      throw new GovernanceError(`Mezmo Governance returned HTTP ${status} while polling`);
+      throw new GovernanceError(httpFailure(status, body, " while polling"));
     }
     const decided = decisionFromStatus(body);
     if (decided) {
@@ -377,7 +400,7 @@ export async function authorize(
     return pollDecision(String(payload.decision_id), deadline, fetchImpl, now, sleep);
   }
   if (status !== 200) {
-    throw new GovernanceError(`Mezmo Governance returned HTTP ${status}`);
+    throw new GovernanceError(httpFailure(status, body));
   }
   return decisionFromPost(body);
 }

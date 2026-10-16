@@ -814,6 +814,39 @@ class EndToEndTests(unittest.TestCase):
                 self.assertNotEqual(stdout_json(result), ALLOW_OUTPUT)
                 self.assertIn(message, json.dumps(stdout_json(result)))
 
+    def test_a_mezmo_error_shows_its_code_and_message(self) -> None:
+        enoagent = {
+            "status": 403,
+            "code": "ENOAGENT",
+            "message": "no agent is registered for these credentials",
+        }
+        noisy = {"code": "EINVAL", "message": "bad\nline\x1b[2J " + "x" * 500, "errors": ["secret-arg"]}
+        cases = [
+            (
+                [(403, enoagent)],
+                "Mezmo Governance returned HTTP 403 ENOAGENT: "
+                "no agent is registered for these credentials",
+            ),
+            (
+                [(409, {}), (401, {"code": "EAUTH", "message": "Unauthorized"})],
+                "Mezmo Governance returned HTTP 401 EAUTH while polling: Unauthorized",
+            ),
+            ([(400, noisy)], "Mezmo Governance returned HTTP 400 EINVAL: bad line [2J xxx"),
+        ]
+        for answers, message in cases:
+            with self.subTest(answers=answers):
+                with StubGovernance(answers) as stub:
+                    result = self.run_hook(hook_event(PRE_EVENT), stub.url)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotEqual(stdout_json(result), ALLOW_OUTPUT)
+                shown = json.dumps(stdout_json(result))
+                self.assertIn(message, shown)
+                # One line, bounded, and nothing beyond code and message.
+                self.assertNotIn("\\n", shown)
+                self.assertNotIn("\\u001b", shown)
+                self.assertNotIn("x" * 201, shown)
+                self.assertNotIn("secret-arg", shown)
+
     def test_unreachable_governance_denies(self) -> None:
         with StubGovernance([]) as stub:
             url = stub.url

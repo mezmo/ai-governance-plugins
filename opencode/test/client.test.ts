@@ -248,3 +248,60 @@ test("appendAudit writes JSONL", async () => {
     assert.equal(JSON.parse(line).agent, "opencode");
   });
 });
+
+test(
+  "a Mezmo error shows its code and message on one bounded line",
+  () =>
+    withEnv(ENV, async () => {
+      const enoagent = {
+        status: 403,
+        code: "ENOAGENT",
+        message: "no agent is registered for these credentials",
+      };
+      const noisy = {
+        code: "EINVAL",
+        message: `bad\nline\u001b[2J ${"x".repeat(500)}`,
+        errors: ["secret-arg"],
+      };
+      const cases: [[number, unknown][], string][] = [
+        [
+          [[403, enoagent]],
+          "Mezmo Governance returned HTTP 403 ENOAGENT: no agent is registered for these credentials",
+        ],
+        [
+          [[409, {}], [401, { code: "EAUTH", message: "Unauthorized" }]],
+          "Mezmo Governance returned HTTP 401 EAUTH while polling: Unauthorized",
+        ],
+        [[[400, noisy]], "Mezmo Governance returned HTTP 400 EINVAL: bad line [2J xxx"],
+      ];
+      for (const [answers, expected] of cases) {
+        const fetchImpl = async () => {
+          const [status, body] = answers.shift()!;
+          return {
+            status,
+            async text() {
+              return JSON.stringify(body);
+            },
+          };
+        };
+        const payload = approvalPayload({
+          sessionId: "sess-1",
+          toolCallId: "call-1",
+          toolName: "bash",
+          arguments: { command: "ls" },
+        });
+        await assert.rejects(
+          () => authorize(payload, { fetchImpl }),
+          (error: Error) => {
+            assert.ok(error instanceof GovernanceError);
+            assert.ok(error.message.includes(expected), error.message);
+            // One line, bounded, and nothing beyond code and message.
+            assert.ok(!/[\n\u001b]/.test(error.message), error.message);
+            assert.ok(!error.message.includes("x".repeat(201)));
+            assert.ok(!error.message.includes("secret-arg"));
+            return true;
+          },
+        );
+      }
+    }),
+);
