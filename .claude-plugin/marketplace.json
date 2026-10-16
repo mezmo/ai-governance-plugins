@@ -1,0 +1,15 @@
+{
+  "name": "mezmo",
+  "description": "Mezmo's plugin for Claude Code: governance and telemetry.",
+  "owner": {
+    "name": "Mezmo",
+    "url": "https://www.mezmo.com"
+  },
+  "plugins": [
+    {
+      "name": "mezmo",
+      "source": "./claude-code",
+      "description": "Check Claude Code's tool calls with Mezmo Governance, and send Claude Code telemetry to Mezmo."
+    }
+  ]
+}
