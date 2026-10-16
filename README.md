@@ -74,8 +74,11 @@ can watch the plugin wait and then deny.
 
    `MEZMO_GOVERNANCE_TOKEN` is the service account's token, not a key of the
    agent. Copy it from the service account in Mezmo.
-2. Install the plugin for your agent, from this repository. See the change
-   first with `--dry-run`:
+2. Install the plugin for your agent, from this repository. The install
+   governs every session of that agent on this machine, so try a new policy
+   in one session first, as in
+   [A policy for an end-to-end check](#a-policy-for-an-end-to-end-check).
+   See the change first with `--dry-run`:
 
    ```bash
    ./mezmo-governance install claude-code --dry-run
@@ -149,10 +152,16 @@ This policy tests all three outcomes with Claude Code:
 | 3 | `claude_code` | `Bash` | deny, with a message such as `Bash is blocked by policy` |
 | Fallthrough | | | **Send for Approval**, with yourself as approver |
 
-Then, with the plugin installed:
+Run the check in one Claude Code session that loads the plugin, not with a
+user-level install. An installed plugin governs every Claude Code session on
+the machine: under this policy each one loses `Bash`, and every tool other
+than `Read` waits for your approval. Install at user level once the policy
+fits your daily work.
 
 1. `./mezmo-governance doctor --probe`: every Mezmo line is `ok`.
-2. In Claude Code, ask it to read a file: it runs.
+2. Start `claude --plugin-dir ./claude-code` from this repository, with
+   `MEZMO_GOVERNANCE_URL` and `MEZMO_GOVERNANCE_TOKEN` exported. Ask it to
+   read a file: it runs.
 3. Ask it to run `ls`: Claude Code shows your deny message.
 4. Ask it to write a file: Claude Code waits; approve the call in Mezmo
    and the write runs. Try once more and reject it: the write is blocked.
