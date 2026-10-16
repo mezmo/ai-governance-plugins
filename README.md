@@ -130,8 +130,8 @@ A policy has its own dialog in Mezmo Governance, in five pages:
    the plugin's namespace, such as `claude_code`, `codex`, `cursor`,
    `gemini_cli`, `copilot`, `goose`, `opencode` or `pi`, or the MCP server
    name for an MCP tool. Each adapter README lists its tool names.
-3. **Fallthrough:** what happens to a call that no rule permits, such as
-   deny it or ask a person.
+3. **Fallthrough:** what happens to a call that no rule permits:
+   **Deny Outright**, **Send for Approval** or **Allow**.
 4. **Approvers:** the people who decide calls that need approval, from a
    rule or from the fallthrough, and an optional Slack channel for those
    requests. A plugin waits for the decision up to
@@ -147,7 +147,7 @@ This policy tests all three outcomes with Claude Code:
 | 1 | `doctor` | `probe` | allow, so `doctor --probe` passes |
 | 2 | `claude_code` | `Read` | allow |
 | 3 | `claude_code` | `Bash` | deny, with a message such as `Bash is blocked by policy` |
-| Fallthrough | | | ask for approval, with yourself as approver |
+| Fallthrough | | | **Send for Approval**, with yourself as approver |
 
 Then, with the plugin installed:
 
