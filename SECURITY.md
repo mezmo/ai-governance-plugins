@@ -1,15 +1,46 @@
-# Security
+# Security Policy
+
+## Safety boundary
 
 These plugins decide whether an agent may run a tool, so a bug that lets a
-denied call run is a vulnerability.
+denied call run is a vulnerability. So is a crash, a timeout or an unreadable
+reply that lets a call run in an agent the README lists as failing closed.
 
-Report one privately through GitHub: open the repository's **Security** tab and
-choose **Report a vulnerability**. Do not open a public issue or pull request.
+The plugins do not sandbox tools or undo what a tool changed. Mezmo decides
+from the tool name and its arguments; what the tool then does is up to the
+agent and the machine it runs on.
 
-Include the plugin, the agent and its version, and the smallest hook input or
-steps that let a call run that should have been blocked.
+Known limits, not vulnerabilities:
 
-Known limits, not vulnerabilities: Codex and GitHub Copilot run the tool when
-the hook itself crashes or times out (see their READMEs), and the plugins send
-full tool arguments to Mezmo. Goose's Code Mode runs the tool calls inside its
-scripts without a hook, so the Goose hook denies every Code Mode script.
+- Codex and GitHub Copilot run the tool when the hook itself crashes or times
+  out (see their READMEs).
+- Goose's Code Mode runs the tool calls inside its scripts without a hook, so
+  the Goose hook denies every Code Mode script.
+- The OpenAI Agents SDK does not gate hosted tools.
+- The token sits in the agent's environment or settings, so a governed agent
+  that can read them can call Mezmo with it. Keep `MEZMO_GOVERNANCE_ADMIN_KEY`,
+  which `./mezmo-governance policy` uses, out of the agents' environment.
+
+## Data handling
+
+Each tool call sends Mezmo the tool name and its full arguments, plus the
+session and tool call ids. [What leaves your machine](README.md#what-leaves-your-machine)
+has the details, including the LangChain middleware's OpenTelemetry span.
+
+## Reporting a vulnerability
+
+Report suspected vulnerabilities privately to
+[security@mezmo.com](mailto:security@mezmo.com). Do not open a public issue or
+pull request for one.
+
+Include the plugin, the agent and its version, the smallest hook input or steps
+that let a call run that should have been blocked, and the impact you saw.
+Never include live tokens or customer data.
+
+Use a public issue only for a hardening request that discloses nothing
+sensitive.
+
+## Supported versions
+
+Security fixes target the latest commit on `main`. Update before reporting a
+problem that may already be fixed.
