@@ -18,7 +18,8 @@ Known limits, not vulnerabilities:
   the Goose hook denies every Code Mode script.
 - The OpenAI Agents SDK does not gate hosted tools.
 - The token sits in the agent's environment or settings, so a governed agent
-  that can read them can call Mezmo with it. Keep `MEZMO_GOVERNANCE_ADMIN_KEY`,
+  that can read them can call Mezmo with it. Give the agent's service account
+  no write access to policies or agents, and keep `MEZMO_GOVERNANCE_ADMIN_KEY`,
   which `./mezmo-governance policy` uses, out of the agents' environment.
 
 ## Data handling

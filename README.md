@@ -67,7 +67,11 @@ can watch the plugin wait and then deny.
 
    Next the form asks for a service account. Create one only for
    Governance and give it Governance permissions and nothing else, so a
-   leaked token cannot reach the rest of your Mezmo account. An account
+   leaked token cannot reach the rest of your Mezmo account. Leave out write
+   access to policies and agents: the authorize call needs neither, and a
+   governed agent can read its own token, so a token that can edit policies
+   lets the agent change its own rules. Use a separate key for
+   [`policy apply`](#set-up-rules). An account
    without Governance permissions gets `401 EAUTH` on every call. Then add
    policies, as in [Create a policy](#create-a-policy), and assign one to
    the agent: an agent without one gets `403 EPOLICYUNASSIGNED`. The last page shows a `config.toml` for Aura; the plugins need
