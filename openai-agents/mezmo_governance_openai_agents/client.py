@@ -257,6 +257,9 @@ def decision_from_status(body: Mapping[str, Any]) -> Decision | None:
     status = body.get("status")
     reason = body.get("reason")
     detail = reason if isinstance(reason, str) else None
+    # Live Mezmo answers a decided poll with HTTP 200 and the POST body shape.
+    if status is None and isinstance(body.get("approved"), bool):
+        status = "approved" if body["approved"] else "denied"
     if status == "approved":
         return Decision(True, detail)
     if status == "denied":
@@ -283,7 +286,8 @@ async def poll_decision(
         except TimeoutError as error:
             raise GovernanceError(f"Mezmo Governance is unavailable: {error}") from error
         in_time(deadline, clock)
-        if status == 404:
+        # 404: not recorded yet. 207: Mezmo still waits for a person.
+        if status in (404, 207):
             await sleep(min(interval, leftover))
             continue
         if status != 200:
@@ -321,7 +325,8 @@ async def authorize(
             base_url,
         )
     in_time(deadline, clock)
-    if status == 409:
+    # 207: sent for approval; its approved: false is not the decision.
+    if status in (207, 409):
         return await poll_decision(
             str(payload["decision_id"]),
             deadline,

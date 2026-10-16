@@ -151,6 +151,36 @@ test(
 );
 
 test(
+  "a 207 hold polls until Mezmo decides",
+  () =>
+    withEnv(ENV, async () => {
+      // Live Mezmo, 2026-10-16: a call sent for approval answers 207 with
+      // approved false, polls 207 while pending, then 200 once decided.
+      for (const approved of [true, false]) {
+        const answers: Array<[number, unknown]> = [
+          [207, { approved: false, reason: "No rule in this policy covers this request." }],
+          [207, { approved: false, reason: null }],
+          [200, { approved, reason: null }],
+        ];
+        const methods: string[] = [];
+        const fetchImpl = async (_url: string, init: { method?: string }) => {
+          methods.push(init.method ?? "GET");
+          const [status, body] = answers.shift()!;
+          return {
+            status,
+            async text() {
+              return JSON.stringify(body);
+            },
+          };
+        };
+        const decision = await authorize({ decision_id: "d" }, { fetchImpl: fetchImpl as never, sleep: async () => {} });
+        assert.equal(decision.approved, approved);
+        assert.deepEqual(methods, ["POST", "GET", "GET"]);
+      }
+    }),
+);
+
+test(
   "polls after 409 then denies",
   () =>
     withEnv(ENV, async () => {

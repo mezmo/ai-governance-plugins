@@ -291,6 +291,24 @@ class GooseGovernanceHookTests(unittest.TestCase):
 
 class PollingTests(unittest.TestCase):
     @patch.dict(os.environ, ENV)
+    def test_a_207_hold_polls_until_mezmo_decides(self) -> None:
+        # Live Mezmo, 2026-10-16: a call sent for approval answers 207 with
+        # approved false, polls 207 while pending, then 200 once decided.
+        pending = {"approved": False, "reason": None}
+        held = {"approved": False, "reason": "No rule in this policy covers this request."}
+        for approved in (True, False):
+            with self.subTest(approved=approved):
+                http = FakeHttp([(207, held), (207, pending), (200, {"approved": approved, "reason": None})])
+                clock = FakeClock()
+
+                decision = hook.authorize(
+                    {"decision_id": "d"}, http=http, clock=clock, sleep=clock.sleep
+                )
+
+                self.assertIs(decision.approved, approved)
+                self.assertEqual([call[0] for call in http.calls], ["POST", "GET", "GET"])
+
+    @patch.dict(os.environ, ENV)
     def test_poll_treats_404_as_pending_until_decided(self) -> None:
         http = FakeHttp(
             [

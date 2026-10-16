@@ -98,18 +98,23 @@ Status poll:
 { "status": "denied", "reason": "shell is not allowed" }
 ```
 
-If policy needs a person, Mezmo keeps the `POST` open until someone approves or
-denies, or until the wait expires. A second `POST` with the same `decision_id`
-returns HTTP 409.
+If policy sends the call for approval, Mezmo answers the `POST` at once with
+HTTP 207 and `{"approved": false, "reason": "..."}`. That `approved: false` is
+not the decision: the call is waiting for a person. Polls answer HTTP 207 with
+`{"approved": false, "reason": null}` while it waits, then HTTP 200 with
+`{"approved": true|false, "reason": ...}` once someone decides (seen live on
+2026-10-16; a denial by a person was not seen yet). Plugins also accept the
+`status` poll bodies above. A second `POST` with the same `decision_id` returns
+HTTP 409.
 
 ## Client wait strategy
 
 1. `POST` the authorize URL with remaining time until the overall deadline.
 2. HTTP 200 with `approved: true` or `approved: false` is the decision.
-3. HTTP 409: poll `GET ?decision_id=` until `approved`, `denied`, or the deadline.
+3. HTTP 207 or 409: poll `GET ?decision_id=` until a decision or the deadline.
 4. Client or transport timeout on the `POST`: same poll loop. Mezmo may still
    be waiting for a person.
-5. `GET` `pending`: sleep `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` (default 5)
+5. `GET` HTTP 207, or `pending`: sleep `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` (default 5)
    and retry.
 6. `GET` HTTP 404: Mezmo has no record of the decision yet, for example while
    the `POST` is still in flight. Treat it as `pending`. Every adapter does

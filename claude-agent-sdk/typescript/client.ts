@@ -314,8 +314,12 @@ function decisionFromPost(body: Record<string, unknown>): Decision {
 }
 
 function decisionFromStatus(body: Record<string, unknown>): Decision | null {
-  const status = body.status;
+  let status = body.status;
   const reason = typeof body.reason === "string" ? body.reason : null;
+  // Live Mezmo answers a decided poll with HTTP 200 and the POST body shape.
+  if (status === undefined && typeof body.approved === "boolean") {
+    status = body.approved ? "approved" : "denied";
+  }
   if (status === "approved") {
     return { approved: true, reason };
   }
@@ -350,7 +354,8 @@ async function pollDecision(
       throw error;
     }
     inTime(deadline, now);
-    if (status === 404) {
+    // 404: not recorded yet. 207: Mezmo still waits for a person.
+    if (status === 404 || status === 207) {
       await sleep(Math.min(intervalMs, leftover));
       continue;
     }
@@ -396,7 +401,8 @@ export async function authorize(
     throw error;
   }
   inTime(deadline, now);
-  if (status === 409) {
+  // 207: sent for approval; its approved: false is not the decision.
+  if (status === 207 || status === 409) {
     return pollDecision(String(payload.decision_id), deadline, fetchImpl, now, sleep);
   }
   if (status !== 200) {

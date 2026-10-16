@@ -349,6 +349,9 @@ def decision_from_status_body(body: Mapping[str, Any]) -> Decision | None:
     status = body.get("status")
     reason = body.get("reason")
     detail = reason if isinstance(reason, str) else None
+    # Live Mezmo answers a decided poll with HTTP 200 and the POST body shape.
+    if status is None and isinstance(body.get("approved"), bool):
+        status = "approved" if body["approved"] else "denied"
     if status == "approved":
         return Decision(True, detail)
     if status == "denied":
@@ -379,7 +382,8 @@ def poll_decision(
             ) from error
         # An answer that arrives after the deadline is too late to act on.
         leftover = remaining_seconds(deadline, clock)
-        if status == 404:
+        # 404: not recorded yet. 207: Mezmo still waits for a person.
+        if status in (404, 207):
             sleep(min(interval, leftover))
             continue
         if status != 200:
@@ -451,7 +455,8 @@ def authorize(
 
         # An answer that arrives after the deadline is too late to act on.
         remaining_seconds(deadline, clock)
-        if status == 409:
+        # 207: sent for approval; its approved: false is not the decision.
+        if status in (207, 409):
             return poll_decision(
                 str(payload["decision_id"]), deadline, http, clock, sleep
             )

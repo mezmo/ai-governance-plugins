@@ -171,6 +171,21 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(http.calls[1][0], "GET")
 
     @patch.dict(os.environ, ENV)
+    async def test_a_207_hold_polls_until_mezmo_decides(self) -> None:
+        # Live Mezmo, 2026-10-16: a call sent for approval answers 207 with
+        # approved false, polls 207 while pending, then 200 once decided.
+        held = {"approved": False, "reason": "No rule in this policy covers this request."}
+        for approved in (True, False):
+            with self.subTest(approved=approved):
+                http = FakeHttp([(207, held), (207, {"approved": False, "reason": None}), (200, {"approved": approved})])
+                clock = FakeClock()
+
+                decision = await authorize({"decision_id": "d"}, http=http, clock=clock, sleep=clock.sleep)
+
+                self.assertIs(decision.approved, approved)
+                self.assertEqual([call[0] for call in http.calls], ["POST", "GET", "GET"])
+
+    @patch.dict(os.environ, ENV)
     async def test_polls_after_409(self) -> None:
         http = FakeHttp(
             [
