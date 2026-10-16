@@ -104,9 +104,8 @@ function name), in namespace `langchain`. Write policy for
 `langchain:<tool name>`.
 
 `intent_provider` is opt-in and off by default. When you pass one, its return
-value goes in `items[0].tool_call_intent`. That field is not in
-[docs/protocol.md](../docs/protocol.md); use it only with a Mezmo endpoint
-that accepts it.
+value goes in `items[0].tool_call_intent`, cut at Mezmo's limit of 2048
+characters. See [docs/protocol.md](../docs/protocol.md).
 
 OpenTelemetry is optional. If `opentelemetry` is installed, approved calls are
 traced as `mcp.tool_call` spans. Each span carries `tool.name`,

@@ -11,6 +11,7 @@ export const MAX_TIMEOUT_SECONDS = 590;
 const DEFAULT_POLL_INTERVAL_SECONDS = 5;
 export const MIN_POLL_INTERVAL_SECONDS = 1;
 const MAX_RESULT_PREVIEW = 2000;
+const MAX_REQUEST_ID = 128;
 const NAMESPACE_URL = Buffer.from("6ba7b8119dad11d180b400c04fd430c8", "hex");
 
 export type Decision = { approved: boolean; reason: string | null };
@@ -165,11 +166,16 @@ export function callDigest(toolName: string, args: unknown): string {
 }
 
 export function callIdentity(sessionId: string, toolCallId: string, toolName: string, args: unknown) {
-  const requestId = `${AGENT}:${sessionId}:${toolCallId}#${callDigest(toolName, args)}`;
+  const digest = callDigest(toolName, args);
+  const fullId = `${AGENT}:${sessionId}:${toolCallId}#${digest}`;
+  // Mezmo answers HTTP 400 to a longer request_id. The decision id hashes the full id,
+  // so a cut id still gets its own decision.
+  const requestId =
+    fullId.length <= MAX_REQUEST_ID ? fullId : `${fullId.slice(0, MAX_REQUEST_ID - digest.length - 1)}#${digest}`;
   return {
     sessionId,
     requestId,
-    decisionId: uuid5(requestId),
+    decisionId: uuid5(fullId),
   };
 }
 

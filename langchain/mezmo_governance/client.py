@@ -110,6 +110,19 @@ def call_digest(namespace: str, name: str, arguments: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
+# Mezmo answers HTTP 400 to a longer request_id or tool_call_intent. The decision_id hashes the full id,
+# so a cut id still gets its own decision.
+MAX_REQUEST_ID_CHARACTERS = 128
+MAX_INTENT_CHARACTERS = 2048
+
+
+def bounded_request_id(request_id: str) -> str:
+    if len(request_id) <= MAX_REQUEST_ID_CHARACTERS:
+        return request_id
+    head, digest = request_id.rsplit("#", 1)
+    return head[: MAX_REQUEST_ID_CHARACTERS - len(digest) - 1] + "#" + digest
+
+
 def call_identity(
     session_id: str,
     tool_call_id: str,
@@ -120,7 +133,7 @@ def call_identity(
     """Return (decision_id, request_id). A retry of the same call gets the same pair."""
     digest = call_digest(namespace, name, arguments)
     request_id = f"{AGENT}:{session_id}:{tool_call_id}#{digest}"
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, request_id)), request_id
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, request_id)), bounded_request_id(request_id)
 
 
 def approval_payload(
@@ -151,7 +164,7 @@ def approval_payload(
         "arguments": dict(arguments),
     }
     if intent:
-        item["tool_call_intent"] = intent
+        item["tool_call_intent"] = intent[:MAX_INTENT_CHARACTERS]
     return {
         "version": 1,
         "decision_id": decision_id or generated_id,

@@ -57,6 +57,14 @@ test("builds a stable identity", () => {
   assert.equal(first.decisionId, second.decisionId);
 });
 
+test("a long request id fits Mezmo's 128 characters and keeps its digest", () => {
+  const first = callIdentity("s".repeat(150), "call-1", "bash", {});
+  const second = callIdentity("s".repeat(150), "call-2", "bash", {});
+  assert.equal(first.requestId.length, 128);
+  assert.ok(first.requestId.endsWith(`#${callDigest("bash", {})}`));
+  assert.notEqual(first.decisionId, second.decisionId);
+});
+
 test("payload origin is pi_extension", () => {
   const payload = approvalPayload({
     sessionId: "sess-1",

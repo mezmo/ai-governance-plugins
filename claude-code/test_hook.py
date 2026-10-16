@@ -125,6 +125,18 @@ class ClaudeCodeGovernanceHookTests(unittest.TestCase):
             "claude_code:session-1:turn-1:tool-use-1#" + hook.call_digest(*tool_call),
         )
 
+    def test_a_long_request_id_fits_mezmo_and_keeps_its_digest(self) -> None:
+        # Mezmo answers HTTP 400 to a request_id over 128 characters.
+        event = hook_event("PreToolUse")
+        event["session_id"] = "s" * 150
+        tool_call = hook.normalize_tool_call(event)
+        identity = hook.call_identity(event, tool_call)
+        other = hook.call_identity({**event, "tool_use_id": "tool-use-2"}, tool_call)
+
+        self.assertEqual(len(identity.request_id), 128)
+        self.assertTrue(identity.request_id.endswith("#" + hook.call_digest(*tool_call)))
+        self.assertNotEqual(identity.decision_id, other.decision_id)
+
     def test_approval_payload_identifies_claude_code_and_the_mcp_namespace(self) -> None:
         payload = hook.approval_payload(hook_event("PreToolUse"))
 
@@ -664,6 +676,8 @@ SHARED_DEFINITIONS = (
     "required_string",
     "parse_object",
     "call_digest",
+    "MAX_REQUEST_ID_CHARACTERS",
+    "bounded_request_id",
     "status_url",
     "positive_seconds",
     "timeout_seconds",
@@ -719,6 +733,8 @@ class SharedCoreDriftTests(unittest.TestCase):
             for name in SHARED_DEFINITIONS:
                 with self.subTest(adapter=path.parent.name, definition=name):
                     self.assertEqual(sibling.get(name), reference[name])
+            with self.subTest(adapter=path.parent.name, definition="call_identity"):
+                self.assertIn("bounded_request_id", sibling["call_identity"])
         first, *others = (top_level_definitions(path) for path in present)
         for name in SIBLING_ONLY_DEFINITIONS:
             self.assertIsNotNone(first.get(name))

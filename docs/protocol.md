@@ -14,7 +14,7 @@ https://api.mezmo.com/governance/workflow/authorize
 | Method | URL | When |
 | --- | --- | --- |
 | `POST` | `$MEZMO_GOVERNANCE_URL` | Before the tool runs |
-| `GET` | `$MEZMO_GOVERNANCE_URL?decision_id=<id>` | After a client timeout or HTTP 409 |
+| `GET` | `$MEZMO_GOVERNANCE_URL?decision_id=<id>` | After HTTP 207, HTTP 409 or a client timeout |
 
 Post-tool hooks only append a local JSONL file. They do not call Mezmo.
 
@@ -63,7 +63,7 @@ unchanged.
 Rules:
 
 - Top-level fields are `version`, `decision_id`, `request_id`, `scope`,
-  `origin`, `items`. Extra fields are rejected.
+  `origin`, `items`. Send no other fields: Mezmo's schema does not allow them.
 - `scope.kind` is `single` for these plugins. Optional `session_id` is the
   runtime's session, conversation, or thread id.
 - `origin.kind` names the plugin. `origin.reason` is the event name. Optional
@@ -71,6 +71,12 @@ Rules:
 - Each item needs `tool_name`. Plugins always send `tool_namespace`. If you omit
   it, Mezmo treats it as `"default"`. `arguments` is the JSON object the tool will
   receive. `id` is `0` for the single-item requests these plugins send.
+- Length limits: `decision_id`, `request_id` and `scope.session_id` 128
+  characters, `tool_name` and `tool_namespace` 128, `tool_call_intent` 2048.
+  Top-level argument names must match `^[a-zA-Z_][a-zA-Z0-9_]*$`, 64 characters
+  at most. A request over a limit gets HTTP 400, so the call is denied. Plugins
+  cut a longer `request_id` to 128, keeping its `#<digest>` end, and a longer
+  intent to 2048.
 
 ## Authorize response
 
@@ -103,9 +109,14 @@ HTTP 207 and `{"approved": false, "reason": "..."}`. That `approved: false` is
 not the decision: the call is waiting for a person. Polls answer HTTP 207 with
 `{"approved": false, "reason": null}` while it waits, then HTTP 200 with
 `{"approved": true|false, "reason": ...}` once someone decides (seen live on
-2026-10-16; a denial by a person was not seen yet). Plugins also accept the
+2026-10-16, both an approval and a denial by a person). Plugins also accept the
 `status` poll bodies above. A second `POST` with the same `decision_id` returns
 HTTP 409.
+
+The `POST` takes an optional `?response_type=poll|sync` query parameter.
+`poll`, the default, answers 207 at once as above. `sync` holds the `POST` open
+until a person decides or a server timeout passes, then answers 200, or 207 if
+still pending. Plugins send no `response_type`, so they get `poll`.
 
 ## Client wait strategy
 
@@ -222,8 +233,9 @@ The OpenAI Agents SDK guardrail writes none either.
 
 ## Optional item field
 
-The LangChain middleware adds `items[].tool_call_intent` only when you pass an
-`intent_provider`. Leave it unset unless your Mezmo deployment accepts it.
+The LangChain middleware adds `items[].tool_call_intent`, why the model made
+the call, only when you pass an `intent_provider`. Mezmo accepts up to 2048
+characters; the middleware cuts a longer intent.
 
 ## How policy shows up
 
@@ -231,4 +243,4 @@ The LangChain middleware adds `items[].tool_call_intent` only when you pass an
 | --- | --- | --- |
 | allow | `{ "approved": true }` | yes |
 | deny | `{ "approved": false, "reason": "..." }` | no |
-| needs a person | POST stays open, then `{ "approved": true\|false, "reason": "..." }` | only after approve |
+| needs a person | HTTP 207, then polls until HTTP 200 `{ "approved": true\|false, "reason": "..." }` | only after approve |

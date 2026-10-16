@@ -109,6 +109,22 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             {"id", "tool_namespace", "tool_name", "arguments"},
         )
 
+    def test_long_ids_and_intent_fit_mezmo_limits(self) -> None:
+        # Mezmo answers HTTP 400 to a request_id over 128 or an intent over 2048 characters.
+        decision_id, request_id = call_identity("s" * 150, "call-1", "langchain", "echo", {})
+        other_id, _ = call_identity("s" * 150, "call-2", "langchain", "echo", {})
+        payload = approval_payload(
+            session_id="sess-1",
+            tool_call_id="call-1",
+            tool_name="echo",
+            arguments={},
+            intent="x" * 3000,
+        )
+        self.assertEqual(len(request_id), 128)
+        self.assertTrue(request_id.endswith("#" + call_digest("langchain", "echo", {})))
+        self.assertNotEqual(decision_id, other_id)
+        self.assertEqual(len(payload["items"][0]["tool_call_intent"]), 2048)
+
     def test_intent_is_sent_only_when_given(self) -> None:
         payload = approval_payload(
             session_id="sess-1",

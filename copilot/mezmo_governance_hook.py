@@ -173,6 +173,18 @@ def call_digest(namespace: str, name: str, arguments: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
+# Mezmo answers HTTP 400 to a longer request_id. The decision_id hashes the full id,
+# so a cut id still gets its own decision.
+MAX_REQUEST_ID_CHARACTERS = 128
+
+
+def bounded_request_id(request_id: str) -> str:
+    if len(request_id) <= MAX_REQUEST_ID_CHARACTERS:
+        return request_id
+    head, digest = request_id.rsplit("#", 1)
+    return head[: MAX_REQUEST_ID_CHARACTERS - len(digest) - 1] + "#" + digest
+
+
 def call_identity(
     event: Mapping[str, Any], tool_call: NormalizedToolCall
 ) -> CallIdentity:
@@ -182,7 +194,7 @@ def call_identity(
     request_id = f"{AGENT}:{session_id}:run-{uuid.uuid4()}"
     request_id += "#" + call_digest(*tool_call)
     decision_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request_id))
-    return CallIdentity(decision_id, request_id, session_id)
+    return CallIdentity(decision_id, bounded_request_id(request_id), session_id)
 
 
 def origin(event_name: str) -> dict[str, Any]:
