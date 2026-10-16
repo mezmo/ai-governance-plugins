@@ -355,6 +355,20 @@ class ClaudeCodeTests(DoctorTestCase):
         self.assertIn("not installed", claude[1])
         self.assertTrue(claude[1].startswith("warn"))
 
+    def test_an_agent_on_path_gets_a_sample_mezmo_agent_form(self) -> None:
+        self.agent("claude", "2.1.300 (Claude Code)")
+        host = socket.gethostname().split(".")[0].lower()
+
+        result = self.doctor()
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        form = self.assertStatus(result, "Mezmo agent form for Claude Code", "info")
+        self.assertIn(f'Agent Name "Claude Code on {host}"', form)
+        self.assertIn('Runtime Name "claude-code"', form)
+        self.assertIn('Version "2.1.300"', form)
+        self.assertIn(f'Instance ID "claude-code-{host}"', form)
+        self.assertEqual(self.lines(result, "Mezmo agent form for Codex"), [])
+
     def test_versions_below_tested_or_fail_closed_minimum_warn(self) -> None:
         cases = [("2.1.295 (Claude Code)", "tested 2.1.296"), ("2.1.200 (Claude Code)", "fail-closed setting needs")]
         for version, words in cases:

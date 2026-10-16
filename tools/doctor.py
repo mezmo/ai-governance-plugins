@@ -6,7 +6,8 @@
 
 It reads the user-level agent configs and never changes them. It prints one
 line per check, `ok`, `warn`, `FAIL` or `skip`, and exits 1 when a check
-fails. It never prints the access key.
+fails. `info` lines give sample values for the Mezmo add-agent form. It never
+prints the access key.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import uuid
@@ -827,10 +829,26 @@ def check_smokes(report: Report, smokes: list) -> None:
             )
 
 
+def agent_forms(report: Report, agents: tuple) -> None:
+    """Sample answers for the Mezmo "add agent" form; Mezmo gets none of them from the plugins."""
+    host = socket.gethostname().split(".")[0].lower()
+    for agent in agents:
+        path = shutil.which(agent.binary)
+        version = binary_version(path) if path else None
+        if version is None:
+            continue
+        report.line(
+            "info", f"Mezmo agent form for {agent.name}",
+            f'Agent Name "{agent.name} on {host}", Description "{agent.name} with the mezmo-governance plugin", '
+            f'Runtime Name "{agent.readme}", Version "{dotted(version)}", Instance ID "{agent.readme}-{host}"',
+        )
+
+
 def run(agents: tuple = AGENTS, probe: bool = False) -> int:
     report = Report()
     check_mezmo(report, check_settings(report), probe)
     check_smokes(report, check_agents(report, agents))
+    agent_forms(report, agents)
     report.line("skip", "libraries", f"{LIBRARIES} are set up in app code, so the doctor does not check them; run examples/check.sh")
     return 1 if report.failed else 0
 

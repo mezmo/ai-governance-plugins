@@ -48,8 +48,19 @@ can watch the plugin wait and then deny.
 ## Connect to Mezmo
 
 1. In Mezmo Governance, create a policy and register one agent per coding
-   tool, so each has its own policy and log. Copy the agent's access key:
-   Mezmo shows it once.
+   tool, so each has its own policy and log. The add-agent form asks for:
+
+   | Field | Example for Claude Code |
+   | --- | --- |
+   | Agent Name | `Claude Code on my-laptop` |
+   | Description | `Claude Code with the mezmo-governance plugin` |
+   | Runtime Name | `claude-code`, the adapter folder name |
+   | Version | `2.1.300`, from `claude --version` |
+   | Instance ID | `claude-code-my-laptop`, unique per machine |
+
+   The plugins send none of these fields; Mezmo knows the agent by its key.
+   `./mezmo-governance doctor` prints these values for each agent on your
+   `PATH`. Copy the agent's access key: Mezmo shows it once.
 2. Install the plugin for your agent, from this repository. See the change
    first with `--dry-run`:
 
@@ -85,7 +96,7 @@ can watch the plugin wait and then deny.
    each installed Python hook against a closed port and checks that the hook
    denies. It reads the agent configs and changes nothing. Each check prints
    one `ok`, `warn`, `FAIL` or `skip` line with a fix, and the exit code is 1
-   when a check fails. A key can pass the key check and still belong to no
+   when a check fails. `info` lines give the add-agent form values from step 1. A key can pass the key check and still belong to no
    agent. Add `--probe` to send Mezmo one test call for the tool
    `doctor:probe`, which shows up in Mezmo like any other call.
 
