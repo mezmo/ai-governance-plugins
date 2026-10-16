@@ -192,6 +192,13 @@ export function decisionToast(last: LastDecision, summary?: string): string | un
   return undefined
 }
 
+/**
+ * What /mezmo says before governance has checked a call in this session. The access key is in
+ * the keychain, out of the mod's reach, so it can't tell "off" from "on but not used yet".
+ */
+export const NO_GOVERNANCE_TEXT =
+  "Mezmo Governance hasn't checked a tool call in this session. If it isn't set up, run /mezmo:setup governance."
+
 /** What /mezmo says about governance in this session. */
 export function governanceText(state: GovernanceState | undefined, nowMs: number): string | undefined {
   if (!state) return undefined

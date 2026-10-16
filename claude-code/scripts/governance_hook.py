@@ -63,7 +63,12 @@ REMOVED_KEY = "off"
 FALSE_VALUES = ("0", "false", "no", "off")
 
 ERROR_HINTS = {
-    401: "Mezmo rejected the governance access key",
+    # A session that outlives a reinstall of the plugin keeps sending a key that's gone, so name both fixes.
+    401: (
+        "Mezmo rejected the governance access key. If the plugin was just reinstalled or its settings "
+        "changed, run /reload-plugins or start a new session. Otherwise run /mezmo:setup governance "
+        "with a current key"
+    ),
     402: "the Mezmo plan doesn't include governance",
     "ENOAGENT": "no agent is registered for this access key",
     "EAGENTINACTIVE": "the agent for this access key is inactive",

@@ -261,6 +261,9 @@ class ServiceProtocolTests(unittest.TestCase):
         body = {"status": 401, "code": "EAUTH", "message": "Unauthorized"}
         output = hook.handle_event(hook_event("PreToolUse"), http=FakeHttp([(401, body)]))
         self.assertIn("access key", reason_of(output))
+        # A session whose plugin was reinstalled keeps sending a key that's gone: say how to recover.
+        self.assertIn("/reload-plugins", reason_of(output))
+        self.assertIn("/mezmo:setup governance", reason_of(output))
 
     def test_argument_name_the_service_rejects(self) -> None:
         # The body the dev service returned for a Grep call with "-i".

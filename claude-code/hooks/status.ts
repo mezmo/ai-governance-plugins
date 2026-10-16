@@ -150,7 +150,9 @@ function failureLabel(check: MezmoCheck): string | undefined {
 export function describe(session: MezmoFacts, settings: MezmoFacts, check: MezmoCheck | null): View {
   const exporting = isExporting(session)
   if (!exporting && !settings.isMezmo) {
-    return { text: "Mezmo isn't set up. Run /mezmo:setup to send Claude Code telemetry to Mezmo." }
+    return {
+      text: "Mezmo telemetry is off. Run /mezmo:setup telemetry to send Claude Code's metrics, events and traces to Mezmo.",
+    }
   }
 
   const lines: string[] = []

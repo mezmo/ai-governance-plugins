@@ -221,7 +221,8 @@ test('nothing shows and nothing is sent when Mezmo is not configured', async ($,
 
   expect(await footer($)).toBe('')
   expect(w.requests).toEqual([])
-  expect(answer.text).toBe("Mezmo isn't set up. Run /mezmo:setup to send Claude Code telemetry to Mezmo.")
+  // Nothing set up: /mezmo names both features, governance first.
+  expect(answer.text).toBe("Mezmo Governance hasn't checked a tool call in this session. If it isn't set up, run /mezmo:setup governance.\n\nMezmo telemetry is off. Run /mezmo:setup telemetry to send Claude Code's metrics, events and traces to Mezmo.")
 })
 
 test('a rejected key shows in the footer and in /mezmo', async ($, on) => {
@@ -317,7 +318,7 @@ test('a missing settings file means Mezmo is not configured', async ($, on) => {
   const answer = await mezmo($)
 
   expect(await footer($)).toBe('')
-  expect(answer.text).toContain("Mezmo isn't set up.")
+  expect(answer.text).toContain("Mezmo telemetry is off.")
 })
 
 test('a half-written settings file keeps the last reading', async ($, on) => {
@@ -545,7 +546,7 @@ test('with governance off nothing about it shows, and calls run as usual', async
   expect(result.result).toBe('ok')
   expect(await footer($)).toBe('Mezmo · Telemetry ✓')
   expect(await band($)).toEqual([])
-  expect((await mezmo($)).text).not.toContain('Governance')
+  expect((await mezmo($)).text).toContain("Mezmo Governance hasn't checked a tool call in this session.")
   expect(toasts).toEqual([])
 })
 

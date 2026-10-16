@@ -25,6 +25,11 @@ claude plugin install mezmo@mezmo
 Then run `/mezmo:setup` in Claude Code and start a new session. Claude Code reads these settings
 when a session starts, so the session you ran setup in carries on as before.
 
+Removing the marketplace, or uninstalling the plugin, deletes its saved settings, including the
+governance access key in the keychain. That includes moving the plugin to another marketplace.
+Afterwards, run `/reload-plugins` or start a new session, then run `/mezmo:setup governance`
+again. Telemetry settings live in `~/.claude/settings.json` and aren't affected.
+
 | Command | What it does |
 | --- | --- |
 | `/mezmo:setup [governance\|telemetry\|both]` | Sets up governance, telemetry or both, for you or as a managed-settings file for your organization |
@@ -145,6 +150,8 @@ Governance also needs the plugin installed on each machine. Add `extraKnownMarke
 | Blocked with `ENOAGENT`, `EAGENTINACTIVE` or `EPOLICYUNASSIGNED` | The key works, but no active agent with a policy is linked to it |
 | Blocked with `approval still pending` | Nobody decided in time. Approve the call in Mezmo, and Claude's retry goes through |
 | Every call blocked, and governance isn't set up | Your organization set `MEZMO_GOVERNANCE_REQUIRED=1`. Ask them for the access key |
+| Every call blocked with `HTTP 401` right after reinstalling the plugin | The running session still has the old plugin's settings. Run `/reload-plugins` or start a new session, then `/mezmo:setup governance` |
+| Governance is off after reinstalling the plugin | Reinstalling deleted the saved access key. Run `/mezmo:setup governance` again |
 | Telemetry checks pass, but nothing shows up in Mezmo | Start a new session, make sure a pipeline has an OpenTelemetry source, and give metrics a minute |
 | Telemetry setup reports conflicting settings | Your settings already send OpenTelemetry somewhere else. Claude Code only exports to one endpoint |
 

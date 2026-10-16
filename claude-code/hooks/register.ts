@@ -24,6 +24,7 @@ import {
   governanceStatePath,
   governanceText,
   livePending,
+  NO_GOVERNANCE_TEXT,
   parseGovernanceState,
   summarizeCall,
 } from './governance'
@@ -270,9 +271,9 @@ export const register: Register = on => {
     await refreshGovernance($, 'silent')
     const settings = await read($, settingsFacts)
     const telemetry =
-      !sessionCopy || !settings ? "Mezmo: status isn't known yet." : describe(sessionCopy, settings, checkCopy).text
-    const gov = governanceText(...(await liveGovernance($)))
-    return { text: gov ? `${gov}\n\n${telemetry}` : telemetry }
+      !sessionCopy || !settings ? "Mezmo telemetry: status isn't known yet." : describe(sessionCopy, settings, checkCopy).text
+    const gov = governanceText(...(await liveGovernance($))) ?? NO_GOVERNANCE_TEXT
+    return { text: `${gov}\n\n${telemetry}` }
   })
 
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {

@@ -34,6 +34,7 @@ Arguments: $ARGUMENTS
    | What you see | What to tell the user |
    | --- | --- |
    | Governance is off | Tool calls run without a check. Run `/mezmo:setup governance` to turn it on. |
+   | Off right after the plugin was reinstalled or its marketplace changed | Reinstalling deletes the saved access key. Run `/mezmo:setup governance` again. If tool calls are blocked with `HTTP 401` meanwhile, run `/reload-plugins` or start a new session first. |
    | Required but not configured | Every tool call is blocked until governance is configured. Ask their administrator for the agent access key. |
    | `HTTP 401` | Mezmo Governance rejected the access key. Rerun `/mezmo:setup governance` with a current key. |
    | `ENOAGENT`, `EAGENTINACTIVE` or `EPOLICYUNASSIGNED` | The key is valid, but no active agent with a policy is registered for it. An administrator fixes this in Mezmo Governance. |
