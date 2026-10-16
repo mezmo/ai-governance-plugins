@@ -49,7 +49,10 @@ this folder as a Gemini CLI extension:
 gemini extensions install ./gemini-cli --consent --skip-settings
 ```
 
-Gemini CLI asks you to trust the folder, copies it to
+Gemini CLI asks you to trust the folder, and with `--consent` it also trusts
+the folder you run it from, without asking. `install` sets
+`GEMINI_CLI_TRUST_WORKSPACE=true` for the command instead, so it trusts
+neither. Gemini copies the folder to
 `~/.gemini/extensions/mezmo-governance/`, and loads the extension's
 `hooks/hooks.json`, the same two hooks as `settings.example.json`.
 `gemini extensions uninstall mezmo-governance` removes it. Without the

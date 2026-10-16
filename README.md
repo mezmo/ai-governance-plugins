@@ -252,7 +252,8 @@ exits 1.
 | OpenCode 2.x | copies `opencode/` and names it in `opencode.json` with options; the key stays in a file you write | `opencode plugin add` takes an npm or git package only |
 | Pi | `pi install ./pi` | `pi install --help`: `pi install ./local/path` |
 
-Gemini CLI asks you to trust the `gemini-cli/` folder during the install.
+The Gemini CLI install runs with `GEMINI_CLI_TRUST_WORKSPACE=true` for that
+one command, so Gemini asks nothing and adds no folder to `trustedFolders.json`.
 Codex skips the hook until you trust it in `/hooks`. Pi loads the extension
 from this checkout, and Claude Code keeps it as the marketplace, so keep the
 checkout where it is. The

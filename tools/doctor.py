@@ -874,7 +874,7 @@ def check_smokes(report: Report, smokes: list) -> None:
     try:
         result = subprocess.run(
             [python, "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"],
-            capture_output=True, text=True, timeout=20, check=False,
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20, check=False,
         )
         version = version_tuple(result.stdout)
     except (OSError, subprocess.SubprocessError):

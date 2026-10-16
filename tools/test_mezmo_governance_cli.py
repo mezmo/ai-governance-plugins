@@ -51,6 +51,9 @@ if args == ["--version"]:
     sys.exit(0)
 with open(os.environ["FAKE_CLI_LOG"], "a") as log:
     log.write(json.dumps([name] + args) + "\n")
+# A real agent CLI can stop to ask a question; the installer gives it nothing to read the answer from.
+if not os.path.samestat(os.fstat(0), os.stat(os.devnull)):
+    sys.exit(f"fake {name}: stdin is not /dev/null")
 
 
 def load(path):
@@ -93,12 +96,11 @@ elif name == "gemini":
     root = Path(os.environ.get("GEMINI_CLI_HOME") or os.environ["HOME"]) / ".gemini"
     target = root / "extensions" / "mezmo-governance"
     if args[:2] == ["extensions", "install"]:
-        if sys.stdin.readline().strip() != "y":
-            sys.exit("fake gemini: the folder was not trusted")
+        # Gemini asks to trust the folder and waits, even on /dev/null. On a "y" it trusts the
+        # folder, and --consent then trusts the current folder too, unasked.
+        if os.environ.get("GEMINI_CLI_TRUST_WORKSPACE") != "true":
+            sys.exit("fake gemini: waits for an answer to 'Do you trust the files in this folder?'")
         shutil.copytree(args[2], target)
-        trusted = load(root / "trustedFolders.json")
-        trusted[args[2].lower()] = "TRUST_FOLDER"
-        save(root / "trustedFolders.json", trusted)
     elif args[:2] == ["extensions", "uninstall"]:
         shutil.rmtree(target)
     else:
@@ -129,7 +131,6 @@ ORIGINALS = {
 # What the real CLI leaves behind after uninstall, beyond the user's own files.
 LEFTOVERS = {
     "claude-code": ("claude/plugins/installed_plugins.json", "claude/plugins/known_marketplaces.json", "claude/plugins/cache/"),
-    "gemini-cli": ("gemini/.gemini/trustedFolders.json",),
 }
 
 
@@ -335,6 +336,14 @@ class InstallTests(CliTestCase):
         self.assertIn("LangChain: langchain/README.md", result.stdout)
         self.assertIn("Mastra: mastra/README.md", result.stdout)
         self.assertIn("/hooks", result.stdout)
+
+    def test_gemini_install_asks_nothing_and_trusts_no_folder(self) -> None:
+        # A user at a terminal would answer "y", and Gemini would then trust this folder too.
+        result = self.cli("install", "gemini-cli", stdin="y\n")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.tmp / "gemini/.gemini/extensions/mezmo-governance/hooks/hooks.json").is_file())
+        self.assertFalse((self.tmp / "gemini/.gemini/trustedFolders.json").exists())
+        self.assertNotIn("trust", result.stdout)
 
     def test_without_overrides_the_folders_are_under_home(self) -> None:
         env = {key: "" for key in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "GEMINI_CLI_HOME", "COPILOT_HOME",

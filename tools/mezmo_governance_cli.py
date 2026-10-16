@@ -174,10 +174,11 @@ def at(folder: Path, default: Path, text: str) -> str:
     return text.replace("$HOME/" + str(default.relative_to(doctor.home())), str(folder))
 
 
-def run_cli(*args: str) -> None:
+def run_cli(*args: str, env: Optional[dict] = None) -> None:
     print(f"      $ {' '.join((Path(args[0]).name,) + args[1:])}", flush=True)
     try:
-        result = subprocess.run(list(args), timeout=CLI_SECONDS, check=False)
+        # No stdin: a CLI that stops to ask a question fails instead of waiting on the terminal.
+        result = subprocess.run(list(args), stdin=subprocess.DEVNULL, env=env, timeout=CLI_SECONDS, check=False)
     except (OSError, subprocess.SubprocessError) as error:
         raise Failure(f"{args[0]} did not run: {error}") from error
     if result.returncode != 0:
@@ -520,7 +521,7 @@ def gemini_cli() -> Installer:
         return doctor.gemini_dir() / "extensions" / "mezmo-governance"
 
     def touched() -> tuple:
-        return doctor.gemini_dir() / "trustedFolders.json", doctor.gemini_dir() / "extensions" / "extension-enablement.json"
+        return (doctor.gemini_dir() / "extensions" / "extension-enablement.json",)
 
     def installed() -> Optional[str]:
         if (extension() / "hooks" / "hooks.json").is_file():
@@ -533,7 +534,10 @@ def gemini_cli() -> Installer:
         if installed():
             return []
         args = ("extensions", "install", str(REPO / "gemini-cli"), "--consent", "--skip-settings")
-        return [Step(f"gemini {' '.join(args)} (it asks to trust that folder)", touched(), lambda: run_cli(need("gemini"), *args))]
+        # Gemini asks to trust an untrusted source folder and waits even on /dev/null; with --consent
+        # it also trusts the current folder unasked. This trusts both for this one command only.
+        trust = {**os.environ, "GEMINI_CLI_TRUST_WORKSPACE": "true"}
+        return [Step(f"gemini {' '.join(args)}", touched(), lambda: run_cli(need("gemini"), *args, env=trust))]
 
     def uninstall() -> list:
         if not extension().is_dir():
