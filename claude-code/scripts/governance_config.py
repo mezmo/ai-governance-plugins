@@ -27,7 +27,6 @@ import claude_code_otel as cco
 import mezmo_common as mc
 
 DEFAULT_URL = "https://api.mezmo.com/governance/workflow/authorize"
-DEV_URL = "https://api.use.dev.mezmo.it/governance/workflow/authorize"
 PLUGIN_ID = "mezmo@mezmo"
 URL_OPTION = "governance_url"
 KEY_OPTION = "governance_access_key"
@@ -209,7 +208,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     configure = sub.add_parser("configure", help="Check the access key, then save it")
     configure.add_argument("--key", help="Agent access key (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
-    configure.add_argument("--url", default=DEFAULT_URL, help=f"Authorize URL (default: {DEFAULT_URL}; development: {DEV_URL})")
+    configure.add_argument("--url", default=DEFAULT_URL, help=f"Authorize URL (default: {DEFAULT_URL})")
     configure.add_argument("--store", choices=("plugin", "settings"), default="plugin",
                            help="plugin: plugin options, key in the system keychain (default); settings: the settings file's env")
     configure.add_argument("--skip-check", action="store_true", help="Save without checking the key first")

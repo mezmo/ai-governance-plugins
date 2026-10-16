@@ -318,7 +318,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_plugin_option_url(self) -> None:
         values = {"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "sts_opt",
-                  "CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL": "https://api.use.dev.mezmo.it/governance/workflow/authorize"}
+                  "CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL": "https://governance.example.test/governance/workflow/authorize"}
         with patch.dict(os.environ, environment(**values), clear=True):
             self.assertEqual(hook.load_config().url, values["CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL"])
 

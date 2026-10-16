@@ -63,8 +63,6 @@ settings file.
 | Access key | `governance_access_key` | `MEZMO_GOVERNANCE_ACCESS_KEY` or `MEZMO_GOVERNANCE_TOKEN` | none, so governance is off |
 | Required | | `MEZMO_GOVERNANCE_REQUIRED=1` | off |
 
-Development uses `https://api.use.dev.mezmo.it/governance/workflow/authorize`.
-
 The service only accepts plain identifiers as argument names, so a Grep call with `-i` gets
 blocked, and the message says which argument. Also, `--safe-mode` and `"disableAllHooks": true`
 turn the governance check off along with your other hooks.

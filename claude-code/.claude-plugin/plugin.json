@@ -29,7 +29,7 @@
     "governance_url": {
       "type": "string",
       "title": "Mezmo Governance URL",
-      "description": "Authorize endpoint. Leave empty for https://api.mezmo.com/governance/workflow/authorize. Development: https://api.use.dev.mezmo.it/governance/workflow/authorize"
+      "description": "Authorize endpoint. Leave empty for https://api.mezmo.com/governance/workflow/authorize."
     },
     "governance_enabled": {
       "type": "boolean",

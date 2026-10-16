@@ -12,7 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 import governance_config as gc  # noqa: E402
 
 KEY = "sts_0123456789abcdef0123456789abcdef"
-DEV_URL = "https://api.use.dev.mezmo.it/governance/workflow/authorize"
+OTHER_URL = "https://governance.example.test/governance/workflow/authorize"
 PROD_URL = "https://api.mezmo.com/governance/workflow/authorize"
 
 
@@ -68,26 +68,26 @@ class FakeClaude:
 class CheckTest(unittest.TestCase):
     def test_unknown_decision_404_means_the_key_works(self):
         http = FakeHttp()
-        result = gc.check_access(KEY, DEV_URL, send=http)
+        result = gc.check_access(KEY, OTHER_URL, send=http)
         self.assertTrue(result.ok)
         call = http.calls[0]
         self.assertEqual(call["method"], "GET")
-        self.assertTrue(call["url"].startswith(DEV_URL + "?decision_id="))
+        self.assertTrue(call["url"].startswith(OTHER_URL + "?decision_id="))
         self.assertEqual(call["headers"]["Authorization"], f"Token {KEY}")
 
     def test_rejected_key(self):
-        result = gc.check_access(KEY, DEV_URL, send=FakeHttp(401, '{"code":"EAUTH","message":"Unauthorized"}'))
+        result = gc.check_access(KEY, OTHER_URL, send=FakeHttp(401, '{"code":"EAUTH","message":"Unauthorized"}'))
         self.assertFalse(result.ok)
         self.assertIn("rejected", result.detail)
 
     def test_network_error(self):
-        result = gc.check_access(KEY, DEV_URL, send=FakeHttp(error=OSError("nodename nor servname provided")))
+        result = gc.check_access(KEY, OTHER_URL, send=FakeHttp(error=OSError("nodename nor servname provided")))
         self.assertFalse(result.ok)
         self.assertIn("nodename", result.detail)
 
     def test_bearer_key_is_sent_unchanged(self):
         http = FakeHttp()
-        gc.check_access("Bearer " + KEY, DEV_URL, send=http)
+        gc.check_access("Bearer " + KEY, OTHER_URL, send=http)
         self.assertEqual(http.calls[0]["headers"]["Authorization"], "Bearer " + KEY)
 
 
@@ -115,12 +115,12 @@ class CliTest(unittest.TestCase):
 
     def test_configure_checks_then_saves_to_the_plugin(self):
         claude = FakeClaude()
-        code, out, err = self.run_cli("configure", "--key", KEY, "--url", DEV_URL, claude=claude)
+        code, out, err = self.run_cli("configure", "--key", KEY, "--url", OTHER_URL, claude=claude)
         self.assertEqual(code, 0, err)
         save = claude.calls[-1]
         self.assertEqual(save["args"][:4], ["plugin", "configure", "mezmo@mezmo", "--values-stdin"])
         self.assertEqual(json.loads(save["stdin"]),
-                         {"governance_access_key": KEY, "governance_url": DEV_URL, "governance_enabled": "true"})
+                         {"governance_access_key": KEY, "governance_url": OTHER_URL, "governance_enabled": "true"})
         self.assertNotIn(KEY, out + err)
         self.assertIn("sts_…cdef", out)
 
@@ -142,10 +142,10 @@ class CliTest(unittest.TestCase):
         self.assertIn("--store settings", err)
 
     def test_configure_into_the_settings_file(self):
-        code, out, err = self.run_cli("configure", "--key", KEY, "--url", DEV_URL, "--store", "settings")
+        code, out, err = self.run_cli("configure", "--key", KEY, "--url", OTHER_URL, "--store", "settings")
         self.assertEqual(code, 0, err)
         env = json.loads(self.settings.read_text())["env"]
-        self.assertEqual(env, {"MEZMO_GOVERNANCE_URL": DEV_URL, "MEZMO_GOVERNANCE_ACCESS_KEY": KEY})
+        self.assertEqual(env, {"MEZMO_GOVERNANCE_URL": OTHER_URL, "MEZMO_GOVERNANCE_ACCESS_KEY": KEY})
         self.assertNotIn(KEY, out + err)
 
     def test_key_from_environment(self):
@@ -156,7 +156,7 @@ class CliTest(unittest.TestCase):
 
     def test_remove_clears_plugin_options_and_settings(self):
         self.settings.write_text(json.dumps({"model": "opus", "env": {"MEZMO_GOVERNANCE_ACCESS_KEY": KEY, "FOO": "1"}}))
-        claude = FakeClaude(key_set=True, saved_url=DEV_URL)
+        claude = FakeClaude(key_set=True, saved_url=OTHER_URL)
         code, out, err = self.run_cli("remove", claude=claude)
         self.assertEqual(code, 0, err)
         # An empty string can't clear a sensitive option, so the key is overwritten and the switch turned off.
@@ -192,18 +192,18 @@ class CliTest(unittest.TestCase):
                      "detail": "shell is not allowed", "by_person": True},
         }))
         code, out, _ = self.run_cli("status", "--json", "--state-dir", str(self.sessions),
-                                    claude=FakeClaude(key_set=True, saved_url=DEV_URL))
+                                    claude=FakeClaude(key_set=True, saved_url=OTHER_URL))
         self.assertEqual(code, 0)
         report = json.loads(out)
         self.assertTrue(report["configured"])
         self.assertEqual(report["source"], "plugin options")
-        self.assertEqual(report["url"], DEV_URL)
+        self.assertEqual(report["url"], OTHER_URL)
         self.assertEqual(report["latest_session"]["session_id"], "s-2")
         self.assertEqual(report["latest_session"]["counts"]["allowed"], 4)
         self.assertEqual(report["latest_session"]["pending"], 1)
         self.assertEqual(report["last_result"]["outcome"], "denied")
         code, text, _ = self.run_cli("status", "--state-dir", str(self.sessions),
-                                     claude=FakeClaude(key_set=True, saved_url=DEV_URL))
+                                     claude=FakeClaude(key_set=True, saved_url=OTHER_URL))
         self.assertIn("4 allowed, 1 denied", text)
         self.assertIn("1 waiting for a person", text)
         self.assertIn("decided by a person", text)
@@ -227,11 +227,11 @@ class CliTest(unittest.TestCase):
         self.assertIn("off", out)
 
     def test_check_uses_the_settings_key(self):
-        self.settings.write_text(json.dumps({"env": {"MEZMO_GOVERNANCE_ACCESS_KEY": KEY, "MEZMO_GOVERNANCE_URL": DEV_URL}}))
+        self.settings.write_text(json.dumps({"env": {"MEZMO_GOVERNANCE_ACCESS_KEY": KEY, "MEZMO_GOVERNANCE_URL": OTHER_URL}}))
         http = FakeHttp()
         code, out, _ = self.run_cli("check", http=http)
         self.assertEqual(code, 0)
-        self.assertTrue(http.calls[0]["url"].startswith(DEV_URL))
+        self.assertTrue(http.calls[0]["url"].startswith(OTHER_URL))
 
     def test_check_without_a_readable_key(self):
         code, _, err = self.run_cli("check", claude=FakeClaude(key_set=True))
@@ -241,11 +241,11 @@ class CliTest(unittest.TestCase):
     def test_managed_merges_into_an_existing_document(self):
         doc = self.dir / "managed.json"
         doc.write_text(json.dumps({"env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "1"}}))
-        code, out, err = self.run_cli("managed", "--key", KEY, "--url", DEV_URL, "--required", "--output", str(doc))
+        code, out, err = self.run_cli("managed", "--key", KEY, "--url", OTHER_URL, "--required", "--output", str(doc))
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(doc.read_text())["env"], {
             "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
-            "MEZMO_GOVERNANCE_URL": DEV_URL,
+            "MEZMO_GOVERNANCE_URL": OTHER_URL,
             "MEZMO_GOVERNANCE_ACCESS_KEY": KEY,
             "MEZMO_GOVERNANCE_REQUIRED": "1",
         })

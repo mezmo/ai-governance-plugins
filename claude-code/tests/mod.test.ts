@@ -342,7 +342,7 @@ function govState(over: Partial<GovernanceState> = {}): GovernanceState {
   return {
     counts: { allowed: 0, denied: 0, expired: 0, errors: 0 },
     pending: {},
-    host: 'api.use.dev.mezmo.it',
+    host: 'governance.example.test',
     ...over,
   }
 }
@@ -508,7 +508,7 @@ test('a call waiting for a person shows in the band, ticks, and toasts the decis
   expect(await band($)).toEqual([])
   expect(await footer($)).toBe('Mezmo · Governance 1 ✓ · Telemetry ✓')
   const answer = await mezmo($)
-  expect(answer.text).toContain('Mezmo Governance (api.use.dev.mezmo.it) in this session: 1 allowed, 0 denied, 0 not decided in time, 0 errors.')
+  expect(answer.text).toContain('Mezmo Governance (governance.example.test) in this session: 1 allowed, 0 denied, 0 not decided in time, 0 errors.')
   expect(answer.text).toContain('Last check: Bash allowed by a person: looks fine')
   // Governance comes first, then telemetry.
   const text = answer.text ?? ''

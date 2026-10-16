@@ -45,9 +45,6 @@ export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize
 export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
 ```
 
-For development, use
-`https://api.use.dev.mezmo.it/governance/workflow/authorize` instead.
-
 Register a separate agent for each coding tool so policy and logs stay
 separate. Then follow the README in that tool's directory.
 

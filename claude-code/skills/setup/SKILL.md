@@ -54,7 +54,6 @@ Ask for the **agent access key**. In Mezmo, an administrator registers an agent 
 Ask which environment:
 
 - Production (default): `https://api.mezmo.com/governance/workflow/authorize`
-- Development: `https://api.use.dev.mezmo.it/governance/workflow/authorize`
 - Another authorize URL
 
 Before saving, tell the user what changes:
