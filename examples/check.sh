@@ -21,7 +21,7 @@ until grep -q "Mock Mezmo Governance" "$work/mock.log" 2>/dev/null; do
 done
 
 export MEZMO_GOVERNANCE_URL="http://127.0.0.1:$port/governance/workflow/authorize"
-export MEZMO_GOVERNANCE_ACCESS_KEY=local-test
+export MEZMO_GOVERNANCE_TOKEN=local-test
 export MEZMO_GOVERNANCE_AUDIT_LOG="$work/audit.jsonl"
 # Nothing listens on this port, so every call there must be blocked.
 export DOWN_URL="http://127.0.0.1:$(free_port)/governance/workflow/authorize"

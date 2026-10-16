@@ -59,7 +59,7 @@ cp mezmo_governance_hook.py ~/.copilot/hooks/
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
 Each command passes the event name as its last argument, for example
@@ -84,7 +84,7 @@ command at it from the repository root:
 
 The agent's firewall blocks hosts other than GitHub and Copilot by default.
 An admin must allow the Mezmo host, or every call is denied. The docs do not
-say how a hook gets a secret such as the access key; this is not verified.
+say how a hook gets a secret such as the token; this is not verified.
 The audit log is lost when the job ends.
 
 ## MCP tools
@@ -97,7 +97,7 @@ policy keyed on the MCP server name does not match. This is not verified.
 
 The example has a `powershell` command that uses `py -3` and `$HOME`. It was
 not run on Windows. In PowerShell, set the variables with
-`$env:MEZMO_GOVERNANCE_URL = "..."` and `$env:MEZMO_GOVERNANCE_ACCESS_KEY = "..."`
+`$env:MEZMO_GOVERNANCE_URL = "..."` and `$env:MEZMO_GOVERNANCE_TOKEN = "..."`
 before you start Copilot.
 
 ## Smoke test
@@ -108,7 +108,7 @@ denies when Mezmo cannot be reached. Nothing listens on port 9:
 ```bash
 echo '{"sessionId":"smoke","timestamp":0,"cwd":".","toolName":"bash","toolArgs":"{\"command\":\"echo hi\"}"}' \
   | MEZMO_GOVERNANCE_URL="http://127.0.0.1:9/governance/workflow/authorize" \
-    MEZMO_GOVERNANCE_ACCESS_KEY="test" python3 mezmo_governance_hook.py preToolUse
+    MEZMO_GOVERNANCE_TOKEN="test" python3 mezmo_governance_hook.py preToolUse
 ```
 
 It exits 0 and prints a deny. The text after `unavailable:` varies by platform:

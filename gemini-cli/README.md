@@ -65,7 +65,7 @@ cp mezmo_governance_hook.py ~/.gemini/hooks/
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
 4. Run `/hooks panel` and check that both hooks are listed and enabled. Gemini
@@ -82,7 +82,7 @@ script's own 590 second deadline ends first and returns a clear deny.
 
 If you turn on `security.environmentVariableRedaction`, Gemini CLI removes
 variables whose names contain `KEY` or `TOKEN` from the hook. Add
-`MEZMO_GOVERNANCE_ACCESS_KEY` to its `allowed` list, or every call is denied.
+`MEZMO_GOVERNANCE_TOKEN` to its `allowed` list, or every call is denied.
 
 ## Tool names in policy
 
@@ -113,7 +113,7 @@ The `if ($LASTEXITCODE ...)` part is the crash guard in PowerShell form, for
 `BeforeTool` only. It was not run on Windows.
 
 Set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
-`$env:MEZMO_GOVERNANCE_ACCESS_KEY = "..."` before you start Gemini CLI.
+`$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Gemini CLI.
 
 ## Smoke test
 
@@ -123,7 +123,7 @@ denies when Mezmo cannot be reached. Nothing listens on port 9:
 ```bash
 echo '{"hook_event_name":"BeforeTool","session_id":"smoke","tool_name":"run_shell_command","tool_input":{"command":"echo hi"}}' \
   | MEZMO_GOVERNANCE_URL="http://127.0.0.1:9/governance/workflow/authorize" \
-    MEZMO_GOVERNANCE_ACCESS_KEY="test" python3 mezmo_governance_hook.py
+    MEZMO_GOVERNANCE_TOKEN="test" python3 mezmo_governance_hook.py
 ```
 
 It exits 0 and prints a deny. The text after `unavailable:` varies by platform:

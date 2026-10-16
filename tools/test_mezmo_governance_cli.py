@@ -159,7 +159,7 @@ class CliTestCase(unittest.TestCase):
                 "GOOSE_PATH_ROOT": str(self.tmp / "goose"),
                 "XDG_CONFIG_HOME": str(self.tmp / "xdg"),
                 "PI_CODING_AGENT_DIR": str(self.tmp / "pi"),
-                "MEZMO_GOVERNANCE_ACCESS_KEY": CANARY,
+                "MEZMO_GOVERNANCE_TOKEN": CANARY,
             }
         )
 
@@ -262,7 +262,7 @@ class InstallTests(CliTestCase):
         self.assertNotIn("$HOME", copilot)
         opencode = json.loads((self.tmp / "xdg/opencode/opencode.json").read_text())
         options = opencode["plugins"][0]["options"]
-        self.assertEqual(options["MEZMO_GOVERNANCE_ACCESS_KEY"], f"{{file:{self.tmp}/xdg/mezmo/governance-key}}")
+        self.assertEqual(options["MEZMO_GOVERNANCE_TOKEN"], f"{{file:{self.tmp}/xdg/mezmo/governance-key}}")
         self.assertTrue((self.tmp / "xdg/opencode/mezmo-governance/index.ts").is_file())
         self.assertFalse((self.tmp / "xdg/opencode/mezmo-governance/test").exists())
         self.assertFalse((self.tmp / "xdg/mezmo/governance-key").exists())
@@ -410,7 +410,7 @@ class CommandTests(CliTestCase):
         lines = [process.stdout.readline() for _ in range(4)]
         process.stdout.close()
         self.assertIn("export MEZMO_GOVERNANCE_URL=http://127.0.0.1:", lines[1])
-        self.assertIn("export MEZMO_GOVERNANCE_ACCESS_KEY=local-test", lines[2])
+        self.assertIn("export MEZMO_GOVERNANCE_TOKEN=local-test", lines[2])
         self.assertIn("deny: ['Bash']", lines[3])
 
 

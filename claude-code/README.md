@@ -31,7 +31,7 @@ cp mezmo_governance_hook.py ~/.claude/hooks/
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
 Claude Code also accepts `if` matchers such as `Bash(git *)` or
@@ -52,12 +52,12 @@ in Claude Code to set the URL and key, or export the variables.
 the `mezmo` marketplace if it points at this checkout.
 
 When you enable the plugin, Claude Code asks for the Mezmo Governance URL
-(default `https://api.mezmo.com/governance/workflow/authorize`) and the agent
-access key. It stores the key in the system credential store, not in
+(default `https://api.mezmo.com/governance/workflow/authorize`) and the service
+account token. It stores the key in the system credential store, not in
 `settings.json`, and passes both to the hook as `CLAUDE_PLUGIN_OPTION_*`
 variables. Change the URL later with `/config`; the key, being sensitive, does
 not appear there. `MEZMO_GOVERNANCE_URL` and
-`MEZMO_GOVERNANCE_ACCESS_KEY`, when set, win over the plugin options.
+`MEZMO_GOVERNANCE_TOKEN`, when set, win over the plugin options.
 
 ## Windows
 
@@ -71,7 +71,7 @@ that blocks every tool call. Then replace each command with an absolute path:
 ```
 
 In PowerShell, set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
-`$env:MEZMO_GOVERNANCE_ACCESS_KEY = "..."` before you start Claude Code.
+`$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Claude Code.
 
 ## Smoke test
 
@@ -81,7 +81,7 @@ denies when Mezmo cannot be reached. Nothing listens on port 9:
 ```bash
 echo '{"hook_event_name":"PreToolUse","session_id":"smoke","tool_use_id":"smoke-1","tool_name":"Bash","tool_input":{"command":"echo hi"}}' \
   | MEZMO_GOVERNANCE_URL="http://127.0.0.1:9/governance/workflow/authorize" \
-    MEZMO_GOVERNANCE_ACCESS_KEY="test" python3 mezmo_governance_hook.py
+    MEZMO_GOVERNANCE_TOKEN="test" python3 mezmo_governance_hook.py
 ```
 
 It exits 0 and prints a deny. The text after `unavailable:` varies by platform:

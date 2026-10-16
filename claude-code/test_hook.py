@@ -25,7 +25,7 @@ import mezmo_governance_hook as hook
 AUTHORIZE_URL = "https://api.example.test/governance/workflow/authorize"
 ENV = {
     "MEZMO_GOVERNANCE_URL": AUTHORIZE_URL,
-    "MEZMO_GOVERNANCE_ACCESS_KEY": "sts_test",
+    "MEZMO_GOVERNANCE_TOKEN": "sts_test",
     "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "30",
     "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": "1",
 }
@@ -292,7 +292,7 @@ class ClaudeCodeGovernanceHookTests(unittest.TestCase):
             self.assertEqual(hook.authorization_header(), "Token sts_test")
         with patch.dict(
             os.environ,
-            {**ENV, "MEZMO_GOVERNANCE_ACCESS_KEY": "Token sts_test"},
+            {**ENV, "MEZMO_GOVERNANCE_TOKEN": "Token sts_test"},
         ):
             self.assertEqual(hook.authorization_header(), "Token sts_test")
 
@@ -525,7 +525,7 @@ class PluginOptionTests(unittest.TestCase):
     def test_blank_environment_values_fall_back(self) -> None:
         env = {
             "MEZMO_GOVERNANCE_URL": " ",
-            "MEZMO_GOVERNANCE_ACCESS_KEY": "",
+            "MEZMO_GOVERNANCE_TOKEN": "",
             self.URL_OPTION: self.PLUGIN_URL,
             self.KEY_OPTION: "sts_plugin",
         }
@@ -542,7 +542,7 @@ class PluginOptionTests(unittest.TestCase):
                 hook.authorize_url()
             with self.assertRaisesRegex(
                 hook.HookContractError,
-                "MEZMO_GOVERNANCE_ACCESS_KEY.*CLAUDE_PLUGIN_OPTION_ACCESS_KEY",
+                "MEZMO_GOVERNANCE_TOKEN.*CLAUDE_PLUGIN_OPTION_ACCESS_KEY",
             ):
                 hook.authorization_header()
 
@@ -839,7 +839,7 @@ class EndToEndTests(unittest.TestCase):
         env.update(
             {
                 "NO_PROXY": "*",
-                "MEZMO_GOVERNANCE_ACCESS_KEY": "sts_test",
+                "MEZMO_GOVERNANCE_TOKEN": "sts_test",
                 "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "20",
                 "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": "1",
                 "MEZMO_GOVERNANCE_AUDIT_LOG": str(Path(self.tmp.name) / "audit.jsonl"),
@@ -989,7 +989,7 @@ class EndToEndTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIsNone(stdout_json(result))
-        # MEZMO_GOVERNANCE_ACCESS_KEY is set in run_hook, so it wins.
+        # MEZMO_GOVERNANCE_TOKEN is set in run_hook, so it wins.
         self.assertEqual(stub.requests[0]["authorization"], "Token sts_test")
 
     def test_unsupported_event_exits_2(self) -> None:

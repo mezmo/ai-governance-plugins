@@ -32,7 +32,7 @@ without `python3` in front, run `chmod +x` on it first. Then:
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
 Optional matchers: `Shell`, `Read`, `Write`, `MCP:<tool_name>`. Cloud agents
@@ -65,7 +65,7 @@ Windows, use an absolute path:
 ```
 
 In PowerShell, set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
-`$env:MEZMO_GOVERNANCE_ACCESS_KEY = "..."` before you start Cursor.
+`$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Cursor.
 
 ## Smoke test
 
@@ -75,7 +75,7 @@ denies when Mezmo cannot be reached. Nothing listens on port 9:
 ```bash
 echo '{"hook_event_name":"preToolUse","conversation_id":"smoke","tool_use_id":"smoke-1","tool_name":"Shell","tool_input":{"command":"echo hi"}}' \
   | MEZMO_GOVERNANCE_URL="http://127.0.0.1:9/governance/workflow/authorize" \
-    MEZMO_GOVERNANCE_ACCESS_KEY="test" python3 mezmo_governance_hook.py
+    MEZMO_GOVERNANCE_TOKEN="test" python3 mezmo_governance_hook.py
 ```
 
 It exits 0 and prints a deny. The text after `unavailable:` varies by platform:

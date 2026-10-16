@@ -25,7 +25,7 @@ import mezmo_governance_hook as hook
 AUTHORIZE_URL = "https://api.example.test/governance/workflow/authorize"
 ENV = {
     "MEZMO_GOVERNANCE_URL": AUTHORIZE_URL,
-    "MEZMO_GOVERNANCE_ACCESS_KEY": "sts_test",
+    "MEZMO_GOVERNANCE_TOKEN": "sts_test",
     "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "30",
     "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": "1",
 }
@@ -713,7 +713,7 @@ class EndToEndTests(unittest.TestCase):
         env.update(
             {
                 "NO_PROXY": "*",
-                "MEZMO_GOVERNANCE_ACCESS_KEY": "sts_test",
+                "MEZMO_GOVERNANCE_TOKEN": "sts_test",
                 "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "20",
                 "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": "1",
                 "MEZMO_GOVERNANCE_AUDIT_LOG": str(Path(self.tmp.name) / "audit.jsonl"),

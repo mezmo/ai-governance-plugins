@@ -93,7 +93,7 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
     ) -> None:
         super().__init__()
         # Explicit arguments win over MEZMO_GOVERNANCE_URL and
-        # MEZMO_GOVERNANCE_ACCESS_KEY, which are read per call when these are None.
+        # MEZMO_GOVERNANCE_TOKEN, which are read per call when these are None.
         self.endpoint = endpoint
         # Session for calls without a thread_id or turn id: one per middleware.
         self.session_id = f"middleware-{uuid.uuid4()}"

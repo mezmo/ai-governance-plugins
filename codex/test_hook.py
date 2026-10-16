@@ -25,7 +25,7 @@ import mezmo_governance_hook as hook
 AUTHORIZE_URL = "https://api.example.test/governance/workflow/authorize"
 ENV = {
     "MEZMO_GOVERNANCE_URL": AUTHORIZE_URL,
-    "MEZMO_GOVERNANCE_ACCESS_KEY": "sts_test",
+    "MEZMO_GOVERNANCE_TOKEN": "sts_test",
     "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "30",
     "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": "1",
 }
@@ -292,7 +292,7 @@ class CodexGovernanceHookTests(unittest.TestCase):
             self.assertEqual(hook.authorization_header(), "Token sts_test")
         with patch.dict(
             os.environ,
-            {**ENV, "MEZMO_GOVERNANCE_ACCESS_KEY": "Token sts_test"},
+            {**ENV, "MEZMO_GOVERNANCE_TOKEN": "Token sts_test"},
         ):
             self.assertEqual(hook.authorization_header(), "Token sts_test")
 
@@ -735,7 +735,7 @@ class EndToEndTests(unittest.TestCase):
         env.update(
             {
                 "NO_PROXY": "*",
-                "MEZMO_GOVERNANCE_ACCESS_KEY": "sts_test",
+                "MEZMO_GOVERNANCE_TOKEN": "sts_test",
                 "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "20",
                 "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": "1",
                 "MEZMO_GOVERNANCE_AUDIT_LOG": str(Path(self.tmp.name) / "audit.jsonl"),

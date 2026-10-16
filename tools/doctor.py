@@ -7,7 +7,7 @@
 It reads the user-level agent configs and never changes them. It prints one
 line per check, `ok`, `warn`, `FAIL` or `skip`, and exits 1 when a check
 fails. `info` lines give sample values for the Mezmo add-agent form. It never
-prints the access key.
+prints the token.
 """
 
 from __future__ import annotations
@@ -65,7 +65,7 @@ class Report:
         self.failed = False
         self.secrets: list = []
         try:
-            key = hook.configured("MEZMO_GOVERNANCE_ACCESS_KEY")
+            key = hook.configured("MEZMO_GOVERNANCE_TOKEN")
         except hook.HookContractError:
             return
         # Redact the key with and without its Token or Bearer prefix.
@@ -250,8 +250,8 @@ def check_settings(report: Report) -> bool:
     for name, fix in (
         ("MEZMO_GOVERNANCE_URL", f"export MEZMO_GOVERNANCE_URL={DEFAULT_URL}"),
         (
-            "MEZMO_GOVERNANCE_ACCESS_KEY",
-            'export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>", copied from the agent in Mezmo',
+            "MEZMO_GOVERNANCE_TOKEN",
+            'export MEZMO_GOVERNANCE_TOKEN="<service account token>", copied from the service account in Mezmo',
         ),
     ):
         try:
@@ -348,7 +348,10 @@ def check_mezmo(report: Report, ready: bool, probe: bool) -> None:
     if status == 404:
         report.line("ok", "Mezmo key", "accepted (a made-up decision id gets HTTP 404)")
     else:
-        report.line("FAIL", "Mezmo key", hook.http_failure(status, body), "copy a fresh key from the agent in Mezmo")
+        report.line(
+            "FAIL", "Mezmo key", hook.http_failure(status, body),
+            "check that the agent's service account has Governance permissions, then copy a fresh token from the service account in Mezmo",
+        )
         return
 
     if not probe:
@@ -378,7 +381,7 @@ def check_mezmo(report: Report, ready: bool, probe: bool) -> None:
         report.line("ok", "Mezmo agent", f"the test call doctor:probe was {verdict}; Mezmo logs it like any call")
         return
     fixes = {
-        "ENOAGENT": "register an agent in Mezmo Governance and use that agent's access key",
+        "ENOAGENT": "register an agent in Mezmo Governance with this service account, or use the token of the service account an agent uses",
         "EINVAL": "Mezmo refused the request format; update these plugins",
     }
     fix = fixes.get(hook.error_detail(body.get("code")), "check the agent and its policy in Mezmo")
@@ -606,7 +609,7 @@ def opencode_option(report: Report, options: dict, name: str) -> None:
         if not (read_text(path) or "").strip():
             report.line(
                 "FAIL", "OpenCode options", f"{name} names {shown(path)}, which is missing or empty, so every call is blocked",
-                "write the agent access key to that file",
+                "write the service account token to that file",
             )
             return
     elif name == "MEZMO_GOVERNANCE_URL" and url_problem(value):
@@ -634,7 +637,7 @@ def check_opencode(report: Report, version: Optional[tuple]) -> Optional[list]:
             report.line("ok", "OpenCode plugin", f"{package} is named in {shown(config / 'opencode.json')}")
         else:
             report.line("FAIL", "OpenCode plugin", f"{shown(folder)} has no index.ts", "copy the opencode folder as in opencode/README.md")
-        for name in ("MEZMO_GOVERNANCE_URL", "MEZMO_GOVERNANCE_ACCESS_KEY"):
+        for name in ("MEZMO_GOVERNANCE_URL", "MEZMO_GOVERNANCE_TOKEN"):
             opencode_option(report, options, name)
     if file_install:
         if not (plugins / "mezmo-governance" / "client.ts").is_file():
@@ -798,7 +801,7 @@ def check_smokes(report: Report, smokes: list) -> None:
     env.update(
         {
             "MEZMO_GOVERNANCE_URL": UNREACHABLE_URL,
-            "MEZMO_GOVERNANCE_ACCESS_KEY": "doctor-smoke",
+            "MEZMO_GOVERNANCE_TOKEN": "doctor-smoke",
             "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "10",
         }
     )

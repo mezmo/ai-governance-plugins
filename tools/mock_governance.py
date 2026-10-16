@@ -6,7 +6,7 @@ decision. It is not a policy engine and has no authentication.
 
     python3 tools/mock_governance.py --deny Bash --deny 'mcp__*'
     export MEZMO_GOVERNANCE_URL=http://127.0.0.1:8787/governance/workflow/authorize
-    export MEZMO_GOVERNANCE_ACCESS_KEY=local-test
+    export MEZMO_GOVERNANCE_TOKEN=local-test
 
 Patterns match the tool name as the plugin sends it (`Bash`, `pods_delete`)
 or `<tool_namespace>:<tool_name>` (`kubernetes:pods_delete`), with fnmatch
@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     url = f"http://127.0.0.1:{server.server_port}{PATH}"
     print(f"Mock Mezmo Governance on {url}", flush=True)
     print(f"  export MEZMO_GOVERNANCE_URL={url}", flush=True)
-    print("  export MEZMO_GOVERNANCE_ACCESS_KEY=local-test", flush=True)
+    print("  export MEZMO_GOVERNANCE_TOKEN=local-test", flush=True)
     print(f"  deny: {args.deny or '-'}  hold: {args.hold or '-'}", flush=True)
     try:
         server.serve_forever()

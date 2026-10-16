@@ -44,7 +44,7 @@ result = Runner.run_sync(agent, "Delete the note todo", run_config=RunConfig(gro
 ```
 
 `MezmoGovernance()` reads `MEZMO_GOVERNANCE_URL` and
-`MEZMO_GOVERNANCE_ACCESS_KEY` per call. Pass an endpoint and
+`MEZMO_GOVERNANCE_TOKEN` per call. Pass an endpoint and
 `access_key=` to use those instead.
 
 `govern(agent)` adds the guardrail, first in line, to:

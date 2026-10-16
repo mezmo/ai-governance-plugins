@@ -20,7 +20,9 @@ Post-tool hooks only append a local JSONL file. They do not call Mezmo.
 
 ## Authentication
 
-Register an agent in Mezmo and copy its access key. Plugins send:
+Register an agent in Mezmo with a service account that has Governance
+permissions, and copy that service account's token. Use a service account
+made for Governance alone, with no other permissions. Plugins send:
 
 ```http
 Authorization: Token <access_key>
@@ -29,7 +31,7 @@ Authorization: Token <access_key>
 That header identifies the agent and the policy attached to it. Do not send a
 user session token in its place.
 
-If the access key already starts with `Token ` or `Bearer `, plugins send it
+If the token already starts with `Token ` or `Bearer `, plugins send it
 unchanged.
 
 ## Authorize request
@@ -125,7 +127,7 @@ returns HTTP 409.
    characters, such as `Mezmo Governance returned HTTP 403 ENOAGENT: no agent
    is registered for these credentials`. Nothing else from the reply is shown.
 9. No client follows a redirect, on the `POST` or the poll `GET`. A 3xx is
-   a deny, so the access key never goes to a second URL.
+   a deny, so the token never goes to a second URL.
 
 ## Identity
 
@@ -165,7 +167,7 @@ MCP tool names of the form `mcp__<server>__<tool>` split into namespace
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
 | `MEZMO_GOVERNANCE_URL` | yes | — | Full authorize URL |
-| `MEZMO_GOVERNANCE_ACCESS_KEY` | yes | — | Agent access key (plugins prefix `Token `) |
+| `MEZMO_GOVERNANCE_TOKEN` | yes | — | Service account token (plugins prefix `Token `) |
 | `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590` | Overall deadline, under the 600s hook timeout. Capped at 590; `nan`, `inf` and values ≤ 0 are refused |
 | `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` | Status poll spacing, at least 1 second |
 | `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` | Local post-tool log |

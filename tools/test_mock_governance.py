@@ -35,7 +35,7 @@ class MockGovernanceTests(unittest.TestCase):
         self.env = {
             **os.environ,
             "MEZMO_GOVERNANCE_URL": f"http://127.0.0.1:{self.server.server_port}{mock_governance.PATH}",
-            "MEZMO_GOVERNANCE_ACCESS_KEY": "local-test",
+            "MEZMO_GOVERNANCE_TOKEN": "local-test",
             "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "2",
             "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": "0.2",
         }
@@ -118,7 +118,7 @@ class MockGovernanceTests(unittest.TestCase):
         self.assertEqual(writes.calls, ["approved claude_code:Read\n"])
 
     def test_missing_key_is_rejected(self) -> None:
-        self.env.pop("MEZMO_GOVERNANCE_ACCESS_KEY")
+        self.env.pop("MEZMO_GOVERNANCE_TOKEN")
         self.env.pop("CLAUDE_PLUGIN_OPTION_ACCESS_KEY", None)
         result = self.run_hook(event("Read", "c5"))
         self.assertEqual(self.decision(result), "deny")

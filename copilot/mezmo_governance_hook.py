@@ -90,8 +90,8 @@ def status_url(decision_id: str, base: str | None = None) -> str:
 
 def authorization_header() -> str:
     key = required_string(
-        os.environ.get("MEZMO_GOVERNANCE_ACCESS_KEY"),
-        "MEZMO_GOVERNANCE_ACCESS_KEY",
+        os.environ.get("MEZMO_GOVERNANCE_TOKEN"),
+        "MEZMO_GOVERNANCE_TOKEN",
     )
     if key.lower().startswith("token ") or key.lower().startswith("bearer "):
         return key
@@ -213,7 +213,7 @@ def approval_payload(event: Mapping[str, Any], event_name: str) -> dict[str, Any
 
 
 class RefuseRedirect(HTTPRedirectHandler):
-    """Hand a 3xx back as an error, so the access key never goes to another URL."""
+    """Hand a 3xx back as an error, so the token never goes to another URL."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         return None

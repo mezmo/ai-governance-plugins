@@ -42,7 +42,7 @@ function withEnv(values: Record<string, string | undefined>, fn: () => Promise<v
 
 const ENV = {
   MEZMO_GOVERNANCE_URL: URL,
-  MEZMO_GOVERNANCE_ACCESS_KEY: "sts_test",
+  MEZMO_GOVERNANCE_TOKEN: "sts_test",
   MEZMO_GOVERNANCE_TIMEOUT_SECONDS: "30",
   MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS: "1",
 };
@@ -140,7 +140,7 @@ test("malformed input is denied without asking Mezmo", () =>
   }));
 
 test("missing settings deny", () =>
-  withEnv({ MEZMO_GOVERNANCE_URL: undefined, MEZMO_GOVERNANCE_ACCESS_KEY: undefined }, async () => {
+  withEnv({ MEZMO_GOVERNANCE_URL: undefined, MEZMO_GOVERNANCE_TOKEN: undefined }, async () => {
     assert.match(reasonOf(await pre()(preEvent(), "toolu_01", SIGNAL)), /MEZMO_GOVERNANCE_URL is required/);
   }));
 

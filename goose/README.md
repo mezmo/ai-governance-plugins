@@ -59,7 +59,7 @@ cp hooks/hooks.json ~/.agents/plugins/mezmo-governance/hooks/
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
    Hook commands inherit Goose's environment. They run with `sh -c`, and
@@ -102,7 +102,7 @@ cannot be reached. Nothing listens on port 9:
 ```bash
 echo '{"event":"PreToolUse","session_id":"smoke","tool_call_id":"call_smoke","tool_name":"shell","tool_input":{"command":"echo hi"}}' \
   | MEZMO_GOVERNANCE_URL="http://127.0.0.1:9/governance/workflow/authorize" \
-    MEZMO_GOVERNANCE_ACCESS_KEY="test" python3 mezmo_governance_hook.py
+    MEZMO_GOVERNANCE_TOKEN="test" python3 mezmo_governance_hook.py
 ```
 
 It exits 0 and prints a block. The text after `unavailable:` varies by

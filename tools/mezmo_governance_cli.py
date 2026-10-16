@@ -2,7 +2,7 @@
 """The `./mezmo-governance` command: install, check and try the plugins.
 
 Run it through the `mezmo-governance` script at the repository root, which
-finds Python 3.9 or later. It never writes the access key into any file.
+finds Python 3.9 or later. It never writes the token into any file.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ Examples:
   ./mezmo-governance mock --deny Bash
 
 Settings:
-  MEZMO_GOVERNANCE_URL and MEZMO_GOVERNANCE_ACCESS_KEY come from the shell that starts the agent.
+  MEZMO_GOVERNANCE_URL and MEZMO_GOVERNANCE_TOKEN come from the shell that starts the agent.
   The Claude Code plugin can keep its own copy (/plugin configure); OpenCode 2.x reads plugin
   options in opencode.json, with the key in a file. Install never writes the key.
   Config folders follow each agent's override: CLAUDE_CONFIG_DIR, CODEX_HOME, GEMINI_CLI_HOME,
@@ -338,7 +338,7 @@ def opencode() -> Installer:
         url = os.environ.get("MEZMO_GOVERNANCE_URL") or doctor.DEFAULT_URL
         entry = {
             "package": "./mezmo-governance",
-            "options": {"MEZMO_GOVERNANCE_URL": url, "MEZMO_GOVERNANCE_ACCESS_KEY": f"{{file:{key_file}}}"},
+            "options": {"MEZMO_GOVERNANCE_URL": url, "MEZMO_GOVERNANCE_TOKEN": f"{{file:{key_file}}}"},
         }
 
         def add_entry() -> None:
@@ -381,8 +381,8 @@ def opencode() -> Installer:
         installed,
         install,
         uninstall,
-        f"Put the agent access key in {shown(key_file)}, readable only by you:"
-        f" (umask 077; printf '%s\\n' '<agent access key>' > {shown(key_file)})",
+        f"Put the service account token in {shown(key_file)}, readable only by you:"
+        f" (umask 077; printf '%s\\n' '<service account token>' > {shown(key_file)})",
     )
 
 
@@ -572,7 +572,7 @@ def change(verb: str, names: list, dry_run: bool) -> int:
             print(f"      next: {installer.next}", flush=True)
     if verb == "install":
         print(
-            "Next: export MEZMO_GOVERNANCE_URL and MEZMO_GOVERNANCE_ACCESS_KEY in the shell that starts the agent,"
+            "Next: export MEZMO_GOVERNANCE_URL and MEZMO_GOVERNANCE_TOKEN in the shell that starts the agent,"
             " then run ./mezmo-governance doctor and ./mezmo-governance smoke.",
             flush=True,
         )
@@ -651,7 +651,7 @@ def smoke(names: list) -> int:
     env.update(
         {
             "MEZMO_GOVERNANCE_URL": url,
-            "MEZMO_GOVERNANCE_ACCESS_KEY": SMOKE_KEY,
+            "MEZMO_GOVERNANCE_TOKEN": SMOKE_KEY,
             "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "10",
             # Keep the smoke calls out of the user's audit log.
             "MEZMO_GOVERNANCE_AUDIT_LOG": str(scratch / "audit.jsonl"),

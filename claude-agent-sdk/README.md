@@ -30,11 +30,11 @@ Pi, OpenCode and Mastra client. Drift tests keep the copies the same.
 
 ## Install
 
-Set the URL and the agent access key in the app's environment:
+Set the URL and the service account token in the app's environment:
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
 ### Python
@@ -149,7 +149,7 @@ nothing listens:
 
 ```bash
 cd claude-agent-sdk/python
-MEZMO_GOVERNANCE_URL=http://127.0.0.1:9/authorize MEZMO_GOVERNANCE_ACCESS_KEY=test \
+MEZMO_GOVERNANCE_URL=http://127.0.0.1:9/authorize MEZMO_GOVERNANCE_TOKEN=test \
   python -c 'import asyncio
 from mezmo_governance_claude_agent_sdk import create_pre_tool_use
 event = {"hook_event_name": "PreToolUse", "session_id": "smoke", "tool_name": "Bash",

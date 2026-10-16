@@ -53,7 +53,7 @@ cp mezmo_governance_hook.py ~/.codex/hooks/
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
 4. Start Codex and run `/hooks`. Review and trust the Mezmo hook entries. Codex
@@ -94,7 +94,7 @@ The Codex docs do not say which shell runs `commandWindows`. The guard
 assumes PowerShell; this is not verified.
 
 In PowerShell, set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
-`$env:MEZMO_GOVERNANCE_ACCESS_KEY = "..."` before you start Codex.
+`$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Codex.
 
 ## Smoke test
 
@@ -104,7 +104,7 @@ denies when Mezmo cannot be reached. Nothing listens on port 9:
 ```bash
 echo '{"hook_event_name":"PreToolUse","session_id":"smoke","tool_use_id":"smoke-1","tool_name":"Bash","tool_input":{"command":"echo hi"}}' \
   | MEZMO_GOVERNANCE_URL="http://127.0.0.1:9/governance/workflow/authorize" \
-    MEZMO_GOVERNANCE_ACCESS_KEY="test" python3 mezmo_governance_hook.py
+    MEZMO_GOVERNANCE_TOKEN="test" python3 mezmo_governance_hook.py
 ```
 
 It exits 0 and prints a deny. The text after `unavailable:` varies by platform:

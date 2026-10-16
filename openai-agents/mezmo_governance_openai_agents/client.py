@@ -49,8 +49,8 @@ def authorize_url() -> str:
 
 
 def authorization_header(access_key: str | None = None) -> str:
-    key = access_key or os.environ.get("MEZMO_GOVERNANCE_ACCESS_KEY")
-    key = required_string(key, "MEZMO_GOVERNANCE_ACCESS_KEY")
+    key = access_key or os.environ.get("MEZMO_GOVERNANCE_TOKEN")
+    key = required_string(key, "MEZMO_GOVERNANCE_TOKEN")
     if key.lower().startswith("token ") or key.lower().startswith("bearer "):
         return key
     return f"Token {key}"

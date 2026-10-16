@@ -134,7 +134,7 @@ class DoctorTestCase(unittest.TestCase):
                 "PATH": f"{self.bin}:/usr/bin:/bin",
                 "NO_PROXY": "*",
                 "MEZMO_GOVERNANCE_URL": self.stub.url,
-                "MEZMO_GOVERNANCE_ACCESS_KEY": CANARY,
+                "MEZMO_GOVERNANCE_TOKEN": CANARY,
             }
         )
         for key, value in env.items():
@@ -169,24 +169,24 @@ class DoctorTestCase(unittest.TestCase):
 
 class SettingsTests(DoctorTestCase):
     def test_missing_settings_fail_and_skip_the_mezmo_check(self) -> None:
-        result = self.doctor(MEZMO_GOVERNANCE_URL=None, MEZMO_GOVERNANCE_ACCESS_KEY=None)
+        result = self.doctor(MEZMO_GOVERNANCE_URL=None, MEZMO_GOVERNANCE_TOKEN=None)
 
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertStatus(result, "MEZMO_GOVERNANCE_URL", "FAIL")
-        self.assertStatus(result, "MEZMO_GOVERNANCE_ACCESS_KEY", "FAIL")
+        self.assertStatus(result, "MEZMO_GOVERNANCE_TOKEN", "FAIL")
         self.assertStatus(result, "Mezmo", "skip")
         self.assertEqual(self.stub.requests, [])
 
     def test_claude_code_plugin_options_count_as_settings(self) -> None:
         result = self.doctor(
             MEZMO_GOVERNANCE_URL=None,
-            MEZMO_GOVERNANCE_ACCESS_KEY=None,
+            MEZMO_GOVERNANCE_TOKEN=None,
             CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL=self.stub.url,
             CLAUDE_PLUGIN_OPTION_ACCESS_KEY=CANARY,
         )
 
         self.assertEqual(result.returncode, 0, result.stdout)
-        line = self.assertStatus(result, "MEZMO_GOVERNANCE_ACCESS_KEY", "ok")
+        line = self.assertStatus(result, "MEZMO_GOVERNANCE_TOKEN", "ok")
         self.assertIn("CLAUDE_PLUGIN_OPTION_ACCESS_KEY", line)
 
     def test_http_is_refused_except_for_a_local_mock(self) -> None:
@@ -262,7 +262,8 @@ class MezmoTests(DoctorTestCase):
         self.assertEqual(result.returncode, 1)
         line = self.assertStatus(result, "Mezmo key", "FAIL")
         self.assertIn("HTTP 401 EAUTH: Unauthorized", line)
-        self.assertIn("fresh key", line)
+        self.assertIn("fresh token", line)
+        self.assertIn("service account has Governance permissions", line)
 
     def test_probe_names_enoagent_and_its_fix(self) -> None:
         self.stub.answers[("POST", True)] = (403, ENOAGENT)
@@ -317,7 +318,7 @@ class MezmoTests(DoctorTestCase):
             {"code": "EAUTH", "message": request["auth"].split()[-1]},
         )
 
-        result = self.doctor(MEZMO_GOVERNANCE_ACCESS_KEY=f"Bearer {CANARY}")
+        result = self.doctor(MEZMO_GOVERNANCE_TOKEN=f"Bearer {CANARY}")
 
         self.assertIn("<redacted>", self.assertStatus(result, "Mezmo key", "FAIL"))
 
@@ -581,7 +582,7 @@ class TypeScriptAgentTests(DoctorTestCase):
         self.write(".config/mezmo/governance-key", CANARY + "\n")
         options = {
             "MEZMO_GOVERNANCE_URL": "https://api.example.test/governance/workflow/authorize",
-            "MEZMO_GOVERNANCE_ACCESS_KEY": "{file:~/.config/mezmo/governance-key}",
+            "MEZMO_GOVERNANCE_TOKEN": "{file:~/.config/mezmo/governance-key}",
         }
         self.write(".config/opencode/opencode.json", {"plugins": [{"package": "./mezmo-governance", "options": options}]})
 
@@ -597,7 +598,7 @@ class TypeScriptAgentTests(DoctorTestCase):
         entry_without_options = {"plugins": ["./mezmo-governance"]}
         missing_file = {"plugins": [{"package": "./mezmo-governance", "options": {
             "MEZMO_GOVERNANCE_URL": "https://api.example.test/authorize",
-            "MEZMO_GOVERNANCE_ACCESS_KEY": "{file:~/.config/mezmo/absent}",
+            "MEZMO_GOVERNANCE_TOKEN": "{file:~/.config/mezmo/absent}",
         }}]}
         for config, words in ((entry_without_options, "no MEZMO_GOVERNANCE_URL"), (missing_file, "missing or empty")):
             with self.subTest(words=words):
@@ -617,7 +618,7 @@ class TypeScriptAgentTests(DoctorTestCase):
         self.assertIn("passes no options", self.assertStatus(result, "OpenCode plugin", "FAIL"))
 
         self.opencode_folder()
-        options = {"MEZMO_GOVERNANCE_URL": "https://api.example.test/a", "MEZMO_GOVERNANCE_ACCESS_KEY": "k" * 8}
+        options = {"MEZMO_GOVERNANCE_URL": "https://api.example.test/a", "MEZMO_GOVERNANCE_TOKEN": "k" * 8}
         self.write(".config/opencode/opencode.json", {"plugins": [{"package": "./mezmo-governance", "options": options}]})
         result = self.doctor()
         self.assertTrue(any("loaded twice" in line for line in self.lines(result, "OpenCode plugin")), result.stdout)
@@ -690,7 +691,7 @@ class ConfigFolderTests(DoctorTestCase):
         key.parent.mkdir(parents=True)
         key.write_text("not-the-canary\n")
         shutil.copytree(REPO / "opencode", xdg / "opencode" / "mezmo-governance")
-        options = {"MEZMO_GOVERNANCE_URL": self.stub.url, "MEZMO_GOVERNANCE_ACCESS_KEY": f"{{file:{key}}}"}
+        options = {"MEZMO_GOVERNANCE_URL": self.stub.url, "MEZMO_GOVERNANCE_TOKEN": f"{{file:{key}}}"}
         (xdg / "opencode" / "opencode.json").write_text(
             json.dumps({"plugins": [{"package": "./mezmo-governance", "options": options}]})
         )
@@ -749,7 +750,7 @@ class SmokeTests(DoctorTestCase):
             "import json, os, sys\n"
             "sys.stdin.read()\n"
             f"open({str(seen)!r}, 'w').write(json.dumps([os.environ['MEZMO_GOVERNANCE_URL'],"
-            " os.environ['MEZMO_GOVERNANCE_ACCESS_KEY']]))\n"
+            " os.environ['MEZMO_GOVERNANCE_TOKEN']]))\n"
             "sys.exit(2)\n"
         )
 

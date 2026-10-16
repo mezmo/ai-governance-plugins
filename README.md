@@ -33,7 +33,7 @@ call before you connect it to anything. You need Python 3.9+ and Claude Code
    ```bash
    cd ai-governance-plugins
    export MEZMO_GOVERNANCE_URL=http://127.0.0.1:8787/governance/workflow/authorize
-   export MEZMO_GOVERNANCE_ACCESS_KEY=local-test
+   export MEZMO_GOVERNANCE_TOKEN=local-test
    claude --plugin-dir ./claude-code
    ```
 
@@ -58,9 +58,21 @@ can watch the plugin wait and then deny.
    | Version | `2.1.300`, from `claude --version` |
    | Instance ID | `claude-code-my-laptop`, unique per machine |
 
-   The plugins send none of these fields; Mezmo knows the agent by its key.
+   The plugins send none of these fields; Mezmo knows the agent by its
+   service account's token.
    `./mezmo-governance doctor` prints these values for each agent on your
-   `PATH`. Copy the agent's access key: Mezmo shows it once.
+   `PATH`.
+
+   Next the form asks for a service account. Create one only for
+   Governance and give it Governance permissions and nothing else, so a
+   leaked token cannot reach the rest of your Mezmo account. An account
+   without Governance permissions gets `401 EAUTH` on every call. Then add
+   policies. The last page shows a `config.toml` for Aura; the plugins need
+   only two values from it, the `url` (your `MEZMO_GOVERNANCE_URL`) and
+   `MEZMO_GOVERNANCE_TOKEN`.
+
+   `MEZMO_GOVERNANCE_TOKEN` is the service account's token, not a key of the
+   agent. Copy it from the service account in Mezmo.
 2. Install the plugin for your agent, from this repository. See the change
    first with `--dry-run`:
 
@@ -80,7 +92,7 @@ can watch the plugin wait and then deny.
 
    ```bash
    export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-   export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+   export MEZMO_GOVERNANCE_TOKEN="<service account token>"
    ```
 
 4. Check your setup, with the variables exported:
@@ -117,7 +129,7 @@ own override: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`,
 `COPILOT_HOME`, `GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME` (OpenCode) and
 `PI_CODING_AGENT_DIR`. Before it edits a JSON file, it saves a copy next to it
 as `<name>.mezmo-backup-<time>` and prints the path. It never writes the
-access key. Running it twice changes nothing. `uninstall` removes only the
+token. Running it twice changes nothing. `uninstall` removes only the
 entries and files `install` added.
 
 | Agent | `install` runs | Why this way |
@@ -145,7 +157,7 @@ up in app code; `install` points to their READMEs.
 /plugin install mezmo-governance@mezmo
 ```
 
-Claude Code asks for the authorize URL and the access key and keeps the key in
+Claude Code asks for the authorize URL and the token and keeps the key in
 the system credential store. Details: [claude-code/](claude-code/).
 
 This marketplace is for Claude Code only. Do not add it in Codex or Copilot
@@ -197,7 +209,7 @@ out of tool arguments.
 | Variable | Required | Default |
 | --- | --- | --- |
 | `MEZMO_GOVERNANCE_URL` | yes | none |
-| `MEZMO_GOVERNANCE_ACCESS_KEY` | yes | none |
+| `MEZMO_GOVERNANCE_TOKEN` | yes | none |
 | `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590`, the longest the plugin waits for a person to decide |
 | `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` |
 | `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` |
@@ -216,8 +228,8 @@ or Mastra setup, which lives in app code; for those, run
 | --- | --- | --- |
 | Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice; Copilot: install in `~/.copilot/hooks/`, not `.github/hooks/`; Gemini CLI: use `~/.gemini/settings.json` or trust the folder; Goose: put the plugin in `~/.agents/plugins/` and use no `"*"` matcher |
 | Every call is denied: `MEZMO_GOVERNANCE_URL must be a non-empty string` | the agent did not inherit the variables | export them in the shell that starts the agent, or use the agent's own settings `env` block |
-| `Mezmo Governance returned HTTP 401 EAUTH` | wrong or revoked access key | copy a fresh key from the agent in Mezmo |
-| `Mezmo Governance returned HTTP 403 ENOAGENT: no agent is registered for these credentials` | Mezmo accepts the key, but no agent owns it | register an agent in Mezmo Governance and use that agent's access key |
+| `Mezmo Governance returned HTTP 401 EAUTH` | wrong or revoked service account token, or a service account without Governance permissions | give the agent's service account Governance permissions, then copy a fresh token from the service account in Mezmo |
+| `Mezmo Governance returned HTTP 403 ENOAGENT: no agent is registered for these credentials` | Mezmo accepts the token, but no agent uses its service account | register an agent in Mezmo Governance and use the token of the service account that agent uses |
 | `approval still pending` | policy needs a person and nobody decided in time | decide in Mezmo, or raise `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` (max 590) |
 | `SyntaxError` or `TypeError` on start | `python3` is older than 3.9 | install a newer Python, or point the hook command at it |
 

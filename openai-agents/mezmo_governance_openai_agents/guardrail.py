@@ -82,7 +82,7 @@ class MezmoGovernance:
         | None = None,
     ) -> None:
         # Explicit arguments win over MEZMO_GOVERNANCE_URL and
-        # MEZMO_GOVERNANCE_ACCESS_KEY, which are read per call when these are None.
+        # MEZMO_GOVERNANCE_TOKEN, which are read per call when these are None.
         self.endpoint = endpoint
         self.access_key = access_key
         self.matched_pattern = matched_pattern

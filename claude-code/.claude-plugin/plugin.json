@@ -18,8 +18,8 @@
     },
     "access_key": {
       "type": "string",
-      "title": "Agent access key",
-      "description": "Access key of the agent registered in Mezmo. MEZMO_GOVERNANCE_ACCESS_KEY overrides it.",
+      "title": "Service account token",
+      "description": "Token of the Mezmo service account the agent uses. MEZMO_GOVERNANCE_TOKEN overrides it.",
       "sensitive": true,
       "required": true
     }

@@ -62,7 +62,7 @@ for (const [label, before, approval] of cases) {
       await withEnv(
         {
           MEZMO_GOVERNANCE_URL: governance.url,
-          MEZMO_GOVERNANCE_ACCESS_KEY: "sts_test",
+          MEZMO_GOVERNANCE_TOKEN: "sts_test",
           MEZMO_GOVERNANCE_TIMEOUT_SECONDS: "10",
           MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS: "1",
         },

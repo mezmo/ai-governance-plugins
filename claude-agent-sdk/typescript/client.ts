@@ -82,7 +82,7 @@ export function authorizeUrl(): string {
 }
 
 export function authorizationHeader(): string {
-  const key = requiredEnv("MEZMO_GOVERNANCE_ACCESS_KEY");
+  const key = requiredEnv("MEZMO_GOVERNANCE_TOKEN");
   if (/^(token|bearer) /i.test(key)) {
     return key;
   }
@@ -240,7 +240,7 @@ export async function httpJson(
       headers,
       body: payload === null ? undefined : JSON.stringify(payload),
       signal: controller.signal,
-      // A 3xx comes back as itself and denies, so the access key never goes
+      // A 3xx comes back as itself and denies, so the token never goes
       // to another URL.
       redirect: "manual",
     });

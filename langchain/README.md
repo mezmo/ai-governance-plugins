@@ -42,7 +42,7 @@ def echo(text: str) -> str:
 
 middleware = MezmoGovernanceMiddleware(
     os.environ["MEZMO_GOVERNANCE_URL"],
-    access_key=os.environ["MEZMO_GOVERNANCE_ACCESS_KEY"],
+    access_key=os.environ["MEZMO_GOVERNANCE_TOKEN"],
 )
 agent = create_agent(model="openai:gpt-4.1-mini", tools=[echo], middleware=[middleware])
 
@@ -52,8 +52,8 @@ result = agent.invoke(
 )
 ```
 
-The endpoint and access key you pass win over `MEZMO_GOVERNANCE_URL` and
-`MEZMO_GOVERNANCE_ACCESS_KEY`; pass `None` to read those per call. Pass a
+The endpoint and token you pass win over `MEZMO_GOVERNANCE_URL` and
+`MEZMO_GOVERNANCE_TOKEN`; pass `None` to read those per call. Pass a
 LangGraph `thread_id` so `session_id` is stable across a conversation.
 `ainvoke` takes the same arguments.
 
@@ -65,7 +65,7 @@ an id gets a random one, so it never reuses an earlier decision.
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 export OPENAI_API_KEY="…"
 python3 example_agent.py
 ```

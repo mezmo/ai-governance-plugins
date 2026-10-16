@@ -9,7 +9,7 @@ import mezmoGovernance from "../mezmo-governance.ts";
 
 const ENV = {
   MEZMO_GOVERNANCE_URL: "https://api.example.test/governance/workflow/authorize",
-  MEZMO_GOVERNANCE_ACCESS_KEY: "sts_test",
+  MEZMO_GOVERNANCE_TOKEN: "sts_test",
   MEZMO_GOVERNANCE_TIMEOUT_SECONDS: "30",
   MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS: "1",
 };

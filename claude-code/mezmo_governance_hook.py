@@ -31,7 +31,7 @@ MCP_TOOL_PREFIX = "mcp__"
 # Claude Code exports each plugin userConfig option as CLAUDE_PLUGIN_OPTION_<KEY>.
 PLUGIN_OPTIONS = {
     "MEZMO_GOVERNANCE_URL": "CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL",
-    "MEZMO_GOVERNANCE_ACCESS_KEY": "CLAUDE_PLUGIN_OPTION_ACCESS_KEY",
+    "MEZMO_GOVERNANCE_TOKEN": "CLAUDE_PLUGIN_OPTION_ACCESS_KEY",
 }
 
 HttpJson = Callable[[str, str, Optional[Mapping[str, Any]], float], tuple[int, dict[str, Any]]]
@@ -102,7 +102,7 @@ def status_url(decision_id: str, base: str | None = None) -> str:
 
 
 def authorization_header() -> str:
-    key = configured("MEZMO_GOVERNANCE_ACCESS_KEY")
+    key = configured("MEZMO_GOVERNANCE_TOKEN")
     if key.lower().startswith("token ") or key.lower().startswith("bearer "):
         return key
     return f"Token {key}"
@@ -217,7 +217,7 @@ def approval_payload(event: Mapping[str, Any]) -> dict[str, Any]:
 
 
 class RefuseRedirect(HTTPRedirectHandler):
-    """Hand a 3xx back as an error, so the access key never goes to another URL."""
+    """Hand a 3xx back as an error, so the token never goes to another URL."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
         return None

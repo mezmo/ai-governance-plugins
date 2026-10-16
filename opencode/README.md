@@ -45,7 +45,7 @@ not to files it finds in `plugins/`.
    ```bash
    cp -R opencode ~/.config/opencode/mezmo-governance
    mkdir -p ~/.config/mezmo
-   printf '%s\n' '<agent access key>' > ~/.config/mezmo/governance-key
+   printf '%s\n' '<service account token>' > ~/.config/mezmo/governance-key
    chmod 600 ~/.config/mezmo/governance-key
    ```
 
@@ -59,7 +59,7 @@ not to files it finds in `plugins/`.
          "package": "./mezmo-governance",
          "options": {
            "MEZMO_GOVERNANCE_URL": "https://api.mezmo.com/governance/workflow/authorize",
-           "MEZMO_GOVERNANCE_ACCESS_KEY": "{file:~/.config/mezmo/governance-key}"
+           "MEZMO_GOVERNANCE_TOKEN": "{file:~/.config/mezmo/governance-key}"
          }
        }
      ]
@@ -92,7 +92,7 @@ Then:
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
+export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
 ## Verify it works

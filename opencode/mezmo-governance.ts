@@ -211,7 +211,7 @@ function afterV2(event: V2After, calls: Calls) {
 }
 
 // Plugin options use the variable names as keys and win over the
-// environment: `"MEZMO_GOVERNANCE_ACCESS_KEY": "{file:~/.config/mezmo/key}"`.
+// environment: `"MEZMO_GOVERNANCE_TOKEN": "{file:~/.config/mezmo/key}"`.
 type Options = Record<string, unknown> | undefined;
 
 export const MezmoGovernance = async (_input?: unknown, options?: Options) => {

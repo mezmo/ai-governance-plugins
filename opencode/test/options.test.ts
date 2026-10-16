@@ -39,7 +39,7 @@ test("2.x plugin options win over the environment", async () => {
     const optionsAudit = join(audit, "..", "options-audit.jsonl");
     const hooks = await v2Hooks({
       MEZMO_GOVERNANCE_URL: OPTIONS_URL,
-      MEZMO_GOVERNANCE_ACCESS_KEY: "from-options",
+      MEZMO_GOVERNANCE_TOKEN: "from-options",
       MEZMO_GOVERNANCE_AUDIT_LOG: optionsAudit,
     });
     await hooks["execute.before"]({ ...BASE, input: { command: "ls" } });
@@ -53,7 +53,7 @@ test("2.x plugin options win over the environment", async () => {
 test("1.x plugin options win over the environment", async () => {
   const sent: Sent[] = [];
   await withFakeMezmo(recordingFetch(sent), async () => {
-    const hooks = await plugin.server({} as any, { MEZMO_GOVERNANCE_ACCESS_KEY: "from-options" });
+    const hooks = await plugin.server({} as any, { MEZMO_GOVERNANCE_TOKEN: "from-options" });
     await hooks["tool.execute.before"](
       { tool: "bash", sessionID: "ses_1", callID: "call_1" },
       { args: { command: "ls" } },
@@ -76,10 +76,10 @@ test("without options the environment applies", async () => {
 // That must block, not fall back to some other key.
 test("an empty option blocks instead of falling back to the environment", async () => {
   await withFakeMezmo(recordingFetch([]), async () => {
-    const hooks = await v2Hooks({ MEZMO_GOVERNANCE_ACCESS_KEY: "" });
+    const hooks = await v2Hooks({ MEZMO_GOVERNANCE_TOKEN: "" });
     await assert.rejects(
       hooks["execute.before"]({ ...BASE, input: { command: "ls" } }),
-      /MEZMO_GOVERNANCE_ACCESS_KEY is required/,
+      /MEZMO_GOVERNANCE_TOKEN is required/,
     );
   });
 });
@@ -97,8 +97,8 @@ test("two instances with different options never mix while calls overlap", async
     return { status: 200, text: async () => '{"approved":true}' };
   };
   await withFakeMezmo(fetchImpl, async () => {
-    const first = await v2Hooks({ MEZMO_GOVERNANCE_ACCESS_KEY: "key-a" });
-    const second = await v2Hooks({ MEZMO_GOVERNANCE_ACCESS_KEY: "key-b" });
+    const first = await v2Hooks({ MEZMO_GOVERNANCE_TOKEN: "key-a" });
+    const second = await v2Hooks({ MEZMO_GOVERNANCE_TOKEN: "key-b" });
     const calls = [
       first["execute.before"]({ ...BASE, input: { command: "ls" } }),
       second["execute.before"]({ ...BASE, id: "call_2", input: { command: "ls" } }),
