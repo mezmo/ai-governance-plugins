@@ -67,8 +67,8 @@ can watch the plugin wait and then deny.
    Governance and give it Governance permissions and nothing else, so a
    leaked token cannot reach the rest of your Mezmo account. An account
    without Governance permissions gets `401 EAUTH` on every call. Then add
-   policies and assign one to the agent: an agent without one gets
-   `403 EPOLICYUNASSIGNED`. The last page shows a `config.toml` for Aura; the plugins need
+   policies, as in [Create a policy](#create-a-policy), and assign one to
+   the agent: an agent without one gets `403 EPOLICYUNASSIGNED`. The last page shows a `config.toml` for Aura; the plugins need
    only two values from it, the `url` (your `MEZMO_GOVERNANCE_URL`) and
    `MEZMO_GOVERNANCE_TOKEN`.
 
@@ -109,8 +109,8 @@ can watch the plugin wait and then deny.
    each installed Python hook against a closed port and checks that the hook
    denies. It reads the agent configs and changes nothing. Each check prints
    one `ok`, `warn`, `FAIL` or `skip` line with a fix, and the exit code is 1
-   when a check fails. `info` lines give the add-agent form values from step 1. A key can pass the key check and still belong to no
-   agent. Add `--probe` to send Mezmo one test call for the tool
+   when a check fails. `info` lines give the add-agent form values from
+   step 1. A key can pass the key check and still belong to no agent. Add `--probe` to send Mezmo one test call for the tool
    `doctor:probe`, which shows up in Mezmo like any other call.
 
    `smoke` starts its own mock, sends each installed hook or plugin one shell
@@ -118,6 +118,28 @@ can watch the plugin wait and then deny.
    line for each. It calls no model and never sends your key.
 5. Run one tool call your policy denies, and check that the agent shows the
    reason. Then check `~/.mezmo/governance-audit.jsonl` for the approved calls.
+
+### Create a policy
+
+A policy has its own dialog in Mezmo Governance, in five pages:
+
+1. **Basics:** a policy name and a description.
+2. **Rules:** allow or deny rules. Each rule matches a tool space, a tool
+   name and, optionally, the tool call's arguments. For a denied call, pick
+   an error code and write the message the agent shows. The tool space is
+   the plugin's namespace, such as `claude_code`, `codex`, `cursor`,
+   `gemini_cli`, `copilot`, `goose`, `opencode` or `pi`, or the MCP server
+   name for an MCP tool. Each adapter README lists its tool names.
+3. **Fallthrough:** what happens to a call that no rule permits, such as
+   deny it or ask a person.
+4. **Approvers:** the people who decide calls that need approval, from a
+   rule or from the fallthrough, and an optional Slack channel for those
+   requests. A plugin waits for the decision up to
+   `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` (590 by default), then denies.
+5. **Review:** check the rules, then save.
+
+A first policy to try: deny `claude_code` / `Bash`, require approval for
+`claude_code` / `Write`, and allow the rest.
 
 ### The mezmo-governance command
 
