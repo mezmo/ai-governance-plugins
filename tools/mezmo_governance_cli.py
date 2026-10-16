@@ -186,7 +186,11 @@ def merged(config: dict, example: dict, field: str) -> dict:
 
 
 def without_hook(config: dict, field: str) -> dict:
-    """The config with every entry that runs the hook taken out."""
+    """The config with every entry that runs the hook taken out.
+
+    Codex keys hook trust by group index, so a removed group that has groups after it
+    leaves an empty group in its place: the later groups keep their index and their trust.
+    """
     result = json.loads(json.dumps(config))
     hooks = as_dict(result.get("hooks"))
     for event in list(hooks):
@@ -194,12 +198,15 @@ def without_hook(config: dict, field: str) -> dict:
         for group in as_list(hooks[event]):
             if isinstance(group, dict) and isinstance(group.get("hooks"), list):
                 inner = [handler for handler in group["hooks"] if not runs_hook(handler, field)]
-                if inner:
+                if inner or not group["hooks"]:
                     kept.append({**group, "hooks": inner})
-                elif not group["hooks"]:
-                    kept.append(group)
+                else:
+                    kept.append(None)
             elif not runs_hook(group, field):
                 kept.append(group)
+        while kept and kept[-1] is None:
+            kept.pop()
+        kept = [{"hooks": []} if group is None else group for group in kept]
         if kept:
             hooks[event] = kept
         else:

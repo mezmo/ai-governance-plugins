@@ -266,6 +266,21 @@ class InstallTests(CliTestCase):
         for name, text in texts.items():
             self.assertEqual((self.tmp / name).read_bytes().decode("utf-8"), text, name)
 
+    def test_codex_uninstall_keeps_the_place_of_later_hook_groups(self) -> None:
+        # Codex keys hook trust by group index (hooks.state."<file>:pre_tool_use:<group>:<handler>").
+        self.write(ORIGINALS["codex"])
+        self.assertEqual(self.cli("install", "codex").returncode, 0)
+        path = self.tmp / "codex/hooks.json"
+        later = {"matcher": "Edit", "hooks": [{"type": "command", "command": "later-hook"}]}
+        config = json.loads(path.read_text())
+        config["hooks"]["PreToolUse"].append(later)
+        path.write_text(json.dumps(config, indent=2))
+        result = self.cli("uninstall", "codex")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        hooks = json.loads(path.read_text())["hooks"]
+        self.assertEqual(hooks["PreToolUse"], ORIGINALS["codex"]["codex/hooks.json"]["hooks"]["PreToolUse"] + [{"hooks": []}, later])
+        self.assertNotIn("PostToolUse", hooks)
+
     def test_the_installed_files_are_what_each_readme_installs(self) -> None:
         result = self.cli("install", "--all")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
