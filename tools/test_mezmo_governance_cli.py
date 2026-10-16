@@ -432,7 +432,7 @@ class CommandTests(CliTestCase):
             with self.subTest(args=args):
                 result = self.cli(*args)
                 self.assertEqual(result.returncode, 0)
-                for word in ("agents", "install", "uninstall", "doctor", "mock", "smoke", "policy show", "policy apply",
+                for word in ("agents", "install", "uninstall", "doctor", "mock", "smoke", "policy show", "policy apply", "smoke [agent...] [--live]",
                              "MEZMO_GOVERNANCE_ADMIN_KEY", *AGENTS, "CODEX_HOME"):
                     self.assertIn(word, result.stdout)
 
@@ -516,6 +516,68 @@ class SmokeTests(CliTestCase):
         result = self.cli("smoke")
         self.assertEqual(result.returncode, 1)
         self.assertIn("no installed hook", result.stdout)
+
+
+class LiveSmokeTests(CliTestCase):
+    """smoke --live, pointed at a mock port in place of Mezmo."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # The mock denies shell tools and holds Claude Code's read tool for approval.
+        server = ThreadingHTTPServer(("127.0.0.1", 0), mock_governance.make_handler(["Bash", "Shell"], ["Read"]))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.env["MEZMO_GOVERNANCE_URL"] = f"http://127.0.0.1:{server.server_port}{mock_governance.PATH}"
+        self.env["MEZMO_GOVERNANCE_TIMEOUT_SECONDS"] = "1"
+        self.env["MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS"] = "1"
+
+    def test_each_call_is_reported_as_the_policy_decided(self) -> None:
+        self.cli("install", "claude-code", "codex")
+        result = self.cli("smoke", "--live")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("live  claude-code: Bash denied: mock policy: claude_code:Bash is denied (", result.stdout)
+        self.assertIn("live  claude-code: Read pending approval (", result.stdout)
+        self.assertIn("live  codex: Bash denied: mock policy: codex:Bash is denied (", result.stdout)
+        self.assertIn("live  codex: apply_patch allowed (", result.stdout)
+        self.assertNotIn("mock  Mezmo stand-in", result.stdout)
+        self.assertNotIn("FAIL", result.stdout)
+        # The smoke calls stay out of the user's audit log.
+        self.assertFalse((self.tmp / "home/.mezmo").exists())
+
+    def test_a_call_that_reaches_no_decision_exits_1(self) -> None:
+        self.cli("install", "codex")
+        result = self.cli("smoke", "--live", MEZMO_GOVERNANCE_URL=doctor_unreachable())
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL  codex: Bash reached no decision: ", result.stdout)
+        self.assertIn("unavailable", result.stdout)
+
+    def test_url_and_token_are_required(self) -> None:
+        self.cli("install", "codex")
+        for name in ("MEZMO_GOVERNANCE_URL", "MEZMO_GOVERNANCE_TOKEN"):
+            with self.subTest(name=name):
+                result = self.cli("smoke", "--live", **{name: ""})
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f"FAIL  smoke --live: set {name}", result.stdout)
+                self.assertNotIn("live  codex", result.stdout)
+
+    def test_a_held_call_waits_15_seconds_unless_the_user_set_a_limit(self) -> None:
+        import mezmo_governance_cli as cli
+
+        scratch = self.tmp / "scratch"
+        base = {"MEZMO_GOVERNANCE_URL": "https://example.test/governance/workflow/authorize", "MEZMO_GOVERNANCE_TOKEN": CANARY,
+                "MEZMO_GOVERNANCE_AUDIT_LOG": "/somewhere/audit.jsonl"}
+        for limit, want in (("", "15"), ("40", "40")):
+            with self.subTest(limit=limit), mock.patch.dict(os.environ, {**base, "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": limit}):
+                env = cli.live_env(scratch)
+                self.assertEqual(env["MEZMO_GOVERNANCE_TIMEOUT_SECONDS"], want)
+                self.assertEqual(env["MEZMO_GOVERNANCE_AUDIT_LOG"], str(scratch / "audit.jsonl"))
+                self.assertEqual(env["MEZMO_GOVERNANCE_TOKEN"], CANARY)
+
+
+def doctor_unreachable() -> str:
+    # Nothing listens on port 9.
+    return "http://127.0.0.1:9/governance/workflow/authorize"
 
 
 class KeyTests(CliTestCase):

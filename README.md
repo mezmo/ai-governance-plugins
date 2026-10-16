@@ -121,6 +121,15 @@ can watch the plugin wait and then deny.
    `smoke` starts its own mock, sends each installed hook or plugin one shell
    call (it must be denied) and one read (it must be approved), and prints a
    line for each. It calls no model and never sends your key.
+
+   `smoke --live [agent...]` sends the same two calls, the agent's shell tool
+   and its read tool, to Mezmo at `MEZMO_GOVERNANCE_URL` with
+   `MEZMO_GOVERNANCE_TOKEN`. Your policy decides each call, so each line says
+   allowed, denied with Mezmo's reason, or pending approval. A call held for
+   approval waits 15 s unless you set `MEZMO_GOVERNANCE_TIMEOUT_SECONDS`. It
+   exits 1 only when a call reached no decision, such as a `401`, an unknown
+   agent or no connection. The calls show up in Mezmo like any other, but not
+   in your local audit log.
 5. Run one tool call your policy denies, and check that the agent shows the
    reason. Then check `~/.mezmo/governance-audit.jsonl` for the approved calls.
 

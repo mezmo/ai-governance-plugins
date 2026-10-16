@@ -60,7 +60,9 @@ Commands:
                            remove only what install added; --dry-run shows the changes only
   doctor [agent...]        check the settings, Mezmo and each agent; --probe sends Mezmo one test call
   mock [--deny PATTERN...] start a local stand-in for Mezmo and print the two export lines
-  smoke [agent...]         run each installed hook against its own mock: one call denied, one approved
+  smoke [agent...] [--live]
+                           run each installed hook against its own mock: one call denied, one approved;
+                           --live sends the shell and read call to Mezmo and prints what the policy decided
   policy show              print the Mezmo agents, policies and rules, and which rule covers each
                            installed agent's shell and read tool
   policy apply [agent...]  add a deny rule for the shell tools and an allow rule for the read tools
@@ -74,6 +76,7 @@ Examples:
   ./mezmo-governance install claude-code codex
   ./mezmo-governance doctor --probe
   ./mezmo-governance smoke
+  ./mezmo-governance smoke --live codex
   ./mezmo-governance mock --deny Bash
   ./mezmo-governance policy apply claude-code --yes
 
@@ -708,96 +711,168 @@ def plugin_files(name: str) -> list:
     return [path for path in candidates if path.is_file()][:1]
 
 
-def smoke(names: list) -> int:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), mock_governance.make_handler(SHELL_TOOLS, []))
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = f"http://127.0.0.1:{server.server_port}{mock_governance.PATH}"
+def live_env(scratch: Path) -> dict:
+    """The user's environment for smoke --live: their URL and token, a 15 s limit unless they set one, a scratch audit log."""
+    env = dict(os.environ)
+    for name in ("MEZMO_GOVERNANCE_URL", "MEZMO_GOVERNANCE_TOKEN"):
+        if not (env.get(name) or "").strip():
+            raise Failure(f"set {name} in this shell, as for the hooks")
+    if not (env.get("MEZMO_GOVERNANCE_TIMEOUT_SECONDS") or "").strip():
+        # A call held for approval then reports pending after 15 s, not 590.
+        env["MEZMO_GOVERNANCE_TIMEOUT_SECONDS"] = "15"
+    env["MEZMO_GOVERNANCE_AUDIT_LOG"] = str(scratch / "audit.jsonl")
+    return env
+
+
+def strings(value: Any) -> list:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        value = list(value.values())
+    return [text for item in value for text in strings(item)] if isinstance(value, list) else []
+
+
+DENIED = "denied this exact tool call: "
+
+
+def live_outcome(result: subprocess.CompletedProcess) -> tuple:
+    """('allowed' | 'denied' | 'pending approval' | 'error', detail) from one hook or plugin run."""
+    texts = []
+    for line in (result.stdout + "\n" + result.stderr).splitlines():
+        try:
+            texts += strings(json.loads(line))
+        except ValueError:
+            texts.append(line)
+    if any("approval still pending" in text for text in texts):
+        return "pending approval", ""
+    for text in texts:
+        if DENIED in text:
+            return "denied", doctor.hook.error_detail(text.split(DENIED, 1)[1])
+    if result.returncode == 0 and not doctor.denied(result):
+        return "allowed", ""
+    return "error", doctor.hook.error_detail(next((text for text in reversed(texts) if text.strip()), "no output"))
+
+
+def smoke(names: list, live: bool = False) -> int:
     scratch = Path(tempfile.mkdtemp(prefix="mezmo-governance-smoke-"))
-    env = {key: value for key, value in os.environ.items() if not key.startswith(("MEZMO_GOVERNANCE_", "CLAUDE_PLUGIN_OPTION_"))}
-    env.update(
-        {
-            "MEZMO_GOVERNANCE_URL": url,
-            "MEZMO_GOVERNANCE_TOKEN": SMOKE_KEY,
-            "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "10",
-            # Keep the smoke calls out of the user's audit log.
-            "MEZMO_GOVERNANCE_AUDIT_LOG": str(scratch / "audit.jsonl"),
-        }
-    )
+    server = None
+    seconds = 30.0
+    try:
+        if live:
+            try:
+                env = live_env(scratch)
+            except Failure as error:
+                print(f"FAIL  smoke --live: {error}", flush=True)
+                return 1
+            limit = env["MEZMO_GOVERNANCE_TIMEOUT_SECONDS"]
+            try:
+                seconds = float(limit) + 15
+            except ValueError:
+                pass
+            print(f"live  Mezmo at {doctor.shown_url(env['MEZMO_GOVERNANCE_URL'])}; the policy decides each call, a held one waits {limit} s", flush=True)
+        else:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), mock_governance.make_handler(SHELL_TOOLS, []))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            url = f"http://127.0.0.1:{server.server_port}{mock_governance.PATH}"
+            env = {key: value for key, value in os.environ.items() if not key.startswith(("MEZMO_GOVERNANCE_", "CLAUDE_PLUGIN_OPTION_"))}
+            env.update(
+                {
+                    "MEZMO_GOVERNANCE_URL": url,
+                    "MEZMO_GOVERNANCE_TOKEN": SMOKE_KEY,
+                    "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "10",
+                    # Keep the smoke calls out of the user's audit log.
+                    "MEZMO_GOVERNANCE_AUDIT_LOG": str(scratch / "audit.jsonl"),
+                }
+            )
+            print(f"mock  Mezmo stand-in on {url}, denies {', '.join(SHELL_TOOLS)}", flush=True)
+        return smoke_calls(names, env, live, seconds)
+    finally:
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def smoke_calls(names: list, env: dict, live: bool, seconds: float) -> int:
     python = shutil.which("python3") or sys.executable
-    print(f"mock  Mezmo stand-in on {url}, denies {', '.join(SHELL_TOOLS)}", flush=True)
     failed = False
     tried = 0
-    try:
-        for name in names:
-            agent = AGENTS[name]
-            try:
-                smokes = agent.check(Quiet(), doctor.binary_version(shutil.which(agent.binary) or agent.binary))
-            except doctor.Unknown as error:
-                print(f"FAIL  {name}: unknown: {error}", flush=True)
+    for name in names:
+        agent = AGENTS[name]
+        try:
+            smokes = agent.check(Quiet(), doctor.binary_version(shutil.which(agent.binary) or agent.binary))
+        except doctor.Unknown as error:
+            print(f"FAIL  {name}: unknown: {error}", flush=True)
+            failed = True
+            continue
+        if smokes is None:
+            print(f"skip  {name}: not installed", flush=True)
+            continue
+        calls = []
+        for item in {(smoke.path, smoke.args): smoke for smoke in smokes}.values():
+            shell = item.event.get("tool_name") or item.event.get("toolName")
+
+            def python_hook(tool: str, item: doctor.Smoke = item, shell: str = shell) -> subprocess.CompletedProcess:
+                event = fresh(item.event, None if tool == shell else tool)
+                return run([python, str(item.path), *item.args], json.dumps(event), env, item.path, seconds)
+
+            calls.append((item.path, shell, python_hook))
+        if not smokes:
+            files = plugin_files(name)
+            if not files:
+                print(f"FAIL  {name}: no plugin entry file found; reinstall with ./mezmo-governance install {name}", flush=True)
                 failed = True
                 continue
-            if smokes is None:
-                print(f"skip  {name}: not installed", flush=True)
+            node = shutil.which("node")
+            if node is None:
+                print(f"FAIL  {name}: node is not on PATH, so the plugin could not be run", flush=True)
+                failed = True
                 continue
-            calls = []
-            for item in {(smoke.path, smoke.args): smoke for smoke in smokes}.values():
-                shell = item.event.get("tool_name") or item.event.get("toolName")
+            for path in files:
 
-                def python_hook(tool: str, item: doctor.Smoke = item, shell: str = shell) -> subprocess.CompletedProcess:
-                    event = fresh(item.event, None if tool == shell else tool)
-                    return run([python, str(item.path), *item.args], json.dumps(event), env, item.path)
+                def plugin(tool: str, path: Path = path) -> subprocess.CompletedProcess:
+                    driver = Path(__file__).resolve().with_name("smoke_plugin.ts")
+                    return run([node, str(driver), name, str(path), tool], "", env, path, seconds)
 
-                calls.append((item.path, shell, python_hook))
-            if not smokes:
-                files = plugin_files(name)
-                if not files:
-                    print(f"FAIL  {name}: no plugin entry file found; reinstall with ./mezmo-governance install {name}", flush=True)
-                    failed = True
-                    continue
-                node = shutil.which("node")
-                if node is None:
-                    print(f"FAIL  {name}: node is not on PATH, so the plugin could not be run", flush=True)
-                    failed = True
-                    continue
-                for path in files:
-
-                    def plugin(tool: str, path: Path = path) -> subprocess.CompletedProcess:
-                        driver = Path(__file__).resolve().with_name("smoke_plugin.ts")
-                        return run([node, str(driver), name, str(path), tool], "", env, path)
-
-                    calls.append((path, "bash", plugin))
-            for path, shell, call in calls:
-                tried += 1
-                for tool, label, want in ((shell, "denied", True), ("Read", "approved", False)):
-                    result = call(tool)
-                    said = result.stdout + result.stderr
-                    if want:
-                        ok = doctor.denied(result) and "mock policy" in said
-                    else:
-                        ok = result.returncode == 0 and not doctor.denied(result)
-                    if ok:
-                        print(f"ok    {name}: {tool} was {label} by the mock ({shown(path)})", flush=True)
-                    else:
+                calls.append((path, "bash", plugin))
+        for path, shell, call in calls:
+            tried += 1
+            if live:
+                # The policy decides, so each call is reported, not judged; only a call with no decision fails.
+                for tool in (agent.shell, agent.read):
+                    outcome, detail = live_outcome(call(tool))
+                    if outcome == "error":
                         failed = True
-                        detail = doctor.hook.error_detail(said.strip().splitlines()[-1] if said.strip() else "no output")
-                        print(f"FAIL  {name}: {tool} should be {label}, exit {result.returncode}: {detail}", flush=True)
-    finally:
-        server.shutdown()
-        server.server_close()
-        shutil.rmtree(scratch, ignore_errors=True)
+                        print(f"FAIL  {name}: {tool} reached no decision: {detail}", flush=True)
+                    else:
+                        print(f"live  {name}: {tool} {outcome}{': ' + detail if detail else ''} ({shown(path)})", flush=True)
+                continue
+            for tool, label, want in ((shell, "denied", True), ("Read", "approved", False)):
+                result = call(tool)
+                said = result.stdout + result.stderr
+                if want:
+                    ok = doctor.denied(result) and "mock policy" in said
+                else:
+                    ok = result.returncode == 0 and not doctor.denied(result)
+                if ok:
+                    print(f"ok    {name}: {tool} was {label} by the mock ({shown(path)})", flush=True)
+                else:
+                    failed = True
+                    detail = doctor.hook.error_detail(said.strip().splitlines()[-1] if said.strip() else "no output")
+                    print(f"FAIL  {name}: {tool} should be {label}, exit {result.returncode}: {detail}", flush=True)
     if not tried and not failed:
         print("FAIL  smoke: no installed hook to run; install one with ./mezmo-governance install <agent>", flush=True)
         return 1
     return 1 if failed else 0
 
 
-def run(command: list, stdin: str, env: dict, script: Path) -> subprocess.CompletedProcess:
+def run(command: list, stdin: str, env: dict, script: Path, seconds: float = 30.0) -> subprocess.CompletedProcess:
     if not script.is_file():
         return subprocess.CompletedProcess(command, 1, "", f"{shown(script)} is missing")
     try:
-        return subprocess.run(command, input=stdin, env=env, capture_output=True, text=True, timeout=30, check=False)
+        return subprocess.run(command, input=stdin, env=env, capture_output=True, text=True, timeout=seconds, check=False)
     except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(command, 1, "", "no answer within 30 s")
+        return subprocess.CompletedProcess(command, 1, "", f"no answer within {seconds:g} s")
 
 
 # --- policy: read the Mezmo policies, add starter rules -----------------------
@@ -1082,7 +1157,7 @@ FLAGS = {
     "install": {"--all", "--dry-run"},
     "uninstall": {"--all", "--dry-run"},
     "doctor": {"--probe"},
-    "smoke": set(),
+    "smoke": {"--live"},
 }
 
 
@@ -1118,7 +1193,7 @@ def main(argv: Optional[list] = None) -> int:
     if verb == "doctor":
         return doctor.run(tuple(AGENTS[name] for name in chosen), "--probe" in flags)
     if verb == "smoke":
-        return smoke(chosen)
+        return smoke(chosen, "--live" in flags)
     if not chosen:
         print(f"ok    {verb} --all: no agent {'binary on PATH' if verb == 'install' else 'is installed'}", flush=True)
         return 0
