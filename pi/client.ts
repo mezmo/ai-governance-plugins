@@ -234,8 +234,14 @@ function decisionFromPost(body: Record<string, unknown>): Decision {
 }
 
 function decisionFromStatus(body: Record<string, unknown>): Decision | null {
-  const status = body.status;
   const reason = typeof body.reason === "string" ? body.reason : null;
+  // Mezmo answers the poll with {approved, reason}. A status field is the older shape.
+  if (typeof body.approved === "boolean") {
+    return body.approved
+      ? { approved: true, reason }
+      : { approved: false, reason: reason ?? "Policy denied the call." };
+  }
+  const status = body.status;
   if (status === "approved") {
     return { approved: true, reason };
   }
@@ -269,7 +275,8 @@ async function pollDecision(
       }
       throw error;
     }
-    if (status === 404) {
+    // 207: a person hasn't decided yet. 404: the decision isn't visible yet.
+    if (status === 207 || status === 404) {
       await sleep(Math.min(intervalMs, leftover));
       continue;
     }

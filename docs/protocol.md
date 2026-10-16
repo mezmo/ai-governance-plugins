@@ -84,36 +84,34 @@ HTTP 200 `POST` body, the decision:
 { "approved": false, "reason": "Deleting a pod in staging requires a human decision." }
 ```
 
-Status poll:
-
-```json
-{ "status": "pending", "reason": null }
-```
-
-```json
-{ "status": "approved", "reason": "looked it over, safe to run" }
-```
-
-```json
-{ "status": "denied", "reason": "shell is not allowed" }
-```
-
 If policy needs a person, the `POST` answers HTTP 207. Its body still says
 `"approved": false`, but nothing has been decided yet. Poll the status URL until
 someone approves or denies. A second `POST` with the same `decision_id` returns
 HTTP 409.
+
+The status poll answers with the same body as the `POST`, and the HTTP status
+says whether it's final:
+
+| `GET` status | Body | Meaning |
+| --- | --- | --- |
+| 207 | `{ "approved": false, "reason": null }` | Still waiting for a person. Poll again |
+| 200 | `{ "approved": true, "reason": "looked it over, safe to run" }` | Approved |
+| 200 | `{ "approved": false, "reason": "shell is not allowed" }` | Denied |
+| 404 | `{ "code": "ENOENT" }` | The decision isn't visible yet. Poll again |
+
+Plugins also accept an older poll body, `{ "status": "pending" | "approved" | "denied", "reason": ... }`.
 
 ## Client wait strategy
 
 1. `POST` the authorize URL with remaining time until the overall deadline.
 2. HTTP 200 with `approved: true` or `approved: false` is the decision.
 3. HTTP 207: a person must decide. Ignore the body's `approved` and poll
-   `GET ?decision_id=` until `approved`, `denied`, or the deadline.
+   `GET ?decision_id=` until it answers HTTP 200 or the deadline passes.
 4. HTTP 409: same poll loop.
 5. Client or transport timeout on the `POST`: same poll loop. Mezmo may still
    be waiting for a person.
-6. `GET` `pending`: sleep `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` (default 5)
-   and retry.
+6. `GET` HTTP 207 or 404: sleep `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS`
+   (default 5) and retry. HTTP 200 is the decision, read from `approved`.
 7. Deadline reached while still pending: deny with reason
    `Mezmo Governance: approval still pending`.
 8. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
@@ -175,4 +173,4 @@ stderr and do not block the agent.
 | --- | --- | --- |
 | allow | `{ "approved": true }` | yes |
 | deny | `{ "approved": false, "reason": "..." }` | no |
-| needs a person | HTTP 207, then `GET` polls until `approved` or `denied` | only after approve |
+| needs a person | HTTP 207, then `GET` answers 207 until someone decides, then 200 with `approved` | only after approve |

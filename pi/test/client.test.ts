@@ -224,6 +224,79 @@ test(
 );
 
 test(
+  "polls through 207 until a person approves",
+  () =>
+    withEnv(ENV, async () => {
+      // What Mezmo answers while a person decides: 207 with "approved": false,
+      // on the POST and on each poll. Then 200 with the decision.
+      const responses = [
+        { status: 207, body: { approved: false, reason: "No rule in this policy covers this request." } },
+        { status: 207, body: { approved: false, reason: null } },
+        { status: 200, body: { approved: true, reason: "looked it over" } },
+      ];
+      const calls: Array<[string | undefined, string]> = [];
+      let now = 0;
+      const fetchImpl = async (url: string, init?: { method?: string }) => {
+        calls.push([init?.method, url]);
+        const next = responses.shift()!;
+        return {
+          status: next.status,
+          async text() {
+            return JSON.stringify(next.body);
+          },
+        };
+      };
+      const payload = approvalPayload({ sessionId: "sess-1", toolCallId: "call-1", toolName: "bash", arguments: { command: "ls" } });
+      const decision = await authorize(payload, {
+        fetchImpl,
+        now: () => now,
+        sleep: async (ms) => {
+          now += ms;
+        },
+      });
+      assert.equal(decision.approved, true);
+      assert.equal(decision.reason, "looked it over");
+      const pollUrl = `${URL}?decision_id=${payload.decision_id}`;
+      assert.deepEqual(calls, [
+        ["POST", URL],
+        ["GET", pollUrl],
+        ["GET", pollUrl],
+      ]);
+      assert.equal(now, 1000);
+    }),
+);
+
+test(
+  "a person denies through the poll",
+  () =>
+    withEnv(ENV, async () => {
+      const responses = [
+        { status: 207, body: { approved: false } },
+        { status: 200, body: { approved: false, reason: "not today" } },
+      ];
+      const fetchImpl = async () => {
+        const next = responses.shift()!;
+        return {
+          status: next.status,
+          async text() {
+            return JSON.stringify(next.body);
+          },
+        };
+      };
+      let now = 0;
+      const decision = await authorize(approvalPayload({ sessionId: "sess-1", toolCallId: "call-1", toolName: "bash", arguments: { command: "ls" } }), {
+        fetchImpl,
+        now: () => now,
+        sleep: async (ms) => {
+          now += ms;
+        },
+      });
+      assert.equal(decision.approved, false);
+      assert.equal(decision.reason, "not today");
+    }),
+);
+
+test(
   "fails closed on HTTP errors",
   () =>
     withEnv(ENV, async () => {
