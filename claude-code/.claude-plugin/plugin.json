@@ -1,7 +1,7 @@
 {
   "name": "mezmo",
   "displayName": "Mezmo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Check Claude Code's tool calls with Mezmo Governance, and send Claude Code telemetry to Mezmo.",
   "author": {
     "name": "Mezmo",
