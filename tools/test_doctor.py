@@ -223,7 +223,7 @@ class MezmoTests(DoctorTestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertStatus(result, "Mezmo URL", "ok")
-        self.assertStatus(result, "Mezmo key", "ok")
+        self.assertStatus(result, "Mezmo token", "ok")
         self.assertIn("--probe", self.assertStatus(result, "Mezmo agent", "warn"))
         for name in ("Claude Code", "Codex", "Cursor", "Gemini CLI", "Copilot CLI", "Goose", "OpenCode", "Pi"):
             self.assertStatus(result, name, "skip")
@@ -244,7 +244,7 @@ class MezmoTests(DoctorTestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("not 401", self.assertStatus(result, "Mezmo URL", "FAIL"))
-        self.assertEqual(self.lines(result, "Mezmo key"), [])
+        self.assertEqual(self.lines(result, "Mezmo token"), [])
 
     def test_unreachable_mezmo_fails(self) -> None:
         url = f"http://127.0.0.1:{closed_port()}/governance/workflow/authorize"
@@ -260,7 +260,7 @@ class MezmoTests(DoctorTestCase):
         result = self.doctor()
 
         self.assertEqual(result.returncode, 1)
-        line = self.assertStatus(result, "Mezmo key", "FAIL")
+        line = self.assertStatus(result, "Mezmo token", "FAIL")
         self.assertIn("HTTP 401 EAUTH: Unauthorized", line)
         self.assertIn("fresh token", line)
         self.assertIn("service account has Governance permissions", line)
@@ -331,7 +331,7 @@ class MezmoTests(DoctorTestCase):
 
         result = self.doctor(MEZMO_GOVERNANCE_TOKEN=f"Bearer {CANARY}")
 
-        self.assertIn("<redacted>", self.assertStatus(result, "Mezmo key", "FAIL"))
+        self.assertIn("<redacted>", self.assertStatus(result, "Mezmo token", "FAIL"))
 
 
 CLAUDE_SETTINGS_HOOK = {

@@ -343,13 +343,13 @@ def check_mezmo(report: Report, ready: bool, probe: bool) -> None:
     try:
         status, body = hook.http_json("GET", url, None, REQUEST_SECONDS)
     except Exception as error:  # noqa: BLE001
-        report.line("FAIL", "Mezmo key", f"no answer: {hook.error_detail(str(error))}", network)
+        report.line("FAIL", "Mezmo token", f"no answer: {hook.error_detail(str(error))}", network)
         return
     if status == 404:
-        report.line("ok", "Mezmo key", "accepted (a made-up decision id gets HTTP 404)")
+        report.line("ok", "Mezmo token", "accepted (a made-up decision id gets HTTP 404)")
     else:
         report.line(
-            "FAIL", "Mezmo key", hook.http_failure(status, body),
+            "FAIL", "Mezmo token", hook.http_failure(status, body),
             "check that the agent's service account has Governance permissions, then copy a fresh token from the service account in Mezmo",
         )
         return
