@@ -82,12 +82,15 @@ Other extensions name tools `<extension>__<tool>`. The hook splits at the first
 `delete_app` (seen live). An extension key that itself contains `__` splits in
 the wrong place.
 
-With Code Mode (the `code_execution` extension) on, the hook sees the
-`execute_typescript` or `execute_bash` call and its code. The tool calls that
-code makes go to the extensions directly, without a `PreToolUse` event.
-Verified live: with `tree` denied, a script that called `Developer.tree` ran,
-and Mezmo saw only `execute_typescript` and `list_functions`. Deny
-`execute_typescript` and `execute_bash`, or keep Code Mode off.
+The hook denies Code Mode (the `code_execution` extension) scripts itself,
+without asking Mezmo. The tool calls a script makes go to the extensions
+directly, without a `PreToolUse` event. Verified live before this rule: with
+`tree` denied, a script that called `Developer.tree` ran, and Mezmo saw only
+`execute_typescript` and `list_functions`. So the hook blocks every
+`execute_typescript` and `execute_bash` call, and Mezmo still decides
+`list_functions` and `get_function_details`. To use Goose with this hook, turn
+Code Mode off: run `goose configure`, choose Toggle Extensions, and disable
+Code Mode.
 
 ## Smoke test
 

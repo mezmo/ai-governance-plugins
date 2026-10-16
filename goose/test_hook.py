@@ -190,6 +190,40 @@ class GooseGovernanceHookTests(unittest.TestCase):
         self.assertIn("Use a canary first.", output["reason"])
 
     @patch.dict(os.environ, ENV)
+    def test_code_mode_scripts_are_denied_before_mezmo(self) -> None:
+        # Goose 1.54.0 runs the tool calls a Code Mode script makes without a
+        # PreToolUse event, so an approved script would run them ungoverned.
+        for name in (
+            "execute_typescript",
+            "execute_bash",
+            "code_execution__execute_typescript",
+            "code_execution__execute_bash",
+        ):
+            with self.subTest(name=name):
+                event = hook_event("PreToolUse")
+                event["tool_name"] = event["matcher_context"] = name
+                event["tool_input"] = {"code": "await Developer.tree({})"}
+                http = FakeHttp([(200, {"approved": True})])
+
+                output = hook.handle_event(event, http=http)
+
+                self.assertEqual(output["decision"], "block")
+                self.assertIn("Code Mode", output["reason"])
+                self.assertEqual(http.calls, [])
+
+    @patch.dict(os.environ, ENV)
+    def test_code_mode_listing_tools_still_go_to_mezmo(self) -> None:
+        for name in ("list_functions", "get_function_details"):
+            with self.subTest(name=name):
+                event = hook_event("PreToolUse")
+                event["tool_name"] = event["matcher_context"] = name
+                event["tool_input"] = {}
+                http = FakeHttp([(200, {"approved": True})])
+
+                self.assertIsNone(hook.handle_event(event, http=http))
+                self.assertEqual(http.calls[0][0], "POST")
+
+    @patch.dict(os.environ, ENV)
     def test_polls_after_a_client_timeout_then_allows(self) -> None:
         http = FakeHttp(
             [

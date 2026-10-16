@@ -22,6 +22,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 AGENT = "goose"
 EXTENSION_SEPARATOR = "__"
+# Goose 1.54.0 runs the tool calls a Code Mode script makes without a hook.
+CODE_MODE_SCRIPT_TOOLS = frozenset({"execute_typescript", "execute_bash"})
 DEFAULT_TIMEOUT_SECONDS = 590.0
 MAX_TIMEOUT_SECONDS = 590.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
@@ -426,6 +428,15 @@ def handle_pre_tool_use(
     clock: Clock,
     sleep: Sleeper,
 ) -> dict[str, Any] | None:
+    tool_call = normalize_tool_call(event)
+    if tool_call.namespace in (AGENT, "code_execution") and (
+        tool_call.name in CODE_MODE_SCRIPT_TOOLS
+    ):
+        return deny_output(
+            f"Mezmo Governance cannot check the tool calls inside a Code Mode "
+            f"script, so it denies {tool_call.name}. Turn Code Mode off: run "
+            f"`goose configure`, choose Toggle Extensions, and disable Code Mode."
+        )
     decision = authorize(approval_payload(event), http=http, clock=clock, sleep=sleep)
     if decision.approved:
         return None
