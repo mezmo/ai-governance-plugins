@@ -66,8 +66,9 @@ export MEZMO_GOVERNANCE_ACCESS_KEY="<agent access key>"
 Pi runs `tool_call` handlers in load order: project `.pi/extensions/`, then
 `~/.pi/agent/extensions/`, then `-e` paths. A handler may change
 `event.input` in place, so an extension that loads after this one can change
-the arguments after Mezmo approved them. Install only extensions you trust
-next to this one. When the arguments that ran differ from the approved ones,
+the arguments after Mezmo approved them. Load this extension last, for
+example with `-e`: an extension that rewrites tool input after it runs input
+Mezmo never approved. Install only extensions you trust next to this one. When the arguments that ran differ from the approved ones,
 the audit line carries `"arguments_changed": true`.
 
 ## What it sends

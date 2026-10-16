@@ -145,8 +145,9 @@ the call ended with `status: "error"`.
 
 OpenCode runs plugin hooks in load order and hands each the same event, so a
 plugin that runs after this one can change the arguments (and on 2.x the tool
-name) after Mezmo approved them. Install only plugins you trust next to this
-one. When what ran differs from what was approved, the audit line carries
+name) after Mezmo approved them. Load this plugin last: a plugin that
+rewrites tool input after it runs input Mezmo never approved. Install only
+plugins you trust next to this one. When what ran differs from what was approved, the audit line carries
 `"arguments_changed": true`.
 
 Do not also rely on `permission.ask` for this gate on 1.x. That hook is not
