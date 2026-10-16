@@ -137,6 +137,12 @@ up in app code; `install` points to their READMEs.
 Claude Code asks for the authorize URL and the access key and keeps the key in
 the system credential store. Details: [claude-code/](claude-code/).
 
+This marketplace is for Claude Code only. Do not add it in Codex or Copilot
+(`codex plugin marketplace add`, `copilot plugin marketplace add`). Both pick up
+the Claude Code plugin, which has no `|| exit 2` guard: a crashed hook lets the
+tool run, and Mezmo sees the calls as `claude_code`. Use
+`./mezmo-governance install codex` or `install copilot` instead.
+
 ### Install by hand
 
 Each adapter's README has the manual steps, the fallback when the command
