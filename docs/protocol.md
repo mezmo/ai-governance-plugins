@@ -16,7 +16,7 @@ Development uses `https://api.use.dev.mezmo.it`. The path is the same.
 | Method | URL | When |
 | --- | --- | --- |
 | `POST` | `$MEZMO_GOVERNANCE_URL` | Before the tool runs |
-| `GET` | `$MEZMO_GOVERNANCE_URL?decision_id=<id>` | After a client timeout or HTTP 409 |
+| `GET` | `$MEZMO_GOVERNANCE_URL?decision_id=<id>` | After HTTP 207, HTTP 409, or a client timeout |
 
 Post-tool hooks only append a local JSONL file. They do not call Mezmo.
 
@@ -74,7 +74,7 @@ Rules:
 
 ## Authorize response
 
-Immediate or held `POST` body:
+HTTP 200 `POST` body, the decision:
 
 ```json
 { "approved": true }
@@ -98,22 +98,25 @@ Status poll:
 { "status": "denied", "reason": "shell is not allowed" }
 ```
 
-If policy needs a person, Mezmo keeps the `POST` open until someone approves or
-denies, or until the wait expires. A second `POST` with the same `decision_id`
-returns HTTP 409.
+If policy needs a person, the `POST` answers HTTP 207. Its body still says
+`"approved": false`, but nothing has been decided yet. Poll the status URL until
+someone approves or denies. A second `POST` with the same `decision_id` returns
+HTTP 409.
 
 ## Client wait strategy
 
 1. `POST` the authorize URL with remaining time until the overall deadline.
 2. HTTP 200 with `approved: true` or `approved: false` is the decision.
-3. HTTP 409: poll `GET ?decision_id=` until `approved`, `denied`, or the deadline.
-4. Client or transport timeout on the `POST`: same poll loop. Mezmo may still
+3. HTTP 207: a person must decide. Ignore the body's `approved` and poll
+   `GET ?decision_id=` until `approved`, `denied`, or the deadline.
+4. HTTP 409: same poll loop.
+5. Client or transport timeout on the `POST`: same poll loop. Mezmo may still
    be waiting for a person.
-5. `GET` `pending`: sleep `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` (default 5)
+6. `GET` `pending`: sleep `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` (default 5)
    and retry.
-6. Deadline reached while still pending: deny with reason
+7. Deadline reached while still pending: deny with reason
    `Mezmo Governance: approval still pending`.
-7. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
+8. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
    env, or transport error: deny. The tool does not run.
 
 ## Identity
@@ -172,4 +175,4 @@ stderr and do not block the agent.
 | --- | --- | --- |
 | allow | `{ "approved": true }` | yes |
 | deny | `{ "approved": false, "reason": "..." }` | no |
-| needs a person | POST stays open, then `{ "approved": true\|false, "reason": "..." }` | only after approve |
+| needs a person | HTTP 207, then `GET` polls until `approved` or `denied` | only after approve |

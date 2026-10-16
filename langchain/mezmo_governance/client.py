@@ -247,7 +247,8 @@ async def authorize(
             clock,
             sleep_fn,
         )
-    if status == 409:
+    # 207 means a person must decide; its "approved": false is not a decision yet.
+    if status in (207, 409):
         return await poll_decision(
             str(payload["decision_id"]),
             deadline,

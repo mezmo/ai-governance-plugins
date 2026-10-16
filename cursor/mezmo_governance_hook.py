@@ -362,7 +362,8 @@ def authorize(
     except TimeoutError:
         return poll_decision(str(payload["decision_id"]), deadline, http, clock, sleep)
 
-    if status == 409:
+    # 207 means a person must decide; its "approved": false is not a decision yet.
+    if status in (207, 409):
         return poll_decision(str(payload["decision_id"]), deadline, http, clock, sleep)
     if status != 200:
         raise HookContractError(f"Mezmo Governance returned HTTP {status}")

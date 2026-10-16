@@ -153,6 +153,37 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.reason, "already decided")
 
     @patch.dict(os.environ, ENV)
+    async def test_waits_for_a_person_after_207(self) -> None:
+        http = FakeHttp(
+            [
+                (207, {"approved": False}),
+                (200, {"status": "pending", "reason": None}),
+                (200, {"status": "approved", "reason": "looked it over"}),
+            ]
+        )
+        clock = FakeClock()
+        payload = approval_payload(
+            session_id="sess-1",
+            tool_call_id="call-1",
+            tool_name="echo",
+            arguments={"text": "hi"},
+        )
+        decision = await authorize(
+            payload,
+            http=http,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.reason, "looked it over")
+        poll_url = f"{ENV['MEZMO_GOVERNANCE_URL']}?decision_id={payload['decision_id']}"
+        self.assertEqual(
+            [(method, url) for method, url, _, _ in http.calls],
+            [("POST", ENV["MEZMO_GOVERNANCE_URL"]), ("GET", poll_url), ("GET", poll_url)],
+        )
+        self.assertEqual(clock.now, 1.0)
+
+    @patch.dict(os.environ, ENV)
     async def test_http_error_fails_closed(self) -> None:
         http = FakeHttp([(500, {})])
         payload = approval_payload(

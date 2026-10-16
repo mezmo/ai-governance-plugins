@@ -172,6 +172,32 @@ class CodexGovernanceHookTests(unittest.TestCase):
         self.assertIn("already decided", output["hookSpecificOutput"]["permissionDecisionReason"])
 
     @patch.dict(os.environ, ENV)
+    def test_waits_for_a_person_after_207_then_allows(self) -> None:
+        http = FakeHttp(
+            [
+                (207, {"approved": False}),
+                (200, {"status": "pending", "reason": None}),
+                (200, {"status": "approved", "reason": "looked it over"}),
+            ]
+        )
+        clock = FakeClock()
+
+        output = hook.handle_event(
+            hook_event("PreToolUse"),
+            http=http,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertIsNone(output)
+        poll_url = f"{AUTHORIZE_URL}?decision_id={http.calls[0][2]['decision_id']}"
+        self.assertEqual(
+            [(method, url) for method, url, _, _ in http.calls],
+            [("POST", AUTHORIZE_URL), ("GET", poll_url), ("GET", poll_url)],
+        )
+        self.assertEqual(clock.now, 1.0)
+
+    @patch.dict(os.environ, ENV)
     def test_fails_closed_when_the_governance_request_fails(self) -> None:
         http = FakeHttp([hook.HookContractError("connection refused")])
 
