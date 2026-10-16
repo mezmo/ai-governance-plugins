@@ -333,6 +333,20 @@ class InstallTests(CliTestCase):
                         self.assertIn(want, self.status(agent))
                 self.cli("uninstall", agent)
 
+    def test_a_manual_readme_install_counts_as_installed(self) -> None:
+        # What each README's manual steps leave behind; install must not add a second hook.
+        gemini = json.loads((REPO / "gemini-cli/settings.example.json").read_text())
+        codex = json.loads((REPO / "codex/hooks.example.json").read_text())
+        self.write({"gemini/.gemini/settings.json": gemini, "codex/hooks.json": codex})
+        shutil.copytree(REPO / "pi", self.tmp / "pi/extensions/mezmo-governance")
+        before = self.files()
+        result = self.cli("install", "gemini-cli", "codex", "pi")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        for agent in ("gemini-cli", "codex", "pi"):
+            self.assertIn(f"ok    {agent}: already installed, nothing to change", result.stdout)
+        self.assertEqual(self.files(), before)
+        self.assertFalse(self.log.exists())
+
     def test_a_config_it_cannot_read_is_left_alone(self) -> None:
         path = self.tmp / "codex/hooks.json"
         path.parent.mkdir(parents=True)
