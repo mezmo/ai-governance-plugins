@@ -498,6 +498,31 @@ class KeyTests(CliTestCase):
             self.assertEqual(leaked, [], args)
 
 
+class ManifestTests(unittest.TestCase):
+    def test_each_native_plugin_points_at_its_own_adapter_and_hook(self) -> None:
+        # marketplace, plugin manifest, hook config, and the example's hook path the plugin swaps out.
+        cases = (
+            (".agents/plugins/marketplace.json", ".codex-plugin/plugin.json", "codex",
+             {'${MEZMO_GOVERNANCE_HOOK:-$HOME/.codex/hooks/mezmo_governance_hook.py}': "${PLUGIN_ROOT}/mezmo_governance_hook.py"}),
+            (".github/plugin/marketplace.json", "plugin.json", "copilot",
+             {'${MEZMO_GOVERNANCE_HOOK:-$HOME/.copilot/hooks/mezmo_governance_hook.py}': "${PLUGIN_ROOT}/mezmo_governance_hook.py",
+              "$HOME/.copilot/hooks/mezmo_governance_hook.py": "$env:PLUGIN_ROOT/mezmo_governance_hook.py"}),
+        )
+        for marketplace, manifest, adapter, swaps in cases:
+            with self.subTest(adapter=adapter):
+                market = json.loads((REPO / marketplace).read_text())
+                (entry,) = market["plugins"]
+                self.assertEqual((market["name"], entry["name"], entry["source"]), ("mezmo", "mezmo-governance", f"./{adapter}"))
+                root = REPO / entry["source"]
+                self.assertEqual(json.loads((root / manifest).read_text())["name"], "mezmo-governance")
+                self.assertTrue((root / "mezmo_governance_hook.py").is_file())
+                text = (root / "hooks.example.json").read_text()
+                for old, new in swaps.items():
+                    text = text.replace(old, new)
+                plugin = json.loads((root / "hooks/hooks.json").read_text())
+                self.assertEqual(plugin["hooks"], json.loads(text)["hooks"])
+
+
 class WrapperTests(CliTestCase):
     def test_it_runs_from_another_folder_and_passes_the_arguments(self) -> None:
         elsewhere = self.tmp / "elsewhere"

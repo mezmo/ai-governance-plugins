@@ -1,0 +1,13 @@
+{
+  "name": "mezmo",
+  "owner": {
+    "name": "Mezmo"
+  },
+  "plugins": [
+    {
+      "name": "mezmo-governance",
+      "source": "./codex",
+      "description": "Ask Mezmo Governance before each tool call runs; block it on deny"
+    }
+  ]
+}

@@ -185,10 +185,10 @@ group in its place and those hooks stay trusted.
 | Agent | `install` runs | Why this way |
 | --- | --- | --- |
 | Claude Code | `claude plugin install mezmo-governance --marketplace <this repo> -s user` | `claude plugin install --help`: the marketplace may be "a path" |
-| Codex CLI | copies the hook, merges `codex/hooks.example.json` into `hooks.json` | `codex plugin marketplace add` of this repo picks the Claude Code plugin |
+| Codex CLI | copies the hook, merges `codex/hooks.example.json` into `hooks.json` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-and-copilot-cli) |
 | Cursor | copies the hook, merges `cursor/hooks.example.json` into `~/.cursor/hooks.json` | `cursor-agent plugin` only adds marketplaces from a git URL |
 | Gemini CLI | `gemini extensions install ./gemini-cli --consent --skip-settings` | `gemini extensions install --help`: "from a git repository URL or a local path" |
-| Copilot CLI | copies the hook and `hooks.example.json` to `~/.copilot/hooks/` | `copilot plugin install` takes no local path, and its marketplace picks the Claude Code plugin |
+| Copilot CLI | copies the hook and `hooks.example.json` to `~/.copilot/hooks/` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-and-copilot-cli) |
 | Goose | copies the plugin to `~/.agents/plugins/mezmo-governance/` | `goose plugin install` takes a git URL whose root is the plugin |
 | OpenCode 2.x | copies `opencode/` and names it in `opencode.json` with options; the key stays in a file you write | `opencode plugin add` takes an npm or git package only |
 | Pi | `pi install ./pi` | `pi install --help`: `pi install ./local/path` |
@@ -210,11 +210,14 @@ up in app code; `install` points to their READMEs.
 Claude Code asks for the authorize URL and the token and keeps the key in
 the system credential store. Details: [claude-code/](claude-code/).
 
-This marketplace is for Claude Code only. Do not add it in Codex or Copilot
-(`codex plugin marketplace add`, `copilot plugin marketplace add`). Both pick up
-the Claude Code plugin, which has no `|| exit 2` guard: a crashed hook lets the
-tool run, and Mezmo sees the calls as `claude_code`. Use
-`./mezmo-governance install codex` or `install copilot` instead.
+### Codex CLI and Copilot CLI
+
+The same repository is a marketplace for each, and each reads its own manifest
+and gets its own adapter. Use this or `./mezmo-governance install`, not both:
+both run the hook twice. `doctor` and `smoke` check only the file install.
+
+- Codex CLI: `codex plugin marketplace add mezmo/ai-governance-plugins`, then `codex plugin add mezmo-governance@mezmo`, then trust both hooks in `/hooks`.
+- Copilot CLI: `copilot plugin marketplace add mezmo/ai-governance-plugins`, then `copilot plugin install mezmo-governance@mezmo`.
 
 ### Install by hand
 
