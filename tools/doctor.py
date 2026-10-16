@@ -87,6 +87,55 @@ def home() -> Path:
     return Path(os.path.expanduser("~"))
 
 
+# Each agent's user config folder, with the override each agent documents.
+CONFIG_OVERRIDES = (
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+    "GEMINI_CLI_HOME",
+    "COPILOT_HOME",
+    "GOOSE_PATH_ROOT",
+    "XDG_CONFIG_HOME",
+    "PI_CODING_AGENT_DIR",
+)
+
+
+def env_dir(name: str, default: Path) -> Path:
+    value = os.environ.get(name)
+    return Path(os.path.expanduser(value)) if value else default
+
+
+def claude_dir() -> Path:
+    return env_dir("CLAUDE_CONFIG_DIR", home() / ".claude")
+
+
+def codex_dir() -> Path:
+    return env_dir("CODEX_HOME", home() / ".codex")
+
+
+def cursor_dir() -> Path:
+    return home() / ".cursor"
+
+
+def gemini_dir() -> Path:
+    return env_dir("GEMINI_CLI_HOME", home()) / ".gemini"
+
+
+def copilot_dir() -> Path:
+    return env_dir("COPILOT_HOME", home() / ".copilot")
+
+
+def goose_dir() -> Path:
+    return env_dir("GOOSE_PATH_ROOT", home()) / ".agents" / "plugins" / "mezmo-governance"
+
+
+def opencode_dir() -> Path:
+    return env_dir("XDG_CONFIG_HOME", home() / ".config") / "opencode"
+
+
+def pi_dir() -> Path:
+    return env_dir("PI_CODING_AGENT_DIR", home() / ".pi" / "agent")
+
+
 def shown(path: Path) -> str:
     text = str(path)
     root = str(home())
@@ -362,7 +411,7 @@ def fail_closed(report: Report, subject: str, ok: bool, setting: str, example: s
 
 
 def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list]:
-    root = home() / ".claude"
+    root = claude_dir()
     settings = as_dict(read_json(root / "settings.json"))
     registry = as_dict(read_json(root / "plugins" / "installed_plugins.json"))
     smokes = []
@@ -402,16 +451,16 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
 
 
 def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
-    path = home() / ".codex" / "hooks.json"
+    path = codex_dir() / "hooks.json"
     found = mezmo_handlers(as_dict(as_dict(read_json(path)).get("hooks")).get("PreToolUse"))
     if not found:
         return None
-    config = read_text(home() / ".codex" / "config.toml") or ""
+    config = read_text(codex_dir() / "config.toml") or ""
     features = toml_table(config, "features") or ""
     if re.search(r"^\s*hooks\s*=\s*false\b", features, re.M):
         report.line(
             "FAIL", "Codex hooks", "hooks = false under [features] turns every hook off",
-            "remove it from ~/.codex/config.toml",
+            f"remove it from {shown(codex_dir() / 'config.toml')}",
         )
     smokes = []
     for g, h, _, handler in found:
@@ -436,7 +485,7 @@ def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
 
 
 def check_cursor(report: Report, version: Optional[tuple]) -> Optional[list]:
-    path = home() / ".cursor" / "hooks.json"
+    path = cursor_dir() / "hooks.json"
     found = mezmo_handlers(as_dict(as_dict(read_json(path)).get("hooks")).get("preToolUse"))
     if not found:
         return None
@@ -456,8 +505,18 @@ def check_cursor(report: Report, version: Optional[tuple]) -> Optional[list]:
 
 
 def check_gemini(report: Report, version: Optional[tuple]) -> Optional[list]:
-    path = home() / ".gemini" / "settings.json"
-    found = mezmo_handlers(as_dict(as_dict(read_json(path)).get("hooks")).get("BeforeTool"))
+    path = gemini_dir() / "settings.json"
+    extension = gemini_dir() / "extensions" / "mezmo-governance"
+    found = [
+        (path, handler, hook_path(str(handler.get("command"))))
+        for *_, handler in mezmo_handlers(as_dict(as_dict(read_json(path)).get("hooks")).get("BeforeTool"))
+    ]
+    found += [
+        (extension, handler, extension / HOOK_FILE)
+        for *_, handler in mezmo_handlers(
+            as_dict(as_dict(read_json(extension / "hooks" / "hooks.json")).get("hooks")).get("BeforeTool")
+        )
+    ]
     if not found:
         return None
     event = {
@@ -467,17 +526,16 @@ def check_gemini(report: Report, version: Optional[tuple]) -> Optional[list]:
         "tool_input": {"command": "echo hi"},
     }
     smokes = []
-    for *_, handler in found:
+    for where, handler, script in found:
         command = str(handler.get("command"))
-        report.line("ok", "Gemini CLI hook", f"BeforeTool hook in {shown(path)}")
-        fail_closed(report, "Gemini CLI hook", "exit 2" in command, "|| exit 2 guard", "gemini-cli/settings.example.json")
-        smokes.append(Smoke("Gemini CLI", hook_path(command), event))
+        report.line("ok", "Gemini CLI hook", f"BeforeTool hook in {shown(where)}")
+        fail_closed(report, "Gemini CLI hook", "exit 2" in command, "|| exit 2 guard", "gemini-cli/hooks/hooks.json")
+        smokes.append(Smoke("Gemini CLI", script, event))
     return smokes
 
 
 def check_copilot(report: Report, version: Optional[tuple]) -> Optional[list]:
-    configured = os.environ.get("COPILOT_HOME")
-    folder = (Path(configured) if configured else home() / ".copilot") / "hooks"
+    folder = copilot_dir() / "hooks"
     event = {
         "sessionId": "doctor",
         "timestamp": 0,
@@ -513,8 +571,7 @@ def check_copilot(report: Report, version: Optional[tuple]) -> Optional[list]:
 
 
 def check_goose(report: Report, version: Optional[tuple]) -> Optional[list]:
-    root = Path(os.environ.get("GOOSE_PATH_ROOT") or home())
-    folder = root / ".agents" / "plugins" / "mezmo-governance"
+    folder = goose_dir()
     if not folder.is_dir():
         return None
     missing = [name for name in ("plugin.json", HOOK_FILE, "hooks/hooks.json") if not (folder / name).is_file()]
@@ -569,7 +626,7 @@ def opencode_option(report: Report, options: dict, name: str) -> None:
 
 
 def check_opencode(report: Report, version: Optional[tuple]) -> Optional[list]:
-    config = home() / ".config" / "opencode"
+    config = opencode_dir()
     plugins = config / "plugins"
     entries = []
     for item in as_list(as_dict(read_json(config / "opencode.json")).get("plugins")):
@@ -609,16 +666,30 @@ def check_opencode(report: Report, version: Optional[tuple]) -> Optional[list]:
     return []
 
 
+def pi_packages() -> list:
+    """Local folders `pi install` named in settings.json, as absolute paths."""
+    folders = []
+    for entry in as_list(as_dict(read_json(pi_dir() / "settings.json")).get("packages")):
+        source = entry if isinstance(entry, str) else as_dict(entry).get("source")
+        if isinstance(source, str) and not re.match(r"^[a-z]+:", source):
+            # Pi joins the path to its folder as text, without following links.
+            folders.append(Path(os.path.normpath(pi_dir() / os.path.expanduser(source))))
+    return folders
+
+
 def check_pi(report: Report, version: Optional[tuple]) -> Optional[list]:
-    extensions = home() / ".pi" / "agent" / "extensions"
-    folder = extensions / "mezmo-governance"
-    if not folder.is_dir():
+    extensions = pi_dir() / "extensions"
+    folders = [folder for folder in pi_packages() if (folder / "mezmo-governance.ts").is_file()]
+    if (extensions / "mezmo-governance").is_dir():
+        folders.append(extensions / "mezmo-governance")
+    if not folders:
         return None
-    missing = [name for name in ("mezmo-governance.ts", "client.ts", "package.json") if not (folder / name).is_file()]
-    if missing:
-        report.line("FAIL", "Pi extension", f"{shown(folder)} lacks {', '.join(missing)}", "copy the files as in pi/README.md")
-    else:
-        report.line("ok", "Pi extension", f"installed in {shown(folder)}")
+    for folder in folders:
+        missing = [name for name in ("mezmo-governance.ts", "client.ts", "package.json") if not (folder / name).is_file()]
+        if missing:
+            report.line("FAIL", "Pi extension", f"{shown(folder)} lacks {', '.join(missing)}", "copy the files as in pi/README.md")
+        else:
+            report.line("ok", "Pi extension", f"installed from {shown(folder)}")
     if (extensions / "client.ts").is_file():
         report.line("warn", "Pi extension", f"Pi loads {shown(extensions / 'client.ts')} as an extension, and it is not one", "delete it")
     return []
@@ -670,9 +741,9 @@ def check_binary(report: Report, agent: Agent) -> Optional[tuple]:
     return version
 
 
-def check_agents(report: Report) -> list:
+def check_agents(report: Report, agents: tuple = AGENTS) -> list:
     smokes = []
-    for agent in AGENTS:
+    for agent in agents:
         found = shutil.which(agent.binary) is not None
         version = check_binary(report, agent)
         try:

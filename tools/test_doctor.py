@@ -25,6 +25,15 @@ ENOAGENT = {
     "message": "no agent is registered for these credentials",
 }
 Answer = Union[tuple, Callable[[dict], tuple]]
+CONFIG_OVERRIDES = {
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+    "GEMINI_CLI_HOME",
+    "COPILOT_HOME",
+    "GOOSE_PATH_ROOT",
+    "XDG_CONFIG_HOME",
+    "PI_CODING_AGENT_DIR",
+}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -116,7 +125,7 @@ class DoctorTestCase(unittest.TestCase):
             key: value
             for key, value in os.environ.items()
             if not key.startswith(("MEZMO_GOVERNANCE_", "CLAUDE_PLUGIN_OPTION_"))
-            and key not in {"GOOSE_PATH_ROOT", "COPILOT_HOME"}
+            and key not in CONFIG_OVERRIDES
             and key.lower() not in {"http_proxy", "https_proxy", "all_proxy"}
         }
         base.update(
@@ -643,6 +652,67 @@ class TypeScriptAgentTests(DoctorTestCase):
         self.agent("pi", "1.2.0")
 
         self.assertIn("tested 1.3.0", self.lines(self.doctor(), "Pi")[0])
+
+
+class ConfigFolderTests(DoctorTestCase):
+    def test_each_override_moves_the_folder_the_doctor_reads(self) -> None:
+        # A hook written under the moved folder must be found; HOME holds nothing.
+        guarded = 'python3 "{}" || exit 2'
+        cases = [
+            ("claude", "2.1.300", "CLAUDE_CONFIG_DIR", "settings.json", "Claude Code settings",
+             lambda hook: {"hooks": {"PreToolUse": [{"hooks": [{**CLAUDE_SETTINGS_HOOK, "command": f'python3 "{hook}"'}]}]}}),
+            ("codex", "0.162.1", "CODEX_HOME", "hooks.json", "Codex hook",
+             lambda hook: {"hooks": {"PreToolUse": [{"hooks": [{"command": guarded.format(hook)}]}]}}),
+            ("gemini", "0.64.0", "GEMINI_CLI_HOME", ".gemini/settings.json", "Gemini CLI hook",
+             lambda hook: {"hooks": {"BeforeTool": [{"hooks": [{"command": guarded.format(hook)}]}]}}),
+        ]
+        for binary, version, variable, relative, subject, config in cases:
+            with self.subTest(variable=variable):
+                folder = self.tmp / variable.lower()
+                hook = folder / "mezmo_governance_hook.py"
+                hook.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy(REPO / "claude-code" / "mezmo_governance_hook.py", hook)
+                (folder / relative).parent.mkdir(parents=True, exist_ok=True)
+                (folder / relative).write_text(json.dumps(config(hook)))
+                self.agent(binary, version)
+
+                result = self.doctor(**{variable: str(folder)})
+
+                self.assertTrue(self.lines(result, subject)[0].startswith("ok"), result.stdout)
+
+    def test_xdg_config_home_moves_opencode_and_pi_dir_moves_pi(self) -> None:
+        xdg = self.tmp / "xdg"
+        key = xdg / "mezmo" / "governance-key"
+        key.parent.mkdir(parents=True)
+        key.write_text("not-the-canary\n")
+        shutil.copytree(REPO / "opencode", xdg / "opencode" / "mezmo-governance")
+        options = {"MEZMO_GOVERNANCE_URL": self.stub.url, "MEZMO_GOVERNANCE_ACCESS_KEY": f"{{file:{key}}}"}
+        (xdg / "opencode" / "opencode.json").write_text(
+            json.dumps({"plugins": [{"package": "./mezmo-governance", "options": options}]})
+        )
+        self.agent("opencode", "2.0.25")
+        pi = self.tmp / "pi-agent"
+        pi.mkdir()
+        (pi / "settings.json").write_text(json.dumps({"packages": ["npm:other", str(REPO / "pi")]}))
+        self.agent("pi", "1.3.0")
+
+        result = self.doctor(XDG_CONFIG_HOME=str(xdg), PI_CODING_AGENT_DIR=str(pi))
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertTrue(self.lines(result, "OpenCode plugin")[0].startswith("ok"), result.stdout)
+        self.assertIn(f"installed from {REPO / 'pi'}", self.assertStatus(result, "Pi extension", "ok"))
+
+    def test_a_gemini_extension_counts_as_installed(self) -> None:
+        shutil.copytree(REPO / "gemini-cli", self.home / ".gemini/extensions/mezmo-governance")
+        self.agent("gemini", "0.64.0")
+
+        result = self.doctor()
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        hook = self.lines(result, "Gemini CLI hook")
+        self.assertIn("~/.gemini/extensions/mezmo-governance", hook[0])
+        self.assertIn("fails closed", hook[1])
+        self.assertStatus(result, "Gemini CLI smoke", "ok")
 
 
 class SmokeTests(DoctorTestCase):
