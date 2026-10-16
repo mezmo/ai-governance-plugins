@@ -185,9 +185,13 @@ def decision_from_post(body: Mapping[str, Any]) -> Decision:
 
 
 def decision_from_status(body: Mapping[str, Any]) -> Decision | None:
-    status = body.get("status")
     reason = body.get("reason")
     detail = reason if isinstance(reason, str) else None
+    # Mezmo answers the poll with {approved, reason}. A status field is the older shape.
+    approved = body.get("approved")
+    if isinstance(approved, bool):
+        return Decision(True, detail) if approved else Decision(False, detail or "Policy denied the call.")
+    status = body.get("status")
     if status == "approved":
         return Decision(True, detail)
     if status == "denied":
@@ -212,7 +216,8 @@ async def poll_decision(
             status, body = await http("GET", url, None, leftover)
         except TimeoutError as error:
             raise GovernanceError(f"Mezmo Governance is unavailable: {error}") from error
-        if status == 404:
+        # 207: a person hasn't decided yet. 404: the decision isn't visible yet.
+        if status in (207, 404):
             await sleep(min(interval, leftover))
             continue
         if status != 200:
