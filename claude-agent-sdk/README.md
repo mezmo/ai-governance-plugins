@@ -118,7 +118,9 @@ The audit log defaults to `~/.mezmo/governance-audit.jsonl`.
 
 ## What the hooks send
 
-`request_id` is `claude_agent_sdk:<session_id>:<tool_use_id>`. The tool use id
+`request_id` is `claude_agent_sdk:<session_id>:<tool_use_id>#<digest>`.
+`<digest>` hashes the tool and its arguments, so an edited call gets its own
+decision ([identity](../docs/protocol.md#identity)). The tool use id
 comes from the callback's second argument, else the input's `tool_use_id`. A
 call without either gets a random `generated-<uuid>`, so it never reuses an
 earlier decision. An audit line for such a call has `null` ids.

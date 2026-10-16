@@ -91,7 +91,9 @@ must not run.
 
 ## What it sends
 
-`request_id` is `langchain:<session_id>:<tool_call_id>`. Tool names
+`request_id` is `langchain:<session_id>:<tool_call_id>#<digest>`.
+`<digest>` hashes the tool and its arguments, so an edited call gets its own
+decision ([identity](../docs/protocol.md#identity)). Tool names
 `mcp__<server>__<tool>` use that MCP server as `tool_namespace`; everything else
 uses `langchain`.
 

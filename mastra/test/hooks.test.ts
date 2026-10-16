@@ -141,7 +141,7 @@ test(
           output: { temperatureCelsius: 21 },
         });
         const line = JSON.parse((await readFile(path, "utf8")).trim());
-        const identity = callIdentity("thread-1", "call-1");
+        const identity = callIdentity("thread-1", "call-1", "weatherTool", { location: "Austin" });
         assert.equal(line.agent, AGENT);
         assert.equal(line.request_id, identity.requestId);
         assert.equal(line.tool_name, "weatherTool");

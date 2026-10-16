@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { callIdentity } from "../client.ts";
+import { callDigest, callIdentity } from "../client.ts";
 import mezmoGovernance from "../mezmo-governance.ts";
 
 const ENV = {
@@ -85,7 +85,7 @@ test("tool_call returns nothing when Mezmo approves", async () => {
       assert.deepEqual(pi.statuses.at(-1), ["mezmo-governance", undefined]);
     },
   );
-  assert.equal(sent.request_id, "pi:sess-1:call-1");
+  assert.equal(sent.request_id, `pi:sess-1:call-1#${callDigest("bash", { command: "ls" })}`);
   assert.deepEqual(sent.items[0].arguments, { command: "ls" });
 });
 
@@ -127,7 +127,7 @@ test("tool_result previews content and records success", async () => {
       isError: false,
     });
     const line = await auditLine(audit);
-    assert.equal(line.request_id, callIdentity("sess-1", "call-1").requestId);
+    assert.equal(line.request_id, callIdentity("sess-1", "call-1", "bash", { command: "ls" }).requestId);
     assert.equal(line.status, "observed");
     assert.match(line.result_preview, /a\\nb/);
   });
@@ -159,6 +159,8 @@ test("tool_result flags arguments a later extension changed after approval", asy
     await pi.toolResult({ toolName: "bash", toolCallId: "call-3", input, content: [], isError: false });
     const line = await auditLine(audit);
     assert.equal(line.arguments_changed, true);
+    // The line still joins the decision Mezmo made on the approved arguments.
+    assert.equal(line.request_id, callIdentity("sess-1", "call-3", "bash", { command: "ls" }).requestId);
   });
 });
 

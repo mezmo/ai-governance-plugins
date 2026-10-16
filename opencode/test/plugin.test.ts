@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { callIdentity } from "../mezmo-governance/client.ts";
+import { callDigest, callIdentity } from "../mezmo-governance/client.ts";
 import { MezmoGovernance } from "../mezmo-governance.ts";
 import { auditLines, decision, type FakeFetch, withFakeMezmo } from "./runtime.ts";
 
@@ -29,7 +29,7 @@ test("tool.execute.before returns when Mezmo approves", async () => {
       await hooks["tool.execute.before"](INPUT, { args: { command: "ls" } });
     },
   );
-  assert.equal(sent.request_id, "opencode:ses_1:call_1");
+  assert.equal(sent.request_id, `opencode:ses_1:call_1#${callDigest("bash", { command: "ls" })}`);
   assert.deepEqual(sent.items[0].arguments, { command: "ls" });
 });
 
@@ -63,7 +63,7 @@ test("tool.execute.after records shell output and exit 0 as observed", async () 
       { title: "ls", output: "a\nb", metadata: { exit: 0, output: "a\nb" } },
     );
     const line = await auditLine(audit);
-    assert.equal(line.request_id, callIdentity("ses_1", "call_1").requestId);
+    assert.equal(line.request_id, callIdentity("ses_1", "call_1", "bash", { command: "ls" }).requestId);
     assert.equal(line.status, "observed");
     assert.equal(line.result_preview, JSON.stringify("a\nb"));
   });

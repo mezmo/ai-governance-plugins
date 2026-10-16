@@ -40,7 +40,7 @@ unchanged.
 {
   "version": 1,
   "decision_id": "uuid-v5-of-request-id",
-  "request_id": "codex:session-1:toolu_01ABC",
+  "request_id": "codex:session-1:toolu_01ABC#65e76bbd6d1b83cc",
   "scope": {
     "kind": "single",
     "session_id": "session-1"
@@ -128,9 +128,18 @@ returns HTTP 409.
 
 ## Identity
 
-`request_id` is `<agent>:<session_id>:<tool_call_id>`. `decision_id` is
-`uuid5(NAMESPACE_URL, request_id)` so a retry of the same call reuses the id
-and polls instead of opening a second decision.
+`request_id` is `<agent>:<session_id>:<tool_call_id>#<digest>`. `<digest>` is
+the first 16 hex characters of SHA-256 over the JSON array
+`[tool_namespace, tool_name, arguments]`, with sorted keys and no spaces.
+`decision_id` is `uuid5(NAMESPACE_URL, request_id)`.
+
+A retry of the same call, with the same id and the same arguments, reuses the
+id and polls instead of opening a second decision. A call that keeps its id
+but changes the tool or an argument gets a new id, so HTTP 409 never hands an
+earlier approval to different arguments. Each client computes the digest its
+own way; Mezmo never needs to recompute it, and `decision_id` stays a UUID.
+
+The table lists the pieces before `#<digest>`.
 
 | Runtime | `request_id` pieces | `origin.kind` | Default `tool_namespace` |
 | --- | --- | --- | --- |

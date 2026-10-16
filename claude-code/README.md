@@ -100,8 +100,10 @@ earlier decision for an id it has seen.
 MCP names `mcp__<server>__<tool>` split into that server and tool. Built-in tools
 (`Bash`, `Edit`, `Write`, `Read`) use namespace `claude_code`.
 
-`request_id` is `claude_code:<session_id>:<tool_use_id>`, or
-`claude_code:<session_id>:<turn_id>:<tool_use_id>` when `turn_id` is present.
+`request_id` is `claude_code:<session_id>:<tool_use_id>#<digest>`, or
+`claude_code:<session_id>:<turn_id>:<tool_use_id>#<digest>` when `turn_id` is
+present. `<digest>` hashes the tool and its arguments, so an edited call gets its own
+decision ([identity](../docs/protocol.md#identity)).
 
 PreToolUse deny uses `hookSpecificOutput.permissionDecision: "deny"`. Exit code
 2 also blocks. PostToolUse and PostToolUseFailure only append

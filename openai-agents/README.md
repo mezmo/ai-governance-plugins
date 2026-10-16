@@ -107,12 +107,14 @@ guardrail waits for a decision inside the run for up to
 
 ## What it sends
 
-`request_id` is `openai_agents:<session_id>:<call_id>`, and `origin.kind` is
+`request_id` is `openai_agents:<session_id>:<call_id>#<digest>`, and `origin.kind` is
 `openai_agents_guardrail`. `session_id` is `RunConfig.group_id`, else the
 run's trace id, else one random id per `MezmoGovernance` instance (with
 tracing off, every run through that instance shares it). The SDK refuses a
 tool call without a call id before the guardrail runs; if one gets through,
 it gets a random id, so it never reuses an earlier decision.
+`<digest>` hashes the tool and its arguments, so an edited call gets its own
+decision ([identity](../docs/protocol.md#identity)).
 
 ### Tool names for policy
 

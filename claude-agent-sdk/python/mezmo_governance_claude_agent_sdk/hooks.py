@@ -107,9 +107,13 @@ def audit_record(input_data: Mapping[str, Any], tool_use_id: str | None) -> dict
     namespace, name = split_tool_name(required_string(input_data.get("tool_name"), "tool_name"))
     call_id = tool_use_id_from(input_data, tool_use_id)
     session_id = input_data.get("session_id")
+    arguments = input_data.get("tool_input")
     decision_id = request_id = None
-    if call_id and isinstance(session_id, str) and session_id.strip():
-        decision_id, request_id = call_identity(session_id.strip(), call_id)
+    # The identity covers the arguments, so it needs them to join the decision.
+    if call_id and isinstance(session_id, str) and session_id.strip() and isinstance(arguments, Mapping):
+        decision_id, request_id = call_identity(
+            session_id.strip(), call_id, namespace, name, arguments
+        )
     response = input_data.get("tool_response")
     failed = (
         input_data.get("hook_event_name") == "PostToolUseFailure"

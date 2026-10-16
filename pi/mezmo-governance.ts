@@ -95,11 +95,13 @@ export default function mezmoGovernance(pi: ExtensionAPI) {
 
   pi.on("tool_result", async (event, ctx) => {
     try {
-      const identity = callIdentity(sessionId(ctx), event.toolCallId);
       const tool = splitToolName(event.toolName);
       const approvedArgs = approved.get(event.toolCallId);
       approved.delete(event.toolCallId);
       const changed = approvedArgs !== undefined && approvedArgs !== JSON.stringify(event.input ?? {});
+      // The identity covers the arguments: use the approved ones to join the decision.
+      const args = approvedArgs !== undefined ? JSON.parse(approvedArgs) : (event.input ?? {});
+      const identity = callIdentity(sessionId(ctx), event.toolCallId, event.toolName, args);
       await appendAudit({
         ts: new Date().toISOString(),
         agent: AGENT,

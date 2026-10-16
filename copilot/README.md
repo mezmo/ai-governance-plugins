@@ -129,8 +129,8 @@ Allow prints nothing. Deny:
 ```
 
 Copilot sends no tool call id. Each run uses a fresh `run-<uuid>`, so
-`request_id` is `copilot:<sessionId>:run-<uuid>`. A repeated identical call
-gets its own decision. Post-tool records have `decision_id: null`.
+`request_id` is `copilot:<sessionId>:run-<uuid>#<digest>`. A repeated identical
+call gets its own decision. Post-tool records have `decision_id: null`.
 
 `toolArgs` may arrive as JSON text or as an object; the hook accepts both.
 `postToolUse` and `postToolUseFailure` only append the local JSONL audit log.

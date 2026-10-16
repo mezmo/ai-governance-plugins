@@ -146,8 +146,26 @@ export function argumentsObject(input: unknown): Record<string, unknown> {
   throw new GovernanceError("tool arguments must be a JSON object");
 }
 
-export function callIdentity(sessionId: string, toolCallId: string) {
-  const requestId = `${AGENT}:${sessionId}:${toolCallId}`;
+// JSON with sorted keys, so one call always hashes the same.
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) =>
+    item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]]))
+      : item,
+  );
+}
+
+// Hash the exact call, so an edited call never reuses an earlier decision.
+export function callDigest(toolName: string, args: unknown): string {
+  const tool = splitToolName(toolName);
+  return createHash("sha256")
+    .update(canonicalJson([tool.namespace, tool.name, args]))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+export function callIdentity(sessionId: string, toolCallId: string, toolName: string, args: unknown) {
+  const requestId = `${AGENT}:${sessionId}:${toolCallId}#${callDigest(toolName, args)}`;
   return {
     sessionId,
     requestId,
@@ -162,7 +180,7 @@ export function approvalPayload(params: {
   arguments: Record<string, unknown>;
   eventName?: string;
 }) {
-  const identity = callIdentity(params.sessionId, params.toolCallId);
+  const identity = callIdentity(params.sessionId, params.toolCallId, params.toolName, params.arguments);
   const tool = splitToolName(params.toolName);
   return {
     version: 1,

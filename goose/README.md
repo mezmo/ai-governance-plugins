@@ -124,7 +124,9 @@ Allow prints nothing. Deny:
 { "decision": "block", "reason": "Mezmo Governance denied this exact tool call: …" }
 ```
 
-`request_id` is `goose:<session_id>:<tool_call_id>`. Goose takes the call id
+`request_id` is `goose:<session_id>:<tool_call_id>#<digest>`.
+`<digest>` hashes the tool and its arguments, so an edited call gets its own
+decision ([identity](../docs/protocol.md#identity)). Goose takes the call id
 from the model provider, or makes a UUID when the provider sends none. A call
 with an empty id is denied.
 

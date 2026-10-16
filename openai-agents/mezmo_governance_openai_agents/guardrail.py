@@ -153,18 +153,15 @@ class MezmoGovernance:
         session_id = session_id_from_context(context, self.session_id)
         # A call without an id gets a random one, so it never reuses a decision.
         tool_call_id = str(getattr(context, "tool_call_id", "") or f"generated-{uuid.uuid4()}")
-        payload = approval_payload(
+        return approval_payload(
             session_id=session_id,
             tool_call_id=tool_call_id,
             tool_name=str(context.tool_name),
             arguments=tool_arguments(context.tool_arguments),
             matched_pattern=self.matched_pattern,
+            # An MCP server name, else a namespace the SDK gives the tool.
+            tool_namespace=namespace or getattr(context, "tool_namespace", None),
         )
-        # An MCP server name, else a namespace the SDK gives the tool.
-        namespace = namespace or getattr(context, "tool_namespace", None)
-        if namespace:
-            payload["items"][0]["tool_namespace"] = namespace
-        return payload
 
     def _transport(self) -> HttpJson:
         if self.http is not None:

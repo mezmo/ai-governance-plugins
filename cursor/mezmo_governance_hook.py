@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -203,7 +204,17 @@ def explicit_tool_use_id(event: Mapping[str, Any]) -> str | None:
     return None
 
 
-def call_identity(event: Mapping[str, Any]) -> CallIdentity:
+def call_digest(namespace: str, name: str, arguments: Mapping[str, Any]) -> str:
+    """Hash the exact call, so an edited call never reuses an earlier decision."""
+    canonical = json.dumps(
+        [namespace, name, dict(arguments)], sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def call_identity(
+    event: Mapping[str, Any], tool_call: NormalizedToolCall
+) -> CallIdentity:
     session_id = event.get("conversation_id") or event.get("session_id")
     session_id = required_string(session_id, "conversation_id")
     # beforeShellExecution and beforeMCPExecution carry no tool call id. A
@@ -211,6 +222,7 @@ def call_identity(event: Mapping[str, Any]) -> CallIdentity:
     # earlier decision through HTTP 409.
     tool_use_id = explicit_tool_use_id(event) or f"run-{uuid.uuid4()}"
     request_id = f"{AGENT}:{session_id}:{tool_use_id}"
+    request_id += "#" + call_digest(*tool_call)
     decision_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request_id))
     return CallIdentity(decision_id, request_id, session_id)
 
@@ -224,7 +236,7 @@ def origin(event: Mapping[str, Any]) -> dict[str, Any]:
 
 def approval_payload(event: Mapping[str, Any]) -> dict[str, Any]:
     tool_call = normalize_tool_call(event)
-    identity = call_identity(event)
+    identity = call_identity(event, tool_call)
     return {
         "version": 1,
         "decision_id": identity.decision_id,
@@ -460,7 +472,7 @@ def append_audit(record: Mapping[str, Any]) -> None:
 def handle_post_tool_use(event: Mapping[str, Any]) -> None:
     tool_call = normalize_tool_call(event)
     # Without a tool call id the record cannot be joined to its decision.
-    identity = call_identity(event) if explicit_tool_use_id(event) else None
+    identity = call_identity(event, tool_call) if explicit_tool_use_id(event) else None
     response = next(
         (
             event[key]

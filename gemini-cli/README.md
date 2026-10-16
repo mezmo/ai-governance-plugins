@@ -132,8 +132,8 @@ Allow prints nothing. Deny:
 ```
 
 Gemini CLI sends no tool call id. Each run uses a fresh `run-<uuid>`, so
-`request_id` is `gemini_cli:<session_id>:run-<uuid>`. A repeated identical
-call gets its own decision. Post-tool records have `decision_id: null`.
+`request_id` is `gemini_cli:<session_id>:run-<uuid>#<digest>`. A repeated
+identical call gets its own decision. Post-tool records have `decision_id: null`.
 
 `AfterTool` events only append the local JSONL audit log. A `tool_response`
 with an `error` field is recorded as `failed`.

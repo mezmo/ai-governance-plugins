@@ -126,7 +126,7 @@ export function createMezmoGovernanceHooks(options: { fetchImpl?: FetchLike } = 
       try {
         const sessionId = sessionFromHook(hook.context, hook.metadata);
         const toolCallId = ids.after(hook);
-        const identity = callIdentity(sessionId, toolCallId);
+        const identity = callIdentity(sessionId, toolCallId, hook.toolName, hook.input ?? {});
         const tool = splitToolName(hook.toolName);
         await appendAudit({
           ts: new Date().toISOString(),

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -162,7 +163,17 @@ def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
     return NormalizedToolCall(AGENT, canonical_name, dict(raw_input))
 
 
-def call_identity(event: Mapping[str, Any]) -> CallIdentity:
+def call_digest(namespace: str, name: str, arguments: Mapping[str, Any]) -> str:
+    """Hash the exact call, so an edited call never reuses an earlier decision."""
+    canonical = json.dumps(
+        [namespace, name, dict(arguments)], sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def call_identity(
+    event: Mapping[str, Any], tool_call: NormalizedToolCall
+) -> CallIdentity:
     session_id = required_string(event.get("session_id"), "session_id")
     tool_use_id = required_string(event.get("tool_use_id"), "tool_use_id")
     turn_id = event.get("turn_id")
@@ -170,6 +181,7 @@ def call_identity(event: Mapping[str, Any]) -> CallIdentity:
         request_id = f"{AGENT}:{session_id}:{turn_id.strip()}:{tool_use_id}"
     else:
         request_id = f"{AGENT}:{session_id}:{tool_use_id}"
+    request_id += "#" + call_digest(*tool_call)
     decision_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request_id))
     return CallIdentity(decision_id, request_id, session_id)
 
@@ -183,7 +195,7 @@ def origin(event: Mapping[str, Any]) -> dict[str, Any]:
 
 def approval_payload(event: Mapping[str, Any]) -> dict[str, Any]:
     tool_call = normalize_tool_call(event)
-    identity = call_identity(event)
+    identity = call_identity(event, tool_call)
     return {
         "version": 1,
         "decision_id": identity.decision_id,
@@ -431,7 +443,7 @@ def handle_pre_tool_use(
 
 def handle_post_tool_use(event: Mapping[str, Any]) -> None:
     tool_call = normalize_tool_call(event)
-    identity = call_identity(event)
+    identity = call_identity(event, tool_call)
     response = event.get("tool_response")
     failed = (
         event.get("hook_event_name") == "PostToolUseFailure"

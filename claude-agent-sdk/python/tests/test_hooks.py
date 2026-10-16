@@ -23,12 +23,16 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from mezmo_governance_claude_agent_sdk.client import call_digest  # noqa: E402
 from mezmo_governance_claude_agent_sdk.hooks import (  # noqa: E402
     PRE_TOOL_USE_TIMEOUT_SECONDS,
     create_pre_tool_use,
     mezmo_governance_hooks,
     post_tool_use,
 )
+
+# The identity of the fixture call, mcp__notes__delete_note on {"name": "todo"}.
+NOTE_DIGEST = call_digest("notes", "delete_note", {"name": "todo"})
 
 try:
     import httpx  # noqa: F401
@@ -99,7 +103,7 @@ class PreToolUseTests(unittest.IsolatedAsyncioTestCase):
         method, url, payload, _ = http.calls[0]
         self.assertEqual((method, url), ("POST", ENV["MEZMO_GOVERNANCE_URL"]))
         assert payload is not None
-        self.assertEqual(payload["request_id"], "claude_agent_sdk:sess-1:toolu_01")
+        self.assertEqual(payload["request_id"], "claude_agent_sdk:sess-1:toolu_01#" + NOTE_DIGEST)
         self.assertEqual(payload["scope"], {"kind": "single", "session_id": "sess-1"})
         self.assertEqual(payload["origin"], {"kind": "claude_agent_sdk_hooks", "reason": "PreToolUse"})
         self.assertEqual(
@@ -161,7 +165,7 @@ class PreToolUseTests(unittest.IsolatedAsyncioTestCase):
     async def test_the_tool_use_id_argument_wins_over_the_input_field(self) -> None:
         http = FakeHttp([(200, {"approved": True})])
         await create_pre_tool_use(http=http)(pre_event(tool_use_id="other"), "toolu_02", {"signal": None})
-        self.assertEqual(http.calls[0][2]["request_id"], "claude_agent_sdk:sess-1:toolu_02")  # type: ignore[index]
+        self.assertEqual(http.calls[0][2]["request_id"], "claude_agent_sdk:sess-1:toolu_02#" + NOTE_DIGEST)  # type: ignore[index]
 
     @patch.dict(os.environ, ENV)
     async def test_malformed_input_is_denied_without_asking_mezmo(self) -> None:
@@ -305,7 +309,7 @@ class PostToolUseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output, {})
         [line] = self.lines()
         self.assertEqual(line["agent"], "claude_agent_sdk")
-        self.assertEqual(line["request_id"], "claude_agent_sdk:sess-1:toolu_01")
+        self.assertEqual(line["request_id"], "claude_agent_sdk:sess-1:toolu_01#" + NOTE_DIGEST)
         self.assertEqual((line["tool_namespace"], line["tool_name"]), ("notes", "delete_note"))
         self.assertEqual(line["status"], "observed")
         self.assertIn('"ok"', line["result_preview"])

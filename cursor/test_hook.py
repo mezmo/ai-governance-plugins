@@ -129,10 +129,14 @@ class CursorGovernanceHookTests(unittest.TestCase):
         self.assertIn("kubectl", normalized.arguments["command"])
 
     def test_reuses_identity_across_pre_and_post(self) -> None:
-        before = hook.call_identity(hook_event("preToolUse"))
-        after = hook.call_identity(hook_event("postToolUse"))
+        pre, post = hook_event("preToolUse"), hook_event("postToolUse")
+        tool_call = hook.normalize_tool_call(pre)
+        before = hook.call_identity(pre, tool_call)
+        after = hook.call_identity(post, hook.normalize_tool_call(post))
         self.assertEqual(before, after)
-        self.assertEqual(before.request_id, "cursor:conv-1:tool-use-1")
+        self.assertEqual(
+            before.request_id, "cursor:conv-1:tool-use-1#" + hook.call_digest(*tool_call)
+        )
 
     def test_payload_origin(self) -> None:
         payload = hook.approval_payload(hook_event("preToolUse"))
@@ -817,6 +821,58 @@ def stdout_json(result: subprocess.CompletedProcess[str]) -> Any:
     if not result.stdout.strip():
         return None
     return json.loads(result.stdout)
+
+
+class PolicyGovernance:
+    """Keeps decisions by decision_id as Mezmo does: a second POST gets 409."""
+
+    def __init__(self, denied_command: str) -> None:
+        self.denied_command = denied_command
+        self.decisions: dict[str, str] = {}
+
+    def __call__(
+        self,
+        method: str,
+        url: str,
+        payload: Mapping[str, Any] | None,
+        timeout: float,
+    ) -> tuple[int, dict[str, Any]]:
+        if method == "GET":
+            decision_id = url.split("decision_id=")[1]
+            return 200, {"status": self.decisions[decision_id]}
+        assert payload is not None
+        decision_id = str(payload["decision_id"])
+        if decision_id in self.decisions:
+            return 409, {}
+        command = payload["items"][0]["arguments"].get("command")
+        status = "denied" if command == self.denied_command else "approved"
+        self.decisions[decision_id] = status
+        return 200, {"approved": status == "approved"}
+
+
+class CallBindingTests(unittest.TestCase):
+    """One tool call id with other arguments is another call, not a retry."""
+
+    def run_call(self, governance: PolicyGovernance, command: str) -> Any:
+        event = hook_event(PRE_EVENT)
+        event["tool_input"] = {"command": command}
+        clock = FakeClock()
+        with patch.dict(os.environ, ENV):
+            return hook.handle_event(event, http=governance, clock=clock, sleep=clock.sleep)
+
+    def test_changed_arguments_under_one_call_id_get_their_own_decision(self) -> None:
+        governance = PolicyGovernance(denied_command="delete-important-data")
+
+        self.assertEqual(self.run_call(governance, "ls"), ALLOW_OUTPUT)
+        self.assertNotEqual(self.run_call(governance, "delete-important-data"), ALLOW_OUTPUT)
+        self.assertEqual(sorted(governance.decisions.values()), ["approved", "denied"])
+
+    def test_a_retry_with_the_same_arguments_reuses_the_decision(self) -> None:
+        governance = PolicyGovernance(denied_command="delete-important-data")
+
+        self.assertEqual(self.run_call(governance, "ls"), ALLOW_OUTPUT)
+        self.assertEqual(self.run_call(governance, "ls"), ALLOW_OUTPUT)
+        self.assertEqual(list(governance.decisions.values()), ["approved"])
 
 
 if __name__ == "__main__":

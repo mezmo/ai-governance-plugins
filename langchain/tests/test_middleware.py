@@ -503,7 +503,10 @@ class MiddlewareIdentityTests(unittest.IsolatedAsyncioTestCase):
 
         session_id = sent[0]["scope"]["session_id"]
         self.assertEqual(sent[0]["decision_id"], sent[-1]["decision_id"])
-        self.assertEqual(sent[-1]["decision_id"], call_identity(session_id, "call-1")[0])
+        self.assertEqual(
+            sent[-1]["decision_id"],
+            call_identity(session_id, "call-1", "langchain", "echo", {"text": "hi"})[0],
+        )
         # The decision id is recomputed from the request id; nothing grows per call.
         self.assertEqual(state_size(middleware), held)
 

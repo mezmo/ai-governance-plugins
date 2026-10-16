@@ -89,7 +89,9 @@ Mastra has no built-in shell or file tools: `tool_name` is the id you gave
 `createTool`, such as `weatherTool`, in namespace `mastra`. Write policy for
 `mastra:<tool id>`.
 
-`request_id` is `mastra:<session_id>:<toolCallId>`. `session_id` is the memory
+`request_id` is `mastra:<session_id>:<toolCallId>#<digest>`.
+`<digest>` hashes the tool and its arguments, so an edited call gets its own
+decision ([identity](../docs/protocol.md#identity)). `session_id` is the memory
 `threadId` when present, otherwise the workflow `runId`, then `agentId`. A
 call without a `toolCallId` (outside an agent loop) gets a random id, so it
 never reuses an earlier decision.

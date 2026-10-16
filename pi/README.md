@@ -73,7 +73,9 @@ the audit line carries `"arguments_changed": true`.
 ## What it sends
 
 The extension calls `ctx.ui.setStatus("mezmo-governance", ...)` while waiting.
-`request_id` is `pi:<sessionId>:<toolCallId>`. Built-in tools use namespace
+`request_id` is `pi:<sessionId>:<toolCallId>#<digest>`.
+`<digest>` hashes the tool and its arguments, so an edited call gets its own
+decision ([identity](../docs/protocol.md#identity)). Built-in tools use namespace
 `pi`. Names of the form `mcp__<server>__<tool>` split the same way as Codex.
 
 ### Tool names for policy

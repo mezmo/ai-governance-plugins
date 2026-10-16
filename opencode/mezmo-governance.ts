@@ -101,6 +101,8 @@ type Observed = {
   sessionId: string;
   toolCallId: string;
   toolName: string;
+  // The call Mezmo approved, when known: the identity covers its arguments.
+  approved: { tool: string; args: unknown };
   failed: boolean;
   preview: unknown;
   changed: boolean;
@@ -111,7 +113,7 @@ type Observed = {
 async function audit(observe: () => Observed) {
   try {
     const seen = observe();
-    const identity = callIdentity(seen.sessionId, seen.toolCallId);
+    const identity = callIdentity(seen.sessionId, seen.toolCallId, seen.approved.tool, seen.approved.args);
     const tool = splitToolName(seen.toolName);
     await appendAudit({
       ts: new Date().toISOString(),
@@ -142,6 +144,10 @@ function after(input: AfterInput, output: AfterOutput | undefined, approved: App
       sessionId: input.sessionID,
       toolCallId: input.callID,
       toolName: input.tool,
+      approved: {
+        tool: input.tool,
+        args: approvedArgs !== undefined ? JSON.parse(approvedArgs) : (input.args ?? {}),
+      },
       failed: afterFailed(output),
       preview: output?.output ?? output ?? null,
       changed: approvedArgs !== undefined && approvedArgs !== JSON.stringify(input.args ?? {}),
@@ -195,6 +201,7 @@ function afterV2(event: V2After, calls: Calls) {
       sessionId: event.sessionID,
       toolCallId: match?.callId ?? event.id,
       toolName: event.tool,
+      approved: match ? { tool: match.tool, args: JSON.parse(match.args) } : { tool: event.tool, args: event.input ?? {} },
       failed: event.status === "error" || afterFailed(event.result),
       preview: event.status === "error" ? event.error : (event.result.output ?? event.result.content ?? null),
       // A later hook may change the tool or its input after Mezmo approved it.

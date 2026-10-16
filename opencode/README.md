@@ -128,9 +128,11 @@ shell names if you run both majors.
 
 ## What it sends
 
-`request_id` is `opencode:<sessionID>:<callID>` on 1.x. OpenCode 2.x Code
+`request_id` is `opencode:<sessionID>:<callID>#<digest>` on 1.x.
+`<digest>` hashes the tool and its arguments, so an edited call gets its own
+decision ([identity](../docs/protocol.md#identity)). OpenCode 2.x Code
 Mode runs every inner tool call of one `execute` call under that call's id,
-so on 2.x each call sends `<callID>#<random UUID>`: no two calls share a
+so on 2.x each call sends `<callID>#<random UUID>#<digest>`: no two calls share a
 decision. Built-in tools use namespace
 `opencode`. Names of the form `mcp__<server>__<tool>` split into that server
 and tool. OpenCode MCP naming is not uniform across versions; unknown names stay

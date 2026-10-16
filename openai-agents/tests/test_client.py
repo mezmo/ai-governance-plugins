@@ -13,6 +13,7 @@ if str(ROOT) not in sys.path:
 
 from mezmo_governance_openai_agents.client import (  # noqa: E402
     approval_payload,
+    call_digest,
     call_identity,
     split_tool_name,
 )
@@ -32,7 +33,7 @@ def normalized(path: Path) -> str:
 
 class ClientTests(unittest.TestCase):
     def test_identity_and_payload(self) -> None:
-        decision_id, request_id = call_identity("sess-1", "call-1")
+        decision_id, request_id = call_identity("sess-1", "call-1", "openai_agents", "read_note", {"name": "todo"})
         payload = approval_payload(
             session_id="sess-1",
             tool_call_id="call-1",
@@ -40,7 +41,8 @@ class ClientTests(unittest.TestCase):
             arguments={"name": "todo"},
             matched_pattern="*",
         )
-        self.assertEqual(request_id, "openai_agents:sess-1:call-1")
+        digest = call_digest("openai_agents", "read_note", {"name": "todo"})
+        self.assertEqual(request_id, "openai_agents:sess-1:call-1#" + digest)
         self.assertEqual(payload["decision_id"], decision_id)
         self.assertEqual(
             payload["origin"],

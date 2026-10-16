@@ -10,6 +10,7 @@ import {
   approvalPayload,
   authorizationHeader,
   authorize,
+  callDigest,
   callIdentity,
   GovernanceError,
   splitToolName,
@@ -50,9 +51,9 @@ test("splits MCP tool names", () => {
 });
 
 test("builds a stable identity", () => {
-  const first = callIdentity("sess-1", "call-1");
-  const second = callIdentity("sess-1", "call-1");
-  assert.equal(first.requestId, "pi:sess-1:call-1");
+  const first = callIdentity("sess-1", "call-1", "bash", { command: "ls" });
+  const second = callIdentity("sess-1", "call-1", "bash", { command: "ls" });
+  assert.equal(first.requestId, `pi:sess-1:call-1#${callDigest("bash", { command: "ls" })}`);
   assert.equal(first.decisionId, second.decisionId);
 });
 

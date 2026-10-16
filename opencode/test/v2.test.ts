@@ -32,7 +32,7 @@ function recording(sent: any[], body: unknown = { approved: true }): FakeFetch {
 }
 
 // Fields from packages/core/src/tool.ts beforeExecute and executeTool.
-const CALL_1 = /^opencode:ses_1:call_1#[0-9a-f-]{36}$/;
+const CALL_1 = /^opencode:ses_1:call_1#[0-9a-f-]{36}#[0-9a-f]{16}$/;
 const BASE = { tool: "bash", sessionID: "ses_1", agent: "build", messageID: "msg_1", id: "call_1" };
 
 test("setup registers execute.before and execute.after", async () => {
@@ -96,8 +96,8 @@ test("Code Mode inner calls under one id each get their own decision", async () 
       lines.map((line) => line.request_id),
       [ids[2], ids[1], ids[0]],
     );
-    const callId = ids[2].slice("opencode:ses_1:".length);
-    assert.equal(lines[0].decision_id, callIdentity("ses_1", callId).decisionId);
+    const callId = ids[2].slice("opencode:ses_1:".length).replace(/#[0-9a-f]{16}$/, "");
+    assert.equal(lines[0].decision_id, callIdentity("ses_1", callId, "github_issues", { repo: "b" }).decisionId);
     assert.ok(lines.every((line) => line.status === "observed" && !line.arguments_changed));
   });
 });
@@ -152,6 +152,9 @@ test("execute.after flags a tool or input a later hook changed after approval", 
     const [line] = await auditLines(audit);
     assert.equal(line.arguments_changed, true);
     assert.match(line.request_id, CALL_1);
+    // The line still joins the decision Mezmo made on the approved arguments.
+    const callId = line.request_id.slice("opencode:ses_1:".length).replace(/#[0-9a-f]{16}$/, "");
+    assert.equal(line.request_id, callIdentity("ses_1", callId, "bash", { command: "ls" }).requestId);
   });
 });
 

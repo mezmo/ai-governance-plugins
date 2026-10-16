@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -101,8 +102,24 @@ def split_tool_name(tool_name: str) -> tuple[str, str]:
     return AGENT, tool_name
 
 
-def call_identity(session_id: str, tool_call_id: str) -> tuple[str, str]:
-    request_id = f"{AGENT}:{session_id}:{tool_call_id}"
+def call_digest(namespace: str, name: str, arguments: Mapping[str, Any]) -> str:
+    """Hash the exact call, so an edited call never reuses an earlier decision."""
+    canonical = json.dumps(
+        [namespace, name, dict(arguments)], sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def call_identity(
+    session_id: str,
+    tool_call_id: str,
+    namespace: str,
+    name: str,
+    arguments: Mapping[str, Any],
+) -> tuple[str, str]:
+    """Return (decision_id, request_id). A retry of the same call gets the same pair."""
+    digest = call_digest(namespace, name, arguments)
+    request_id = f"{AGENT}:{session_id}:{tool_call_id}#{digest}"
     return str(uuid.uuid5(uuid.NAMESPACE_URL, request_id)), request_id
 
 
@@ -115,9 +132,12 @@ def approval_payload(
     matched_pattern: str | None = None,
     intent: str | None = None,
     decision_id: str | None = None,
+    tool_namespace: str | None = None,
 ) -> dict[str, Any]:
+    """Build one authorize request. ``tool_namespace`` wins over the one in ``tool_name``."""
     namespace, name = split_tool_name(tool_name)
-    generated_id, request_id = call_identity(session_id, tool_call_id)
+    namespace = tool_namespace or namespace
+    generated_id, request_id = call_identity(session_id, tool_call_id, namespace, name, arguments)
     origin: dict[str, Any] = {
         "kind": "openai_agents_guardrail",
         "reason": "tool_input_guardrail",

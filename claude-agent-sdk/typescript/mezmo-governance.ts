@@ -104,10 +104,12 @@ export function createMezmoGovernanceHooks(options: { fetchImpl?: FetchLike } = 
 
   const postToolUse: Callback<Record<string, never>> = async (input, toolUseID) => {
     try {
-      const tool = splitToolName(requiredString(input?.tool_name, "tool_name"));
+      const toolName = requiredString(input?.tool_name, "tool_name");
+      const tool = splitToolName(toolName);
       const toolCallId = toolUseIdFrom(input, toolUseID);
       const sessionId = typeof input.session_id === "string" ? input.session_id.trim() : "";
-      const identity = toolCallId && sessionId ? callIdentity(sessionId, toolCallId) : null;
+      const identity =
+        toolCallId && sessionId ? callIdentity(sessionId, toolCallId, toolName, input.tool_input ?? {}) : null;
       const failed = input.hook_event_name === "PostToolUseFailure" || resultFailed(input.tool_response);
       await appendAudit({
         ts: new Date().toISOString(),

@@ -129,9 +129,11 @@ earlier decision for an id it has seen.
 name `pods_delete`. Built-in tools (`Bash`, `apply_patch`, `update_plan`) use
 namespace `codex`.
 
-`request_id` is `codex:<session_id>:<turn_id>:<tool_use_id>` when `turn_id` is
-present. `decision_id` is uuid5 of that string, so a retry of the same call polls
-the existing decision instead of opening a second one.
+`request_id` is `codex:<session_id>:<turn_id>:<tool_use_id>#<digest>` when
+`turn_id` is present. `<digest>` hashes the tool and its arguments.
+`decision_id` is uuid5 of that string, so a retry of the same call polls the
+existing decision instead of opening a second one, and an edited call gets its
+own ([identity](../docs/protocol.md#identity)).
 
 PreToolUse deny stdout:
 

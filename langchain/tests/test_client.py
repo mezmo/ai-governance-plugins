@@ -21,6 +21,7 @@ from mezmo_governance.client import (  # noqa: E402
     GovernanceError,
     approval_payload,
     authorize,
+    call_digest,
     call_identity,
     poll_interval_seconds,
     split_tool_name,
@@ -74,7 +75,7 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(split_tool_name("echo"), ("langchain", "echo"))
 
     def test_identity_and_payload(self) -> None:
-        decision_id, request_id = call_identity("sess-1", "call-1")
+        decision_id, request_id = call_identity("sess-1", "call-1", "langchain", "echo", {"text": "hi"})
         payload = approval_payload(
             session_id="sess-1",
             tool_call_id="call-1",
@@ -82,7 +83,10 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
             arguments={"text": "hi"},
             matched_pattern="*",
         )
-        self.assertEqual(request_id, "langchain:sess-1:call-1")
+        self.assertEqual(
+            request_id,
+            "langchain:sess-1:call-1#" + call_digest("langchain", "echo", {"text": "hi"}),
+        )
         self.assertEqual(payload["decision_id"], decision_id)
         self.assertEqual(payload["origin"]["kind"], "langchain_middleware")
         self.assertEqual(payload["origin"]["matched_pattern"], "*")
@@ -195,6 +199,60 @@ class ClientTests(unittest.IsolatedAsyncioTestCase):
         )
         with self.assertRaises(GovernanceError):
             await authorize(payload, http=http)
+
+
+class PolicyGovernance:
+    """Keeps decisions by decision_id as Mezmo does: a second POST gets 409."""
+
+    def __init__(self, denied_command: str) -> None:
+        self.denied_command = denied_command
+        self.decisions: dict[str, str] = {}
+
+    async def __call__(
+        self,
+        method: str,
+        url: str,
+        payload: Mapping[str, Any] | None,
+        timeout: float,
+    ) -> tuple[int, dict[str, Any]]:
+        if method == "GET":
+            return 200, {"status": self.decisions[url.split("decision_id=")[1]]}
+        assert payload is not None
+        decision_id = str(payload["decision_id"])
+        if decision_id in self.decisions:
+            return 409, {}
+        command = payload["items"][0]["arguments"].get("command")
+        status = "denied" if command == self.denied_command else "approved"
+        self.decisions[decision_id] = status
+        return 200, {"approved": status == "approved"}
+
+
+class CallBindingTests(unittest.IsolatedAsyncioTestCase):
+    """One tool call id with other arguments is another call, not a retry."""
+
+    async def ask(self, governance: PolicyGovernance, command: str) -> bool:
+        payload = approval_payload(
+            session_id="sess-1",
+            tool_call_id="call-1",
+            tool_name="shell",
+            arguments={"command": command},
+        )
+        with patch.dict(os.environ, ENV):
+            return (await authorize(payload, http=governance)).approved
+
+    async def test_changed_arguments_under_one_call_id_get_their_own_decision(self) -> None:
+        governance = PolicyGovernance(denied_command="delete-important-data")
+
+        self.assertTrue(await self.ask(governance, "ls"))
+        self.assertFalse(await self.ask(governance, "delete-important-data"))
+        self.assertEqual(sorted(governance.decisions.values()), ["approved", "denied"])
+
+    async def test_a_retry_with_the_same_arguments_reuses_the_decision(self) -> None:
+        governance = PolicyGovernance(denied_command="delete-important-data")
+
+        self.assertTrue(await self.ask(governance, "ls"))
+        self.assertTrue(await self.ask(governance, "ls"))
+        self.assertEqual(list(governance.decisions.values()), ["approved"])
 
 
 class LateHttp(FakeHttp):

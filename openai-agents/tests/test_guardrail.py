@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from mezmo_governance_openai_agents.client import call_digest  # noqa: E402
+
 try:
     from agents import Agent, RunConfig, Runner, ShellTool, function_tool, handoff
     from agents.items import ToolCallOutputItem
@@ -123,7 +125,8 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(ran, ["read_note"])
         self.assertEqual(tool_outputs(result), ["note todo"])
         payload = http.calls[0]["payload"]
-        self.assertEqual(payload["request_id"], "openai_agents:conv-1:call-1")
+        digest = call_digest("openai_agents", "read_note", {"name": "todo"})
+        self.assertEqual(payload["request_id"], "openai_agents:conv-1:call-1#" + digest)
         self.assertEqual(payload["scope"], {"kind": "single", "session_id": "conv-1"})
         self.assertEqual(
             payload["items"],

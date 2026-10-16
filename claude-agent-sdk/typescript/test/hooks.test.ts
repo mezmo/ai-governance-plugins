@@ -6,7 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { MAX_TIMEOUT_SECONDS, type FetchLike } from "../client.ts";
+import { callDigest, MAX_TIMEOUT_SECONDS, type FetchLike } from "../client.ts";
+
+// The identity of the fixture call, mcp__notes__delete_note on { name: "todo" }.
+const NOTE_DIGEST = callDigest("mcp__notes__delete_note", { name: "todo" });
 import {
   createMezmoGovernanceHooks,
   PRE_TOOL_USE_TIMEOUT_SECONDS,
@@ -85,7 +88,7 @@ test("an approved call returns empty output and sends the protocol payload", () 
     assert.deepEqual(await pre(fetchImpl)(preEvent(), "toolu_01", SIGNAL), {});
     assert.equal(seen[0].method, "POST");
     const body = seen[0].body!;
-    assert.equal(body.request_id, "claude_agent_sdk:sess-1:toolu_01");
+    assert.equal(body.request_id, `claude_agent_sdk:sess-1:toolu_01#${NOTE_DIGEST}`);
     assert.deepEqual(body.origin, { kind: "claude_agent_sdk_hooks", reason: "PreToolUse" });
     assert.deepEqual(body.items, [
       { id: 0, tool_namespace: "notes", tool_name: "delete_note", arguments: { name: "todo" } },
@@ -213,7 +216,7 @@ test("post-tool hooks write one audit line and never block", async () => {
     await post.PostToolUse[0].hooks[0](preEvent({ hook_event_name: "PostToolUse", tool_use_id: undefined }), undefined, SIGNAL);
   });
   const [first, second, third] = (await readFile(log, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  assert.equal(first.request_id, "claude_agent_sdk:sess-1:toolu_01");
+  assert.equal(first.request_id, `claude_agent_sdk:sess-1:toolu_01#${NOTE_DIGEST}`);
   assert.deepEqual([first.tool_namespace, first.tool_name, first.status], ["notes", "delete_note", "observed"]);
   assert.deepEqual([second.status, second.result_preview], ["failed", '"no such note"']);
   assert.equal(third.decision_id, null);
