@@ -109,7 +109,13 @@ value goes in `items[0].tool_call_intent`. That field is not in
 that accepts it.
 
 OpenTelemetry is optional. If `opentelemetry` is installed, approved calls are
-traced as `mcp.tool_call`.
+traced as `mcp.tool_call` spans. Each span carries `tool.name`,
+`tool.parameters` (the full arguments as JSON) and `tool.result` (up to 8,000
+characters of the result). With only `opentelemetry-api` installed the spans
+are no-ops. Once the app sets up an OpenTelemetry SDK with an exporter, that
+exporter sends them, results included, wherever it points. The middleware traces
+whenever `opentelemetry` can be imported and has no switch to leave these
+attributes out, so treat the trace backend as seeing every argument and result.
 
 ## Tests
 

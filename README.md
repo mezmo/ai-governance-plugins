@@ -100,7 +100,12 @@ cannot be reached, or returns something it does not understand.
 Before each tool call, the plugin sends Mezmo the tool name and its full
 arguments: the shell command, the file path, and for write tools the file
 content. It also sends the session id and the tool call id (Gemini CLI and Copilot send a fresh random id per call, because they expose none). Tool results are
-not sent: post-tool hooks only append a line to a local file.
+not sent to Mezmo: post-tool hooks only append a line to a local file.
+
+One exception reaches past Mezmo: the LangChain middleware records each
+approved call as an OpenTelemetry span with the full arguments and up to 8,000
+characters of the result. The span goes wherever the app's OpenTelemetry
+exporter sends it; see [langchain/README.md](langchain/README.md).
 
 Write policy on the assumption that Mezmo sees every argument, and keep secrets
 out of tool arguments.
