@@ -138,8 +138,24 @@ A policy has its own dialog in Mezmo Governance, in five pages:
    `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` (590 by default), then denies.
 5. **Review:** check the rules, then save.
 
-A first policy to try: deny `claude_code` / `Bash`, require approval for
-`claude_code` / `Write`, and allow the rest.
+### A policy for an end-to-end check
+
+This policy tests all three outcomes with Claude Code:
+
+| Rule | Tool space | Tool name | Effect |
+| --- | --- | --- | --- |
+| 1 | `doctor` | `probe` | allow, so `doctor --probe` passes |
+| 2 | `claude_code` | `Read` | allow |
+| 3 | `claude_code` | `Bash` | deny, with a message such as `Bash is blocked by policy` |
+| Fallthrough | | | ask for approval, with yourself as approver |
+
+Then, with the plugin installed:
+
+1. `./mezmo-governance doctor --probe`: every Mezmo line is `ok`.
+2. In Claude Code, ask it to read a file: it runs.
+3. Ask it to run `ls`: Claude Code shows your deny message.
+4. Ask it to write a file: Claude Code waits; approve the call in Mezmo
+   and the write runs. Try once more and reject it: the write is blocked.
 
 ### The mezmo-governance command
 
