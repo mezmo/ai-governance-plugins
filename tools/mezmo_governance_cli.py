@@ -216,6 +216,24 @@ def without_hook(config: dict, field: str) -> dict:
     return result
 
 
+def moved_handlers(config: dict, field: str) -> list:
+    """'<event> group <g> handler <h> (<command>)' for each other handler that without_hook moves up.
+
+    Codex has no handler type that neither runs nor warns (codex-rs/hooks/src/engine/discovery.rs,
+    rust-v0.163.0), so a Mezmo handler ahead of another in its group cannot leave a placeholder.
+    """
+    moved = []
+    for event, groups in as_dict(config.get("hooks")).items():
+        for g, group in enumerate(as_list(groups)):
+            kept = 0
+            for h, handler in enumerate(as_list(as_dict(group).get("hooks"))):
+                if not runs_hook(handler, field):
+                    if kept != h:
+                        moved.append(f"{event} group {g} handler {h} ({as_dict(handler).get(field)})")
+                    kept += 1
+    return moved
+
+
 def merge_steps(path: Path, example: dict, event: str, field: str = "command") -> list:
     config = load_object(path)
     if doctor.mezmo_handlers(as_dict(config.get("hooks")).get(event), field):
@@ -260,7 +278,9 @@ def example(adapter: str, name: str, folder: Path, default: Path) -> dict:
     return json.loads(at(folder, default, (REPO / adapter / name).read_text(encoding="utf-8")))
 
 
-def file_hook_agent(adapter: str, folder: Callable[[], Path], event: str, next_step: str, leftover: tuple = ()) -> Installer:
+def file_hook_agent(
+    adapter: str, folder: Callable[[], Path], event: str, next_step: str, leftover: tuple = (), trust_by_position: bool = False
+) -> Installer:
     """Codex and Cursor: a hook script plus entries merged into hooks.json."""
 
     def installed() -> Optional[str]:
@@ -275,7 +295,16 @@ def file_hook_agent(adapter: str, folder: Callable[[], Path], event: str, next_s
         return steps + merge_steps(folder() / "hooks.json", data, event)
 
     def uninstall() -> list:
-        return unmerge_steps(folder() / "hooks.json", leftover=leftover) + hook_removal(folder() / "hooks" / HOOK_FILE, folder())
+        path = folder() / "hooks.json"
+        moved = moved_handlers(load_object(path), "command") if trust_by_position else []
+        if moved:
+            raise Failure(
+                f"removing the Mezmo handler from {shown(path)} would give a lower handler index to"
+                f" {'; '.join(moved)}, and {adapter} would stop trusting them. Nothing changed. To finish by hand, delete each handler"
+                f" that runs {HOOK_FILE} from {shown(path)}, run this command again to delete the hook script,"
+                f" then start {adapter}, run /hooks and trust the moved hooks again"
+            )
+        return unmerge_steps(path, leftover=leftover) + hook_removal(folder() / "hooks" / HOOK_FILE, folder())
 
     return Installer(installed, install, uninstall, next_step)
 
@@ -518,6 +547,7 @@ INSTALLERS = {
     "codex": file_hook_agent(
         "codex", doctor.codex_dir, "PreToolUse",
         "Start codex, run /hooks, and trust the Mezmo hook entries: Codex skips a hook until you trust it.",
+        trust_by_position=True,
     ),
     "cursor": file_hook_agent("cursor", doctor.cursor_dir, "preToolUse", "", leftover=("version",)),
     "gemini-cli": gemini_cli(),

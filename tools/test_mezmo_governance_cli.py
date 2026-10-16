@@ -281,6 +281,27 @@ class InstallTests(CliTestCase):
         self.assertEqual(hooks["PreToolUse"], ORIGINALS["codex"]["codex/hooks.json"]["hooks"]["PreToolUse"] + [{"hooks": []}, later])
         self.assertNotIn("PostToolUse", hooks)
 
+    def test_codex_uninstall_refuses_to_move_a_hand_merged_users_handler(self) -> None:
+        # The user moved the Mezmo handler into their own group, ahead of their handler:
+        # removing it would move other-hook from handler 1 to 0 and Codex would drop its trust.
+        self.write({**ORIGINALS["codex"], **ORIGINALS["cursor"]})
+        self.assertEqual(self.cli("install", "codex", "cursor").returncode, 0)
+        path = self.tmp / "codex/hooks.json"
+        config = json.loads(path.read_text())
+        mezmo = config["hooks"]["PreToolUse"].pop()["hooks"][0]
+        config["hooks"]["PreToolUse"][0]["hooks"].insert(0, mezmo)
+        path.write_text(json.dumps(config, indent=2))
+        before = {name: content for name, content in self.files().items() if name.startswith("codex/")}
+        result = self.cli("uninstall", "codex", "cursor")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAIL  codex:", result.stdout)
+        self.assertIn("PreToolUse group 0 handler 1 (other-hook)", result.stdout)
+        self.assertIn("/hooks", result.stdout)
+        self.assertEqual({name: content for name, content in self.files().items() if name.startswith("codex/")}, before)
+        self.assertIn("installed: yes", self.status("codex"))
+        # A refused agent does not stop the others in the same run.
+        self.assertIn("installed: no", self.status("cursor"))
+
     def test_the_installed_files_are_what_each_readme_installs(self) -> None:
         result = self.cli("install", "--all")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

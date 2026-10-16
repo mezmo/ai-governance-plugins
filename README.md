@@ -180,7 +180,10 @@ as `<name>.mezmo-backup-<time>` and prints the path. It never writes the
 token. Running it twice changes nothing. `uninstall` removes only the
 entries and files `install` added. Codex keys hook trust by position, so where
 other groups follow the Mezmo group in `hooks.json`, `uninstall` leaves an empty
-group in its place and those hooks stay trusted.
+group in its place and those hooks stay trusted. Where a Mezmo handler sits
+ahead of your own handler in one group, `uninstall` changes no Codex file,
+names the handlers that would move and how to remove the entry by hand, and
+exits 1.
 
 | Agent | `install` runs | Why this way |
 | --- | --- | --- |
