@@ -314,7 +314,8 @@ export async function authorize(
     }
     throw error;
   }
-  if (status === 409) {
+  // 207 means a person must decide; its "approved": false is not a decision yet.
+  if (status === 207 || status === 409) {
     return pollDecision(String(payload.decision_id), deadline, fetchImpl, now, sleep);
   }
   if (status !== 200) {

@@ -178,6 +178,52 @@ test(
 );
 
 test(
+  "waits for a person after 207 then allows",
+  () =>
+    withEnv(ENV, async () => {
+      const responses = [
+        { status: 207, body: { approved: false } },
+        { status: 200, body: { status: "pending", reason: null } },
+        { status: 200, body: { status: "approved", reason: "looked it over" } },
+      ];
+      const calls: Array<[string | undefined, string]> = [];
+      let now = 0;
+      const fetchImpl = async (url: string, init?: { method?: string }) => {
+        calls.push([init?.method, url]);
+        const next = responses.shift()!;
+        return {
+          status: next.status,
+          async text() {
+            return JSON.stringify(next.body);
+          },
+        };
+      };
+      const payload = approvalPayload({
+        sessionId: "sess-1",
+        toolCallId: "call-1",
+        toolName: "bash",
+        arguments: { command: "ls" },
+      });
+      const decision = await authorize(payload, {
+        fetchImpl,
+        now: () => now,
+        sleep: async (ms) => {
+          now += ms;
+        },
+      });
+      assert.equal(decision.approved, true);
+      assert.equal(decision.reason, "looked it over");
+      const pollUrl = `${URL}?decision_id=${payload.decision_id}`;
+      assert.deepEqual(calls, [
+        ["POST", URL],
+        ["GET", pollUrl],
+        ["GET", pollUrl],
+      ]);
+      assert.equal(now, 1000);
+    }),
+);
+
+test(
   "fails closed on HTTP errors",
   () =>
     withEnv(ENV, async () => {
