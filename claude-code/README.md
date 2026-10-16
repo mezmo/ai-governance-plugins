@@ -5,10 +5,12 @@ Claude runs a tool, the plugin asks Mezmo Governance whether that exact call is 
 blocks it if the policy says no.
 
 It can also send Claude Code's metrics, events and traces to Mezmo's
-[OpenTelemetry source](https://docs.mezmo.com/telemetry-pipelines/open-telemetry-source). The two
-are independent, so you can turn on either one.
+[OpenTelemetry source](https://docs.mezmo.com/telemetry-pipelines/open-telemetry-source), and
+connect Claude to [Mezmo MCP](https://docs.mezmo.com/docs/mezmo-mcp) so it can query your logs and
+work on pipelines. All three are independent, so you can turn on any of them.
 
-A small status display in the prompt footer tells you whether each one is working.
+A small status display in the prompt footer tells you whether governance and telemetry are
+working.
 
 ## Install
 
@@ -28,13 +30,14 @@ when a session starts, so the session you ran setup in carries on as before.
 Removing the marketplace, or uninstalling the plugin, deletes its saved settings, including the
 governance access key in the keychain. That includes moving the plugin to another marketplace.
 Afterwards, run `/reload-plugins` or start a new session, then run `/mezmo:setup governance`
-again. Telemetry settings live in `~/.claude/settings.json` and aren't affected.
+again. Telemetry settings live in `~/.claude/settings.json` and the MCP server in
+`~/.claude.json`, so they aren't affected.
 
 | Command | What it does |
 | --- | --- |
-| `/mezmo:setup [governance\|telemetry\|both]` | Sets up governance, telemetry or both, for you or as a managed-settings file for your organization |
+| `/mezmo:setup [governance\|telemetry\|mcp\|all]` | Sets up governance, telemetry, MCP or all of them. Governance and telemetry can also go in a managed-settings file for your organization |
 | `/mezmo:test` | Checks your keys and shows what's configured |
-| `/mezmo:remove [governance\|telemetry\|both]` | Undoes setup. Uninstalling the plugin doesn't |
+| `/mezmo:remove [governance\|telemetry\|mcp\|all]` | Undoes setup. Uninstalling the plugin doesn't |
 | `/mezmo` | Shows this session's status right away, without a Claude turn |
 
 To try the plugin for one session without installing it, run
@@ -101,6 +104,26 @@ In Mezmo, filter on `service.name` = `claude-code`. Cost and tokens are in the
 events. [Claude Code monitoring](https://code.claude.com/docs/en/monitoring-usage) lists everything
 else Claude Code sends.
 
+## Mezmo MCP
+
+[Mezmo MCP](https://docs.mezmo.com/docs/mezmo-mcp) gives Claude tools to analyze your logs (root
+causes, patterns, histograms, correlated timelines), look at traces and AI investigations, and
+inspect and change Telemetry Pipelines. You need a Mezmo service key, from Settings > API Keys in
+Mezmo. It's a different key from the ingestion key.
+
+`/mezmo:setup mcp` checks the key against `https://mcp.mezmo.com/mcp`, then runs the command
+Mezmo documents:
+
+```bash
+claude mcp add --scope user --transport http mezmo https://mcp.mezmo.com/mcp --header "Authorization: Bearer <service key>"
+```
+
+The server is available in every project, in new sessions, with tools named `mcp__mezmo__<tool>`.
+Claude Code keeps the key as plain text in `~/.claude.json`, as with any server added this way.
+Some tools change pipelines: they create, update, delete, pause and publish them. Claude Code asks
+before each MCP tool call unless you allow it. With governance on, these calls also go through
+Mezmo Governance under namespace `mezmo`, so a policy can send deletes and publishes to a person.
+
 ## Status in Claude Code
 
 The plugin includes a [mod](https://code.claude.com/docs/en/plugins/mods/overview) that adds one
@@ -152,6 +175,7 @@ Governance also needs the plugin installed on each machine. Add `extraKnownMarke
 | Governance is off after reinstalling the plugin | Reinstalling deleted the saved access key. Run `/mezmo:setup governance` again |
 | Telemetry checks pass, but nothing shows up in Mezmo | Start a new session, make sure a pipeline has an OpenTelemetry source, and give metrics a minute |
 | Telemetry setup reports conflicting settings | Your settings already send OpenTelemetry somewhere else. Claude Code only exports to one endpoint |
+| The `mezmo` MCP server fails to connect with `401` | Mezmo rejected the service key. Run `/mezmo:setup mcp` with a current key and replace the server |
 
 To see Claude Code's own telemetry export log:
 
@@ -180,5 +204,6 @@ use the config Claude Code generates when it validates or tests the plugin:
 npx -p typescript tsc -p .claude-plugin/types/tsconfig.json
 ```
 
-`scripts/` holds the Python that runs the governance hook, writes settings and checks keys.
+`scripts/` holds the Python that runs the governance hook, writes settings, adds the MCP server and
+checks keys.
 `skills/` has the slash commands, and `hooks/` has the mod and the governance hook registration.

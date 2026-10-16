@@ -1,22 +1,24 @@
 ---
 name: setup
-description: Set up Mezmo for Claude Code - check every tool call with Mezmo Governance, send telemetry (metrics, events and traces) to Mezmo, or both - for this user or as a managed-settings file for an organization.
-argument-hint: "[governance|telemetry|both]"
+description: Set up Mezmo for Claude Code - check every tool call with Mezmo Governance, send telemetry (metrics, events and traces) to Mezmo, or connect Claude to Mezmo's MCP server, in any combination - for this user or, for governance and telemetry, as a managed-settings file for an organization.
+argument-hint: "[governance|telemetry|mcp|all]"
 disable-model-invocation: true
 allowed-tools:
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" *)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" *)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" *)
+  - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" *)
 ---
 
 # Set up Mezmo for Claude Code
 
-The plugin does two independent things:
+The plugin does three independent things:
 
 - **Governance**: before each tool call, a hook asks Mezmo Governance whether this exact call may run and blocks it when the answer is no. It uses an agent access key. Until one is configured, the hook does nothing.
 - **Telemetry**: Claude Code exports OpenTelemetry metrics, events and traces to Mezmo's endpoint, `https://logs.mezmo.com/otel`, authenticated with an ingestion key in an `apikey` header.
+- **MCP**: Claude Code connects to Mezmo's MCP server, `https://mcp.mezmo.com/mcp`, with a service key, so Claude can query Mezmo logs and work on pipelines.
 
-Both take effect in new Claude Code sessions.
+All three take effect in new Claude Code sessions.
 
 Arguments: $ARGUMENTS
 
@@ -30,14 +32,18 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" status
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" status
 ```
 
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" status
+```
+
 If `python3` isn't found, tell the user the plugin needs Python 3.8 or later, and stop.
 
 ## 2. Ask what to set up
 
 Unless the arguments already say, ask in one AskUserQuestion call:
 
-1. **What to set up**: Governance (default), Telemetry, or Both.
-2. **Where**:
+1. **What to set up** (multi-select): Governance (default), Telemetry, MCP.
+2. **Where**, unless only MCP was chosen:
    - Just me: this user's Claude Code settings
    - My organization: a managed-settings file for an administrator to deploy
 
@@ -151,7 +157,31 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" managed --key <KEY> 
 
 Check the key with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" --key <KEY>`.
 
-## 5. Deploying the managed-settings file
+## 5. Mezmo MCP
+
+Skip this section if the user didn't choose MCP. MCP is set up for this user, even when the rest is for an organization.
+
+Mezmo's MCP server lets Claude query Mezmo logs (root-cause analysis, patterns, histograms, correlated timelines), look at traces and AI investigations, and inspect and change Telemetry Pipelines.
+
+Ask for a **service key**, from **Settings > API Keys** in Mezmo. It's a different key from the ingestion key and the governance access key.
+
+Before adding it, tell the user:
+
+- The key is stored as plain text in Claude Code's user config (`~/.claude.json`), the way Mezmo's own instructions add it.
+- Some of the server's tools change pipelines: create, update, delete, pause and publish. Claude Code asks before each MCP tool call unless the user allows them. With governance on, these calls also go through Mezmo Governance, under namespace `mezmo`, so a policy can send them to a person.
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" add --key <KEY>
+```
+
+What each exit code means:
+
+- **0**: done. Report what the script printed, including Claude Code's connection status.
+- **3**: Mezmo MCP rejected the key, or couldn't be reached. Nothing was added.
+- **4**: Claude Code already has an MCP server called `mezmo`. If it's in user scope, ask whether to replace it, and if yes, run the same command with `--force`. If it comes from a project's `.mcp.json` or local config, tell the user to remove it there.
+- **2** or **1**: show the message.
+
+## 6. Deploying the managed-settings file
 
 For "My organization", tell the administrator:
 
@@ -167,11 +197,12 @@ For "My organization", tell the administrator:
 
 Don't run `sudo` or copy the file into a system directory yourself.
 
-## 6. Wrap up
+## 7. Wrap up
 
 Tell the user:
 
 - Start a new Claude Code session. The current one keeps its old settings.
 - Governance: decisions show up in Mezmo Governance under the agent for this access key. While a call waits for a person, a band above the prompt shows it, and the footer counts this session's checks. After each approved call, the hook appends a line to `~/.mezmo/governance-audit.jsonl`.
 - Telemetry: Mezmo routes the data once a pipeline has an **OpenTelemetry** source. In Mezmo, look for `service.name` = `claude-code`: metrics such as `claude_code.cost.usage` and `claude_code.token.usage`, events such as `claude_code.api_request` and `claude_code.tool_result`, and spans such as `claude_code.interaction`.
+- MCP: new sessions have the `mezmo` MCP server, and its tools are named `mcp__mezmo__<tool>`. To try it, ask Claude something like "what errors did my apps log in the last hour?"
 - `/mezmo:test` checks the setup again, and `/mezmo:remove` undoes it.

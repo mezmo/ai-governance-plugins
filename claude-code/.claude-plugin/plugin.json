@@ -1,8 +1,8 @@
 {
   "name": "mezmo",
   "displayName": "Mezmo",
-  "version": "0.1.1",
-  "description": "Check Claude Code's tool calls with Mezmo Governance, and send Claude Code telemetry to Mezmo.",
+  "version": "0.2.0",
+  "description": "Check Claude Code's tool calls with Mezmo Governance, send Claude Code telemetry to Mezmo, and connect Claude to Mezmo MCP.",
   "author": {
     "name": "Mezmo",
     "url": "https://www.mezmo.com"
@@ -16,7 +16,8 @@
     "otel",
     "observability",
     "telemetry",
-    "monitoring"
+    "monitoring",
+    "mcp"
   ],
   "types": "./hooks/state.d.ts",
   "userConfig": {
