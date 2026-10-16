@@ -491,6 +491,127 @@ class CodexTests(DoctorTestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertTrue(any(line.startswith("FAIL") and words in line for line in self.lines(result, subject)), result.stdout)
 
+
+class CodexPluginTests(DoctorTestCase):
+    """The native plugin: `codex app-server` hooks/list answers for trust, as Codex 0.163.0 did live."""
+
+    def install(self, trust: str = "trusted", enabled: bool = True, listed: bool = True, server: str = "") -> None:
+        folder = self.home / ".codex/plugins/cache/mezmo/mezmo-governance/0.2.0"
+        shutil.copytree(REPO / "codex", folder, dirs_exist_ok=True)
+        self.write(".codex/config.toml", '[plugins."mezmo-governance@mezmo"]\nenabled = true\n')
+        key = "mezmo-governance@mezmo:hooks/hooks.json"
+        hooks = [
+            {"key": f"{key}:pre_tool_use:0:0", "eventName": "preToolUse", "pluginId": "mezmo-governance@mezmo",
+             "command": f'python3 "{folder}/mezmo_governance_hook.py" || {{ exit 2; }}',
+             "enabled": enabled, "currentHash": "sha256:aa", "trustStatus": trust},
+            {"key": f"{key}:post_tool_use:0:0", "eventName": "postToolUse", "pluginId": "mezmo-governance@mezmo",
+             "command": f'python3 "{folder}/mezmo_governance_hook.py"',
+             "enabled": True, "currentHash": "sha256:bb", "trustStatus": "untrusted"},
+        ]
+        self.calls = self.tmp / "app-server.jsonl"
+        fake = self.bin / "codex"
+        fake.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            "if sys.argv[1:] == ['--version']:\n"
+            "    print('codex-cli 0.163.0')\n"
+            "    sys.exit()\n"
+            f"{server}\n"
+            f"hooks = {(hooks if listed else [])!r}\n"
+            "for line in sys.stdin:\n"
+            "    message = json.loads(line)\n"
+            f"    open({str(self.calls)!r}, 'a').write(json.dumps([sys.argv[1:], message]) + '\\n')\n"
+            "    if message.get('id') == 1:\n"
+            "        print(json.dumps({'id': 1, 'result': {}}), flush=True)\n"
+            "    if message.get('id') == 2:\n"
+            "        print(json.dumps({'method': 'remoteControl/status/changed', 'params': {}}), flush=True)\n"
+            "        print(json.dumps({'id': 2, 'result': {'data': [{'cwd': '.', 'hooks': hooks}]}}), flush=True)\n"
+        )
+        fake.chmod(0o755)
+
+    def test_a_trusted_plugin_passes(self) -> None:
+        for trust in ("trusted", "managed"):
+            with self.subTest(trust=trust):
+                self.install(trust)
+
+                result = self.doctor()
+
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn("mezmo-governance@mezmo is installed", self.assertStatus(result, "Codex plugin", "ok"))
+                self.assertIn(f"hook is {trust}", self.assertStatus(result, "Codex plugin trust", "ok"))
+                self.assertStatus(result, "Codex smoke", "ok")
+                self.assertNotIn("not installed", result.stdout)
+                calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+                self.assertEqual([call[1].get("method") for call in calls], ["initialize", "initialized", "hooks/list"])
+                self.assertEqual(calls[0][0], ["app-server"])
+                self.calls.unlink()
+
+    def test_an_untrusted_changed_off_or_missing_hook_fails(self) -> None:
+        cases = [
+            ({"trust": "untrusted"}, "not trusted, so Codex skips it"),
+            ({"trust": "modified"}, "changed since you trusted it"),
+            ({"enabled": False}, "turned off in /hooks"),
+            ({"listed": False}, "lists no PreToolUse hook"),
+        ]
+        for kwargs, words in cases:
+            with self.subTest(kwargs=kwargs):
+                self.install(**kwargs)  # type: ignore[arg-type]
+
+                result = self.doctor()
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                line = self.assertStatus(result, "Codex plugin trust", "FAIL")
+                self.assertIn(words, line)
+                self.assertIn("Fix:", line)
+
+    def test_an_untrusted_plugin_names_the_fix(self) -> None:
+        self.install("untrusted")
+
+        line = self.assertStatus(self.doctor(), "Codex plugin trust", "FAIL")
+
+        self.assertIn("Fix: start codex, run /hooks, and trust both Mezmo hooks", line)
+
+    def test_an_unknown_answer_is_info_not_a_pass_or_a_fail(self) -> None:
+        cases = [
+            ("sys.exit(1)", "codex app-server gave no answer"),
+            ("print('not json', flush=True)", "codex app-server gave no answer"),
+            (
+                "for line in sys.stdin:\n"
+                "    print(json.dumps({'id': json.loads(line).get('id'), 'error': {'message': 'unknown method'}}), flush=True)\n",
+                "unknown method",
+            ),
+        ]
+        for server, words in cases:
+            with self.subTest(server=server):
+                self.install(server=server)
+
+                result = self.doctor()
+
+                self.assertEqual(result.returncode, 0, result.stdout)
+                line = self.assertStatus(result, "Codex plugin trust", "info")
+                self.assertIn("not checked", line)
+                self.assertIn(words, line)
+
+    def test_without_codex_on_path_trust_is_info(self) -> None:
+        self.install()
+        (self.bin / "codex").unlink()
+
+        result = self.doctor()
+
+        self.assertIn("codex is not on PATH", self.assertStatus(result, "Codex plugin trust", "info"))
+
+    def test_without_the_native_plugin_there_is_no_plugin_line(self) -> None:
+        self.install()
+        self.write(".codex/config.toml", 'model = "x"\n')
+
+        result = self.doctor()
+
+        self.assertEqual(self.lines(result, "Codex plugin"), [])
+        self.assertEqual(self.lines(result, "Codex plugin trust"), [])
+        self.assertFalse(self.calls.exists())
+        self.assertIn("not installed", self.lines(result, "Codex")[1])
+
+
 class OtherHookAgentTests(DoctorTestCase):
     def test_cursor_needs_fail_closed(self) -> None:
         self.agent("cursor-agent", "2026.10.14-941492e")

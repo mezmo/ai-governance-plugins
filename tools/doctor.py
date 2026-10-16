@@ -21,6 +21,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
@@ -33,6 +34,7 @@ HOOK_FILE = "mezmo_governance_hook.py"
 DEFAULT_URL = "https://api.mezmo.com/governance/workflow/authorize"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 REQUEST_SECONDS = 15.0
+APP_SERVER_SECONDS = 10.0
 # Nothing listens on port 9, so a hook pointed here must deny.
 UNREACHABLE_URL = "http://127.0.0.1:9/governance/workflow/authorize"
 LIBRARIES = "LangChain, OpenAI Agents SDK, Claude Agent SDK and Mastra"
@@ -452,12 +454,92 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
     return smokes if plugins or found else None
 
 
+def codex_hooks(binary: str) -> list:
+    """The hooks `codex app-server` lists, each with its key, trust status and command.
+
+    Codex hashes a normalized form of each hook, so only Codex can say whether a
+    saved trusted_hash still matches.
+    """
+    requests = [
+        {"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "mezmo-doctor", "version": "1"}}},
+        {"method": "initialized"},
+        {"id": 2, "method": "hooks/list", "params": {"cwds": [str(home())]}},
+    ]
+    try:
+        server = subprocess.Popen(
+            [binary, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+    except OSError as error:
+        raise Unknown(f"could not start codex app-server: {error}") from error
+    timer = threading.Timer(APP_SERVER_SECONDS, server.kill)
+    timer.start()
+    try:
+        # Codex drops a request still open when stdin closes, so stdin stays open until the answer.
+        server.stdin.write("".join(json.dumps(request) + "\n" for request in requests))  # type: ignore[union-attr]
+        server.stdin.flush()  # type: ignore[union-attr]
+        for line in server.stdout:  # type: ignore[union-attr]
+            answer = as_dict(json.loads(line))
+            if answer.get("id") != 2:
+                continue
+            if "error" in answer:
+                raise Unknown(f"codex app-server refused hooks/list: {hook.error_detail(as_dict(answer['error']).get('message'))}")
+            entries = as_list(as_dict(answer.get("result")).get("data"))
+            return [as_dict(item) for entry in entries for item in as_list(as_dict(entry).get("hooks"))]
+    except (OSError, ValueError) as error:
+        raise Unknown(f"codex app-server gave no answer: {hook.error_detail(str(error))}") from error
+    finally:
+        timer.cancel()
+        server.kill()
+        server.wait()
+    raise Unknown(f"codex app-server gave no answer to hooks/list (the doctor waits {APP_SERVER_SECONDS:g} s)")
+
+
+def check_codex_plugin(report: Report, plugins: list) -> list:
+    """The native install: `codex plugin add` records it under [plugins."<name>@<marketplace>"]."""
+    smokes: list = []
+    trust_fix = "start codex, run /hooks, and trust both Mezmo hooks"
+    for plugin in plugins:
+        report.line("ok", "Codex plugin", f"{plugin} is installed")
+    binary = shutil.which("codex")
+    if binary is None:
+        report.line("info", "Codex plugin trust", "not checked: codex is not on PATH", trust_fix)
+        return smokes
+    try:
+        hooks = codex_hooks(binary)
+    except Unknown as error:
+        report.line("info", "Codex plugin trust", f"not checked: {error}", trust_fix)
+        return smokes
+    for plugin in plugins:
+        found = [item for item in hooks if item.get("pluginId") == plugin and item.get("eventName") == "preToolUse"]
+        if not found:
+            report.line(
+                "FAIL", "Codex plugin trust", f"Codex lists no PreToolUse hook for {plugin}, so no tool call is governed",
+                f'set enabled = true under [plugins."{plugin}"] in {shown(codex_dir() / "config.toml")}, or run codex plugin add {plugin}',
+            )
+        for item in found:
+            status = item.get("trustStatus")
+            if item.get("enabled") is False:
+                report.line("FAIL", "Codex plugin trust", "the PreToolUse hook is turned off in /hooks, so Codex skips it", trust_fix)
+            elif status in ("trusted", "managed"):
+                report.line("ok", "Codex plugin trust", f"the PreToolUse hook is {status}")
+            elif status == "modified":
+                report.line("FAIL", "Codex plugin trust", "the PreToolUse hook changed since you trusted it, so Codex skips it", trust_fix)
+            else:
+                report.line(
+                    "FAIL", "Codex plugin trust", "the PreToolUse hook is not trusted, so Codex skips it and every tool runs ungoverned",
+                    trust_fix,
+                )
+            smokes.append(Smoke("Codex", hook_path(str(item.get("command"))), CLAUDE_EVENT))
+    return smokes
+
+
 def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
     path = codex_dir() / "hooks.json"
     found = mezmo_handlers(as_dict(as_dict(read_json(path)).get("hooks")).get("PreToolUse"))
-    if not found:
-        return None
     config = read_text(codex_dir() / "config.toml") or ""
+    plugins = re.findall(r'^\[plugins\."(mezmo-governance@[^"]+)"\][ \t]*$', config, re.M)
+    if not found and not plugins:
+        return None
     features = toml_table(config, "features") or ""
     if re.search(r"^\s*hooks\s*=\s*false\b", features, re.M):
         report.line(
@@ -481,6 +563,8 @@ def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
                 "trusted in /hooks (after an edit Codex asks again; the doctor does not compare the hash)",
             )
         smokes.append(Smoke("Codex", hook_path(command), CLAUDE_EVENT))
+    if plugins:
+        smokes += check_codex_plugin(report, plugins)
     return smokes
 
 
