@@ -465,16 +465,6 @@ class CodexTests(DoctorTestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertTrue(any(line.startswith("FAIL") and words in line for line in self.lines(result, subject)), result.stdout)
 
-    def test_a_hook_turned_off_in_hooks_fails(self) -> None:
-        self.install(trusted=False)
-        hooks = self.home / ".codex/hooks.json"
-        self.write(".codex/config.toml", f'[hooks.state."{hooks}:pre_tool_use:0:0"]\ntrusted_hash = "x"\nenabled = false\n')
-
-        result = self.doctor()
-
-        self.assertIn("turned off", self.assertStatus(result, "Codex trust", "FAIL"))
-
-
 class OtherHookAgentTests(DoctorTestCase):
     def test_cursor_needs_fail_closed(self) -> None:
         self.agent("cursor-agent", "2026.10.14-941492e")

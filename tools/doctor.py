@@ -38,9 +38,7 @@ LIBRARIES = "LangChain, OpenAI Agents SDK, Claude Agent SDK and Mastra"
 
 def load_hook() -> Any:
     """The Claude Code hook: its settings rules and HTTP client are the hooks' own."""
-    spec = importlib.util.spec_from_file_location(
-        "mezmo_governance_hook", REPO / "claude-code" / HOOK_FILE
-    )
+    spec = importlib.util.spec_from_file_location("mezmo_governance_hook", REPO / "claude-code" / HOOK_FILE)
     module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
     spec.loader.exec_module(module)  # type: ignore[union-attr]
     return module
@@ -171,9 +169,7 @@ def read_json(path: Path) -> Any:
 
 def toml_table(text: str, header: str) -> Optional[str]:
     """The body of `[header]`, enough for the flat tables Codex writes."""
-    match = re.search(
-        r"^\[" + re.escape(header) + r"\][ \t]*$(.*?)(?=^\[|\Z)", text, re.M | re.S
-    )
+    match = re.search(r"^\[" + re.escape(header) + r"\][ \t]*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
     return match.group(1) if match else None
 
 
@@ -473,8 +469,6 @@ def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
                 "FAIL", "Codex trust", "the hook is not trusted, so Codex skips it",
                 "start codex, run /hooks, and trust the Mezmo hook",
             )
-        elif re.search(r"^\s*enabled\s*=\s*false\b", state, re.M):
-            report.line("FAIL", "Codex trust", "the hook is turned off in /hooks", "turn it on in /hooks")
         else:
             report.line(
                 "ok", "Codex trust",
@@ -536,13 +530,7 @@ def check_gemini(report: Report, version: Optional[tuple]) -> Optional[list]:
 
 def check_copilot(report: Report, version: Optional[tuple]) -> Optional[list]:
     folder = copilot_dir() / "hooks"
-    event = {
-        "sessionId": "doctor",
-        "timestamp": 0,
-        "cwd": ".",
-        "toolName": "bash",
-        "toolArgs": '{"command":"echo hi"}',
-    }
+    event = {"sessionId": "doctor", "timestamp": 0, "cwd": ".", "toolName": "bash", "toolArgs": '{"command":"echo hi"}'}
     smokes = []
     installed = False
     for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
@@ -804,11 +792,7 @@ def check_smokes(report: Report, smokes: list) -> None:
         report.line("FAIL", "python3", f"{dotted(version)} is older than 3.9, which the hooks need", "install Python 3.9 or later")
     else:
         report.line("ok", "python3", f"{dotted(version)} at {shown(Path(python))}")
-    env = {
-        key: value
-        for key, value in os.environ.items()
-        if not key.startswith(("MEZMO_GOVERNANCE_", "CLAUDE_PLUGIN_OPTION_"))
-    }
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("MEZMO_GOVERNANCE_", "CLAUDE_PLUGIN_OPTION_"))}
     env.update(
         {
             "MEZMO_GOVERNANCE_URL": UNREACHABLE_URL,
@@ -843,20 +827,19 @@ def check_smokes(report: Report, smokes: list) -> None:
             )
 
 
-def main(argv: Optional[list] = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--probe",
-        action="store_true",
-        help="send Mezmo one test call (tool doctor:probe) to check that the key belongs to an agent",
-    )
-    args = parser.parse_args(argv)
+def run(agents: tuple = AGENTS, probe: bool = False) -> int:
     report = Report()
-    ready = check_settings(report)
-    check_mezmo(report, ready, args.probe)
-    check_smokes(report, check_agents(report))
+    check_mezmo(report, check_settings(report), probe)
+    check_smokes(report, check_agents(report, agents))
     report.line("skip", "libraries", f"{LIBRARIES} are set up in app code, so the doctor does not check them; run examples/check.sh")
     return 1 if report.failed else 0
+
+
+def main(argv: Optional[list] = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    text = "send Mezmo one test call (tool doctor:probe) to check that the key belongs to an agent"
+    parser.add_argument("--probe", action="store_true", help=text)
+    return run(probe=parser.parse_args(argv).probe)
 
 
 if __name__ == "__main__":

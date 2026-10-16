@@ -621,15 +621,6 @@ def agents(names: list) -> int:
     return 0
 
 
-def run_doctor(names: list, probe: bool) -> int:
-    report = doctor.Report()
-    ready = doctor.check_settings(report)
-    doctor.check_mezmo(report, ready, probe)
-    doctor.check_smokes(report, doctor.check_agents(report, [AGENTS[name] for name in names]))
-    report.line("skip", "libraries", f"{doctor.LIBRARIES} are set up in app code, so the doctor does not check them; run examples/check.sh")
-    return 1 if report.failed else 0
-
-
 def fresh(event: dict, name: Optional[str] = None) -> dict:
     """The event with a new call id, and a new tool name when given."""
     result = {**event}
@@ -778,7 +769,7 @@ def main(argv: Optional[list] = None) -> int:
     if verb in ("agents", "status"):
         return agents(chosen)
     if verb == "doctor":
-        return run_doctor(chosen, "--probe" in flags)
+        return doctor.run(tuple(AGENTS[name] for name in chosen), "--probe" in flags)
     if verb == "smoke":
         return smoke(chosen)
     if not chosen:
