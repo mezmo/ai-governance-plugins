@@ -780,18 +780,21 @@ class Agent(NamedTuple):
     minimum: Optional[str]
     readme: str
     check: Any
+    namespace: str  # the tool_namespace the adapter sends for a built-in tool (AGENT in its hook)
+    shell: str
+    read: str
 
 
-# Tested versions come from the README's hand-check table.
+# Tested versions come from the README's hand-check table; tool names from each adapter README.
 AGENTS = (
-    Agent("Claude Code", "claude", ("2.1.296",), "2.1.295", "claude-code", check_claude_code),
-    Agent("Codex", "codex", ("0.162.1",), None, "codex", check_codex),
-    Agent("Cursor", "cursor-agent", ("2026.10.14",), None, "cursor", check_cursor),
-    Agent("Gemini CLI", "gemini", ("0.64.0",), None, "gemini-cli", check_gemini),
-    Agent("Copilot CLI", "copilot", ("1.0.95",), None, "copilot", check_copilot),
-    Agent("Goose", "goose", ("1.54.0",), None, "goose", check_goose),
-    Agent("OpenCode", "opencode", ("1.19.0", "2.0.25"), None, "opencode", check_opencode),
-    Agent("Pi", "pi", ("1.3.0",), None, "pi", check_pi),
+    Agent("Claude Code", "claude", ("2.1.296",), "2.1.295", "claude-code", check_claude_code, "claude_code", "Bash", "Read"),
+    Agent("Codex", "codex", ("0.162.1",), None, "codex", check_codex, "codex", "Bash", "apply_patch"),
+    Agent("Cursor", "cursor-agent", ("2026.10.14",), None, "cursor", check_cursor, "cursor", "Shell", "Read"),
+    Agent("Gemini CLI", "gemini", ("0.64.0",), None, "gemini-cli", check_gemini, "gemini_cli", "run_shell_command", "read_file"),
+    Agent("Copilot CLI", "copilot", ("1.0.95",), None, "copilot", check_copilot, "copilot", "bash", "view"),
+    Agent("Goose", "goose", ("1.54.0",), None, "goose", check_goose, "goose", "shell", "tree"),
+    Agent("OpenCode", "opencode", ("1.19.0", "2.0.25"), None, "opencode", check_opencode, "opencode", "shell", "read"),
+    Agent("Pi", "pi", ("1.3.0",), None, "pi", check_pi, "pi", "bash", "read"),
 )
 
 

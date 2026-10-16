@@ -168,10 +168,51 @@ fits your daily work.
 4. Ask it to write a file: Claude Code waits; approve the call in Mezmo
    and the write runs. Try once more and reject it: the write is blocked.
 
+### Set up rules
+
+`./mezmo-governance policy` reads and adds rules through the Mezmo policy
+API, so you can start without the policy dialog:
+
+```bash
+export MEZMO_GOVERNANCE_ADMIN_KEY="<key with Governance policy rights>"
+./mezmo-governance policy show
+./mezmo-governance policy apply
+./mezmo-governance policy apply --yes
+```
+
+To try it first, start the mock and export its two lines, as in
+[Try it in two minutes](#try-it-in-two-minutes-without-a-mezmo-account), and set
+`MEZMO_GOVERNANCE_ADMIN_KEY=local-test`: `policy` then uses the mock's one agent
+and policy.
+
+`policy show` changes nothing. It prints each Mezmo agent with its runtime
+and policy, each policy's rules (recourse, tool space or `*`, tool, message,
+`rule_id`) and fallthrough, then for each agent installed here whether a rule
+covers its shell tool and its read tool. It ties an installed agent to the
+Mezmo agents whose Runtime Name is the adapter folder name, such as
+`claude-code`. A rule covers a tool when it names the tool with `eq` or `in`,
+has no tool space or the agent's, and checks no arguments.
+
+`policy apply [agent...]` plans two rules for the named agents, or for every
+installed agent: deny their shell tools with `FORBIDDEN_TOOL` and the message
+`Shell blocked by Mezmo policy`, and allow their read tools. It leaves out
+each tool a rule already covers and prints every rule it keeps, with its
+`rule_id`. Without `--yes` it stops there. With `--yes` it opens a draft,
+writes your rules back unchanged plus the new ones, and accepts the draft. If
+the write or the accept fails, it deletes the draft. If the policy already has
+an open draft, it changes nothing: finish or delete that draft in Mezmo first.
+
+`policy` reads the key from `MEZMO_GOVERNANCE_ADMIN_KEY`, or asks for it in a
+terminal, and never prints it. It never uses `MEZMO_GOVERNANCE_TOKEN`: every
+governed agent can read that token, and an agent holding policy rights could
+remove its own rules. Keep the admin key out of the shell that starts your
+agents. The API is `https://api.mezmo.com/v3/governance`, or the host of
+`MEZMO_GOVERNANCE_URL`, or `--url <base>`.
+
 ### The mezmo-governance command
 
 `./mezmo-governance help` lists the commands: `agents`, `install`,
-`uninstall`, `doctor`, `mock` and `smoke`. It needs Python 3.9 or later, and
+`uninstall`, `doctor`, `mock`, `smoke` and `policy`. It needs Python 3.9 or later, and
 node for the OpenCode and Pi smoke test.
 
 `install` writes into each agent's user config folder and honors the agent's

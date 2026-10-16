@@ -9,18 +9,25 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
+from urllib.request import ProxyHandler, Request, build_opener
 
 TOOLS = Path(__file__).resolve().parent
 REPO = TOOLS.parent
 WRAPPER = REPO / "mezmo-governance"
 CANARY = "canary-key-5d1c8e40"
+ADMIN = "admin-key-9b27f6d3"
+sys.path.insert(0, str(TOOLS))
+import mock_governance  # noqa: E402
 AGENTS = ("claude-code", "codex", "cursor", "gemini-cli", "copilot", "goose", "opencode", "pi")
 VERSIONS = {
     "claude": "2.1.300 (Claude Code)",
@@ -425,7 +432,8 @@ class CommandTests(CliTestCase):
             with self.subTest(args=args):
                 result = self.cli(*args)
                 self.assertEqual(result.returncode, 0)
-                for word in ("agents", "install", "uninstall", "doctor", "mock", "smoke", *AGENTS, "CODEX_HOME"):
+                for word in ("agents", "install", "uninstall", "doctor", "mock", "smoke", "policy show", "policy apply",
+                             "MEZMO_GOVERNANCE_ADMIN_KEY", *AGENTS, "CODEX_HOME"):
                     self.assertIn(word, result.stdout)
 
     def test_an_unknown_agent_or_command_exits_2_with_help(self) -> None:
@@ -519,7 +527,315 @@ class KeyTests(CliTestCase):
             self.assertEqual(leaked, [], args)
 
 
+def flat(tool: dict, recourse: str, namespace: dict = None) -> dict:
+    """A rule as the policy API returns it."""
+    definition = {"recourse": recourse, "tool": tool, **({"namespace": namespace} if namespace else {})}
+    return mock_governance.compiled(definition)
+
+
+class PolicyTests(CliTestCase):
+    """policy show and apply against the mock's in-memory agent and policy."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.governance = mock_governance.governance_state()
+        server = ThreadingHTTPServer(("127.0.0.1", 0), mock_governance.make_handler([], [], self.governance))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.base = f"http://127.0.0.1:{server.server_port}/v3/governance"
+        self.env["MEZMO_GOVERNANCE_ADMIN_KEY"] = ADMIN
+        (self.mock_policy,) = self.governance["policies"]
+        (self.seeded,) = self.mock_policy["rules"]
+
+    def policy(self, *args: str, **env: str) -> subprocess.CompletedProcess:
+        result = self.cli("policy", *args, "--url", self.base, stdin="", **env)
+        self.assertNotIn(ADMIN, result.stdout + result.stderr)
+        return result
+
+    def register(self, *runtimes: str) -> None:
+        for runtime in runtimes:
+            self.governance["agents"].append(
+                {"agent_id": mock_governance.object_id(), "name": f"{runtime} on example.test", "runtime_name": runtime,
+                 "policy_id": self.mock_policy["policy_id"]}
+            )
+
+    def writes(self) -> list:
+        return [(method, path) for method, path, _, _ in self.governance["calls"] if method != "GET"]
+
+    def test_show_prints_agents_rules_default_and_coverage(self) -> None:
+        self.cli("install", "claude-code", "codex")
+        result = self.policy("show")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        policy_id = self.mock_policy["policy_id"]
+        self.assertIn(f"agent   Claude Code on example.test  runtime claude-code  policy {policy_id}", result.stdout)
+        self.assertIn(f"policy  Mock policy ({policy_id})", result.stdout)
+        self.assertIn(f"  rule     allow doctor tool eq probe: - (rule_id {self.seeded['rule_id']})", result.stdout)
+        self.assertIn("  default  approval_required: No rule in this policy covers this request.", result.stdout)
+        self.assertIn("cover   claude-code in Mock policy: shell Bash not covered; read Read not covered", result.stdout)
+        self.assertIn("cover   codex: no Mezmo agent has Runtime Name codex", result.stdout)
+        self.assertNotIn("cursor", result.stdout)
+        self.assertEqual(self.writes(), [])
+
+    def test_a_rule_covers_by_tool_eq_or_in_with_no_or_the_agents_namespace(self) -> None:
+        self.cli("install", "claude-code")
+        cases = (
+            (flat({"op": "in", "value": ["Bash", "Shell"]}, "deny"), "shell Bash covered (deny"),
+            (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "eq", "value": "claude_code"}), "shell Bash covered (deny"),
+            (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "in", "value": ["codex", "claude_code"]}), "shell Bash covered (deny"),
+            (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "eq", "value": "codex"}), "shell Bash not covered"),
+            (flat({"op": "neq", "value": "Read"}, "deny"), "shell Bash not covered"),
+            (flat({"op": "nin", "value": ["Read"]}, "deny"), "shell Bash not covered"),
+            ({**flat({"op": "eq", "value": "Bash"}, "deny"), "definition": {"recourse": "deny", "tool": {"op": "eq", "value": "Bash"},
+              "args": [{"field": "command", "op": "eq", "value": "rm"}]}}, "shell Bash not covered"),
+        )
+        for rule, want in cases:
+            with self.subTest(rule=rule["definition"]):
+                self.policy_rules([rule])
+                result = self.policy("show")
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn(want, result.stdout)
+
+    def policy_rules(self, rules: list) -> None:
+        self.mock_policy["rules"] = [self.seeded, *rules]
+
+    def test_apply_without_yes_prints_the_plan_and_changes_nothing(self) -> None:
+        self.cli("install", "claude-code", "cursor", "copilot")
+        self.register("cursor", "copilot")
+        before = json.dumps(self.governance["policies"])
+        result = self.policy("apply")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(f"policy  Mock policy ({self.mock_policy['policy_id']}) for claude-code, cursor, copilot:", result.stdout)
+        self.assertIn(f"  keep     allow doctor tool eq probe: - (rule_id {self.seeded['rule_id']})", result.stdout)
+        self.assertIn("  would add deny * tool in Bash, Shell, bash: Shell blocked by Mezmo policy", result.stdout)
+        self.assertIn("  would add allow * tool in Read, view: -", result.stdout)
+        self.assertIn("--yes", result.stdout)
+        self.assertEqual(json.dumps(self.governance["policies"]), before)
+        self.assertEqual(self.writes(), [])
+
+    def test_apply_yes_writes_through_a_draft_and_keeps_every_rule(self) -> None:
+        self.cli("install", "claude-code")
+        kept = flat({"op": "eq", "value": "Write"}, "approval_required")
+        self.policy_rules([kept])
+        result = self.policy("apply", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        root = f"/v3/governance/policy/{self.mock_policy['policy_id']}"
+        draft = self.governance["calls"][3][1].rsplit("/", 1)[1]
+        self.assertEqual(self.writes(), [("POST", f"{root}/draft"), ("PUT", f"{root}/draft/{draft}"), ("PATCH", root)])
+        self.assertIsNone(self.mock_policy["draft"])
+        self.assertEqual(self.mock_policy["description"], "A stand-in for trying policy show and apply")
+        rules = self.mock_policy["rules"]
+        self.assertEqual([rule["rule_id"] for rule in rules[:2]], [self.seeded["rule_id"], kept["rule_id"]])
+        self.assertEqual([rule["definition"] for rule in rules[:2]], [self.seeded["definition"], kept["definition"]])
+        self.assertEqual(
+            [rule["definition"] for rule in rules[2:]],
+            [
+                {"recourse": "deny", "tool": {"op": "in", "value": ["Bash"]}, "code": "FORBIDDEN_TOOL",
+                 "error_message": "Shell blocked by Mezmo policy"},
+                {"recourse": "allow", "tool": {"op": "in", "value": ["Read"]}},
+            ],
+        )
+        self.assertIn("  add      deny * tool in Bash: Shell blocked by Mezmo policy", result.stdout)
+        self.assertIn("ok    Mock policy: 2 rules added, 2 kept", result.stdout)
+        # A second run finds both tools covered and opens no draft.
+        self.governance["calls"].clear()
+        again = self.policy("apply", "--yes")
+        self.assertEqual(again.returncode, 0, again.stdout)
+        self.assertIn("nothing to add", again.stdout)
+        self.assertEqual(self.writes(), [])
+
+    def test_apply_skips_a_tool_a_rule_already_covers(self) -> None:
+        self.cli("install", "claude-code")
+        self.policy_rules([flat({"op": "eq", "value": "Bash"}, "allow", {"op": "eq", "value": "claude_code"})])
+        result = self.policy("apply")
+        self.assertIn("  would add allow * tool in Read: -", result.stdout)
+        self.assertNotIn("would add deny", result.stdout)
+
+    def test_apply_takes_named_agents_and_refuses_unknown_ones(self) -> None:
+        self.register("codex")
+        result = self.policy("apply", "codex")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("would add deny * tool in Bash", result.stdout)
+        self.assertIn("would add allow * tool in apply_patch", result.stdout)
+        for args in (("apply", "nope"), ("show", "codex"), ("apply", "--force"), ("frob",), ()):
+            with self.subTest(args=args):
+                result = self.cli("policy", *args)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn("Usage: ./mezmo-governance", result.stderr)
+
+    def test_an_open_draft_stops_apply_and_is_left_alone(self) -> None:
+        # A run stopped after the draft opened, or after it was written, leaves the draft open.
+        self.cli("install", "claude-code")
+        for stop in ("POST", "PUT"):
+            with self.subTest(stop=stop):
+                draft = self.open_draft(write=stop == "PUT")
+                self.governance["calls"].clear()
+                result = self.policy("apply", "--yes")
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f"draft {draft} is already open on this policy; finish or delete it in Mezmo", result.stdout)
+                self.assertEqual(self.writes(), [])
+                self.assertEqual(self.mock_policy["draft"], draft)
+                self.assertIn(draft, self.policy("show").stdout)
+                # Deleting it in Mezmo lets the next run finish.
+                self.call("DELETE", f"/policy/{self.mock_policy['policy_id']}/draft/{draft}")
+        result = self.policy("apply", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(len(self.mock_policy["rules"]), 3)
+
+    def test_mezmo_handing_back_an_existing_draft_stops_apply(self) -> None:
+        # The policy read showed no draft, but the draft call returned one (200, not 201).
+        self.cli("install", "claude-code")
+        draft = self.open_draft()
+        self.mock_policy["draft"] = None
+        self.governance["calls"].clear()
+        result = self.policy("apply", "--yes")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(f"Mezmo handed back draft {draft}, which was already open; finish or delete it in Mezmo", result.stdout)
+        self.assertEqual([method for method, _ in self.writes()], ["POST"])
+        self.assertIn(draft, self.governance["drafts"])
+
+    def test_a_failed_write_or_accept_deletes_the_draft(self) -> None:
+        self.cli("install", "claude-code")
+        for method, step, calls in (
+            ("PUT", "write the draft", ["POST", "PUT", "DELETE"]),
+            ("PATCH", "accept the draft", ["POST", "PUT", "PATCH", "DELETE"]),
+        ):
+            with self.subTest(method=method):
+                self.governance["calls"].clear()
+                self.governance["fail"] = {method: 400}
+                result = self.policy("apply", "--yes")
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f"FAIL  Mock policy: {step}: HTTP 400 EMOCK: mock: {method} set to fail; deleted the draft", result.stdout)
+                self.assertEqual([m for m, _ in self.writes()], calls)
+                self.assertEqual(self.mock_policy["rules"], [self.seeded])
+                self.assertIsNone(self.mock_policy["draft"])
+                self.assertEqual(self.governance["drafts"], {})
+
+    def test_an_accept_with_no_answer_is_unknown_and_the_draft_is_deleted(self) -> None:
+        self.cli("install", "claude-code")
+        self.governance["fail"] = {"PATCH": 0}
+        result = self.policy("apply", "--yes")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL  Mock policy: accept the draft: PATCH /v3/governance/policy/", result.stdout)
+        self.assertIn("got no answer", result.stdout)
+        self.assertIn("its result is unknown", result.stdout)
+        self.assertIn("deleted the draft", result.stdout)
+        self.assertIn("policy show", result.stdout)
+        self.assertEqual(self.mock_policy["rules"], [self.seeded])
+
+    def test_apply_writes_only_to_the_policy_of_the_agents_runtime(self) -> None:
+        self.cli("install", "claude-code")
+        other = {**json.loads(json.dumps(self.mock_policy)), "policy_id": mock_governance.object_id(), "name": "Codex policy"}
+        self.governance["policies"].append(other)
+        self.governance["agents"].append({"agent_id": mock_governance.object_id(), "name": "Codex", "runtime_name": "codex",
+                                          "policy_id": other["policy_id"]})
+        before = json.dumps(other)
+        result = self.policy("apply", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("Codex policy", result.stdout)
+        self.assertEqual(json.dumps(other), before)
+        self.assertEqual(len(self.mock_policy["rules"]), 3)
+
+    def test_a_draft_it_cannot_delete_is_named(self) -> None:
+        self.cli("install", "claude-code")
+        self.governance["fail"] = {"PUT": 400, "DELETE": 500}
+        result = self.policy("apply", "--yes")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        (draft,) = self.governance["drafts"]
+        self.assertIn(f"could not delete draft {draft} (HTTP 500); delete it in Mezmo", result.stdout)
+        self.assertEqual(self.mock_policy["rules"], [self.seeded])
+
+    def test_a_failed_read_is_a_failure_not_an_empty_policy(self) -> None:
+        self.cli("install", "claude-code")
+        self.governance["fail"] = {"GET": 500}
+        for action in ("show", "apply"):
+            with self.subTest(action=action):
+                result = self.policy(action)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f"FAIL  policy {action}: read agents: HTTP 500", result.stdout)
+                self.assertNotIn("not covered", result.stdout)
+        result = self.cli("policy", "show", "--url", "http://127.0.0.1:9/v3/governance")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("got no answer", result.stdout)
+
+    def test_every_policy_page_is_read(self) -> None:
+        # Mezmo returns at most 50 policies a page.
+        for number in range(60):
+            self.governance["policies"].append({**self.mock_policy, "policy_id": mock_governance.object_id(), "name": f"extra {number}"})
+        result = self.policy("show")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout.count("\npolicy  "), 61)
+        self.assertIn("extra 59", result.stdout)
+
+    def test_the_admin_key_is_sent_and_never_the_hook_token(self) -> None:
+        self.cli("install", "claude-code")
+        self.policy("apply", "--yes")
+        self.assertEqual({auth for _, _, auth, _ in self.governance["calls"]}, {f"Token {ADMIN}"})
+        self.governance["calls"].clear()
+        result = self.policy("show", MEZMO_GOVERNANCE_ADMIN_KEY="")
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("set MEZMO_GOVERNANCE_ADMIN_KEY", result.stdout)
+        self.assertIn("never MEZMO_GOVERNANCE_TOKEN", result.stdout)
+        self.assertEqual(self.governance["calls"], [])
+
+    def test_a_terminal_is_asked_for_the_key(self) -> None:
+        import mezmo_governance_cli as cli
+
+        with mock.patch.dict(os.environ, {"MEZMO_GOVERNANCE_ADMIN_KEY": ""}), mock.patch.object(cli.sys, "stdin") as stdin, \
+                mock.patch.object(cli.getpass, "getpass", return_value=" typed-key \n") as asked:
+            stdin.isatty.return_value = True
+            self.assertEqual(cli.admin_key(), "typed-key")
+        self.assertIn("MEZMO_GOVERNANCE_ADMIN_KEY", asked.call_args[0][0])
+
+    def test_the_base_url_comes_from_url_then_the_hook_url_then_the_default(self) -> None:
+        import mezmo_governance_cli as cli
+
+        cases = (
+            ("https://example.test/v3/governance/", {}, "https://example.test/v3/governance"),
+            (None, {"MEZMO_GOVERNANCE_URL": "https://api.example.test/governance/workflow/authorize"}, "https://api.example.test/v3/governance"),
+            (None, {"MEZMO_GOVERNANCE_URL": "http://127.0.0.1:8787/governance/workflow/authorize"}, "http://127.0.0.1:8787/v3/governance"),
+            (None, {}, "https://api.mezmo.com/v3/governance"),
+        )
+        for url, env, want in cases:
+            with self.subTest(url=url, env=env), mock.patch.dict(os.environ, {"MEZMO_GOVERNANCE_URL": "", **env}):
+                self.assertEqual(cli.policy_base(url), want)
+        for url, env, said in (
+            ("http://example.test/v3/governance", {}, "uses http"),
+            (None, {"MEZMO_GOVERNANCE_URL": "https://api.example.test/other"}, "pass --url"),
+        ):
+            with self.subTest(url=url, env=env), mock.patch.dict(os.environ, {"MEZMO_GOVERNANCE_URL": "", **env}):
+                with self.assertRaisesRegex(cli.Failure, said):
+                    cli.policy_base(url)
+
+    def open_draft(self, write: bool = False) -> str:
+        root = f"/policy/{self.mock_policy['policy_id']}"
+        draft = self.call("POST", f"{root}/draft", {})["data"]["draft_id"]
+        if write:
+            self.call("PUT", f"{root}/draft/{draft}", {"name": "x", "default_action": {"recourse": "deny"}, "rules": []})
+        return draft
+
+    def call(self, method: str, path: str, body: dict = None) -> dict:
+        data = None if body is None else json.dumps(body).encode()
+        request = Request(self.base + path, data=data, method=method, headers={"Authorization": "Token other", "Content-Type": "application/json"})
+        with build_opener(ProxyHandler({})).open(request, timeout=10) as response:
+            raw = response.read()
+        return json.loads(raw) if raw else {}
+
+
 class ManifestTests(unittest.TestCase):
+    def test_each_agents_namespace_is_the_one_its_adapter_sends(self) -> None:
+        import doctor
+
+        for agent in doctor.AGENTS:
+            with self.subTest(agent=agent.readme):
+                sources = [*(REPO / agent.readme).glob("mezmo_governance_hook.py"), *(REPO / agent.readme).glob("**/client.ts")]
+                found = {
+                    match.group(1)
+                    for path in sources if "node_modules" not in path.parts
+                    for match in re.finditer(r'^(?:export const )?AGENT = "([^"]+)"', path.read_text(), re.M)
+                }
+                self.assertEqual(found, {agent.namespace})
+
     def test_each_native_plugin_points_at_its_own_adapter_and_hook(self) -> None:
         # marketplace, plugin manifest, hook config, and the example's hook path the plugin swaps out.
         cases = (

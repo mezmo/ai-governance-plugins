@@ -7,6 +7,7 @@ finds Python 3.9 or later. It never writes the token into any file.
 
 from __future__ import annotations
 
+import getpass
 import json
 import os
 import re
@@ -20,6 +21,9 @@ import uuid
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, quote, urlparse, urlunparse
+from urllib.request import Request, build_opener
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import doctor  # noqa: E402
@@ -33,9 +37,17 @@ LIBRARIES = (
     ("Mastra", "mastra/README.md"),
 )
 # The mock denies each agent's shell tool and approves the rest.
-SHELL_TOOLS = ["Bash", "Shell", "run_shell_command", "bash", "shell"]
+SHELL_TOOLS = list(dict.fromkeys(agent.shell for agent in doctor.AGENTS))
 SMOKE_KEY = "smoke-test"
 CLI_SECONDS = 300
+POLICY_URL = "https://api.mezmo.com/v3/governance"
+ADMIN_KEY = "MEZMO_GOVERNANCE_ADMIN_KEY"
+PAGE_LIMIT = 50  # the most policies Mezmo returns a page
+# The starter rules policy apply adds, keyed by the agent's tool they list.
+STARTER = {
+    "shell": {"recourse": "deny", "code": "FORBIDDEN_TOOL", "error_message": "Shell blocked by Mezmo policy"},
+    "read": {"recourse": "allow"},
+}
 
 HELP = f"""\
 Usage: ./mezmo-governance <command> [agent...] [options]
@@ -49,6 +61,10 @@ Commands:
   doctor [agent...]        check the settings, Mezmo and each agent; --probe sends Mezmo one test call
   mock [--deny PATTERN...] start a local stand-in for Mezmo and print the two export lines
   smoke [agent...]         run each installed hook against its own mock: one call denied, one approved
+  policy show              print the Mezmo agents, policies and rules, and which rule covers each
+                           installed agent's shell and read tool
+  policy apply [agent...]  add a deny rule for the shell tools and an allow rule for the read tools
+                           that no rule covers; --yes writes them through a Mezmo draft
 
 Agents: {', '.join(agent.readme for agent in doctor.AGENTS)}
   install --all picks every agent whose binary is on PATH; uninstall --all picks every installed agent.
@@ -59,6 +75,7 @@ Examples:
   ./mezmo-governance doctor --probe
   ./mezmo-governance smoke
   ./mezmo-governance mock --deny Bash
+  ./mezmo-governance policy apply claude-code --yes
 
 Settings:
   MEZMO_GOVERNANCE_URL and MEZMO_GOVERNANCE_TOKEN come from the shell that starts the agent.
@@ -66,6 +83,9 @@ Settings:
   options in opencode.json, with the key in a file. Install never writes the key.
   Config folders follow each agent's override: CLAUDE_CONFIG_DIR, CODEX_HOME, GEMINI_CLI_HOME,
   COPILOT_HOME, GOOSE_PATH_ROOT, XDG_CONFIG_HOME (OpenCode), PI_CODING_AGENT_DIR, else HOME.
+  policy reads MEZMO_GOVERNANCE_ADMIN_KEY, or asks for it, and never MEZMO_GOVERNANCE_TOKEN: every
+  governed agent can read that one. --url BASE sets the policy API, else it comes from
+  MEZMO_GOVERNANCE_URL, else https://api.mezmo.com/v3/governance.
 
 Libraries ({', '.join(name for name, _ in LIBRARIES)}) are set up in app code: see each README.
 `python3 tools/doctor.py` is the same check as `doctor`.
@@ -780,6 +800,282 @@ def run(command: list, stdin: str, env: dict, script: Path) -> subprocess.Comple
         return subprocess.CompletedProcess(command, 1, "", "no answer within 30 s")
 
 
+# --- policy: read the Mezmo policies, add starter rules -----------------------
+
+
+def admin_key() -> str:
+    key = (os.environ.get(ADMIN_KEY) or "").strip()
+    if not key and sys.stdin.isatty():
+        key = getpass.getpass(f"{ADMIN_KEY} (a Mezmo key that may write policies; not shown): ").strip()
+    if not key:
+        raise Failure(
+            f"set {ADMIN_KEY} to a Mezmo key that may read and write Governance policies."
+            " policy uses it and never MEZMO_GOVERNANCE_TOKEN: every governed agent can read that token,"
+            " and with policy rights an agent could remove its own rules"
+        )
+    return key
+
+
+def policy_base(url: Optional[str]) -> str:
+    """--url, else MEZMO_GOVERNANCE_URL with the authorize path swapped for the policy API's, else Mezmo's."""
+    base = url or POLICY_URL
+    hook_url = (os.environ.get("MEZMO_GOVERNANCE_URL") or "").strip()
+    if not url and hook_url:
+        parsed = urlparse(hook_url)
+        if not parsed.path.endswith(mock_governance.PATH):
+            raise Failure(f"MEZMO_GOVERNANCE_URL {doctor.shown_url(hook_url)} does not end in {mock_governance.PATH}; pass --url BASE")
+        path = parsed.path[: -len(mock_governance.PATH)] + mock_governance.API
+        base = urlunparse(parsed._replace(path=path, query="", fragment=""))
+    base = base.rstrip("/")
+    problem = doctor.url_problem(base)
+    if problem:
+        raise Failure(f"{doctor.shown_url(base)} {problem}")
+    return base
+
+
+def api(what: str, key: str, method: str, url: str, body: Any = None) -> tuple:
+    """(status, JSON body) of one policy API call. No answer raises Failure: the result is unknown."""
+    data = None if body is None else json.dumps(body).encode()
+    headers = {"Authorization": key if key.lower().startswith(("token ", "bearer ")) else f"Token {key}", "Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    path = urlparse(url).path
+    try:
+        with build_opener(doctor.hook.RefuseRedirect).open(Request(url, data, headers, method=method), timeout=doctor.REQUEST_SECONDS) as response:
+            status, raw = response.status, response.read()
+    except HTTPError as error:
+        status, raw = error.code, error.read()
+    except (OSError, ValueError) as error:
+        raise Failure(f"{what}: {method} {path} got no answer ({error}); its result is unknown") from error
+    try:
+        parsed = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        parsed = {}
+    return status, as_dict(parsed)
+
+
+def answer(call: tuple, want: int, what: str) -> dict:
+    status, body = call
+    if status != want:
+        code = f" {body['code']}" if body.get("code") else ""
+        raise Failure(f"{what}: HTTP {status}{code}: {body.get('message') or body.get('error') or 'no detail'}")
+    return body
+
+
+def listed(base: str, key: str, path: str, what: str) -> list:
+    """Every item of a list, following meta.page.next."""
+    items = []
+    url = f"{base}{path}?limit={PAGE_LIMIT}" if path == "/policy" else base + path
+    while True:
+        body = answer(api(what, key, "GET", url), 200, what)
+        items += as_list(body.get("data"))
+        after = parse_qs(urlparse(str(as_dict(as_dict(body.get("meta")).get("page")).get("next") or "")).query).get("after")
+        if not after:
+            return items
+        url = f"{base}{path}?limit={PAGE_LIMIT}&after={quote(after[0])}"
+
+
+def matches(condition: Any, value: str) -> bool:
+    condition = as_dict(condition)
+    op, want = condition.get("op", "eq"), condition.get("value")
+    return (op == "eq" and want == value) or (op == "in" and isinstance(want, list) and value in want)
+
+
+def covering(rules: list, namespace: str, tool: str) -> Optional[dict]:
+    """The first rule naming the tool by eq or in, with no namespace or the agent's, and no argument checks."""
+    for rule in rules:
+        definition = as_dict(as_dict(rule).get("definition"))
+        space = definition.get("namespace")
+        if matches(definition.get("tool"), tool) and (not space or matches(space, namespace)) and not definition.get("args"):
+            return rule
+    return None
+
+
+def condition_text(condition: Any) -> str:
+    condition = as_dict(condition)
+    value = condition.get("value")
+    return f"{condition.get('op', 'eq')} {', '.join(map(str, value)) if isinstance(value, list) else value}"
+
+
+def rule_text(definition: dict) -> str:
+    """'<recourse> <namespace or *> tool <op> <value>: <message>', from an authored rule."""
+    space = as_dict(definition.get("namespace"))
+    shown_space = "*" if not space else str(space.get("value")) if space.get("op", "eq") == "eq" else condition_text(space)
+    tool = condition_text(definition["tool"]) if definition.get("tool") else "*"
+    checks = f" args {len(definition['args'])}" if definition.get("args") else ""
+    return f"{definition.get('recourse')} {shown_space} tool {tool}{checks}: {definition.get('error_message') or '-'}"
+
+
+def kept_text(rule: Any) -> str:
+    return f"{rule_text(as_dict(as_dict(rule).get('definition')))} (rule_id {as_dict(rule).get('rule_id')})"
+
+
+def assigned(name: str, records: list, policies: list) -> tuple:
+    """The policies of the Mezmo agents whose Runtime Name is the agent's, or ([], why not)."""
+    ids = {str(as_dict(record).get("policy_id")) for record in records if as_dict(record).get("runtime_name") == name}
+    if not ids:
+        return [], f"no Mezmo agent has Runtime Name {name}"
+    found = [policy for policy in policies if str(as_dict(policy).get("policy_id")) in ids]
+    return found, "" if found else "its Mezmo agent has no policy that this key can read"
+
+
+def starter_rules(rules: list, names: list) -> list:
+    """The starter rules, each listing the agents' tools that no rule covers yet."""
+    added = []
+    for kind, fields in STARTER.items():
+        tools = [getattr(AGENTS[name], kind) for name in names if not covering(rules, AGENTS[name].namespace, getattr(AGENTS[name], kind))]
+        if tools:
+            added.append({**fields, "tool": {"op": "in", "value": list(dict.fromkeys(tools))}})
+    return added
+
+
+def draft_of(policy: dict) -> str:
+    draft = policy.get("draft")
+    return str((as_dict(draft).get("draft_id") if isinstance(draft, dict) else draft) or "")
+
+
+def policy_show(records: list, policies: list) -> int:
+    for record in map(as_dict, records):
+        print(f"agent   {record.get('name')}  runtime {record.get('runtime_name')}  policy {record.get('policy_id') or '-'}", flush=True)
+    if not records:
+        print("agent   none in Mezmo", flush=True)
+    for policy in map(as_dict, policies):
+        draft = f", draft {draft_of(policy)} open" if draft_of(policy) else ""
+        print(f"policy  {policy.get('name')} ({policy.get('policy_id')}){draft}", flush=True)
+        for rule in as_list(policy.get("rules")):
+            print(f"  rule     {kept_text(rule)}", flush=True)
+        default = as_dict(policy.get("default_action"))
+        print(f"  default  {default.get('recourse')}: {default.get('error_message') or '-'}", flush=True)
+    for name in [name for name in AGENTS if installed_at(name)]:
+        agent = AGENTS[name]
+        found, why = assigned(name, records, policies)
+        if not found:
+            print(f"cover   {name}: {why}", flush=True)
+        for policy in found:
+            parts = []
+            for kind in STARTER:
+                tool = getattr(agent, kind)
+                rule = covering(as_list(policy.get("rules")), agent.namespace, tool)
+                parts.append(f"{kind} {tool} " + (f"covered ({rule.get('recourse')}, rule_id {rule.get('rule_id')})" if rule else "not covered"))
+            print(f"cover   {name} in {policy.get('name')}: {'; '.join(parts)}", flush=True)
+    return 0
+
+
+def write_rules(base: str, key: str, policy: dict, names: list) -> tuple:
+    """Open a draft, write the kept rules plus the starter rules, accept it; on a failure, delete the draft.
+
+    Returns (added, kept). A run stopped between steps leaves the draft open, and the next run stops on it.
+    """
+    root = f"{base}/policy/{quote(str(policy.get('policy_id')), safe='')}"
+    if draft_of(policy):
+        raise Failure(f"draft {draft_of(policy)} is already open on this policy; finish or delete it in Mezmo, then run this again")
+    status, body = api("open a draft", key, "POST", f"{root}/draft", {})
+    if status == 200:
+        raise Failure(
+            f"Mezmo handed back draft {as_dict(body.get('data')).get('draft_id')}, which was already open;"
+            " finish or delete it in Mezmo, then run this again"
+        )
+    draft = as_dict(answer((status, body), 201, "open a draft").get("data"))
+    draft_id = str(draft.get("draft_id") or "")
+    if not draft_id:
+        raise Failure("Mezmo opened a draft but sent no draft_id; finish or delete it in Mezmo")
+    try:
+        rules = as_list(draft.get("rules"))
+        kept = [{**as_dict(rule.get("definition")), "rule_id": rule.get("rule_id")} for rule in map(as_dict, rules)]
+        added = starter_rules(rules, names)
+        content = {"name": draft.get("name"), "default_action": draft.get("default_action"), "rules": kept + added}
+        # Mezmo clears a description the write leaves out.
+        if draft.get("description"):
+            content["description"] = draft["description"]
+        answer(api("write the draft", key, "PUT", f"{root}/draft/{quote(draft_id, safe='')}", content), 200, "write the draft")
+        answer(api("accept the draft", key, "PATCH", root, {"draft_id": draft_id}), 200, "accept the draft")
+    except Failure as error:
+        try:
+            status, _ = api("delete the draft", key, "DELETE", f"{root}/draft/{quote(draft_id, safe='')}")
+            undone = "deleted the draft" if status in (200, 204) else f"could not delete draft {draft_id} (HTTP {status}); delete it in Mezmo"
+        except Failure as cause:
+            undone = f"could not delete draft {draft_id} ({cause}); delete it in Mezmo"
+        raise Failure(f"{error}; {undone}. Run ./mezmo-governance policy show to see the rules now") from error
+    return added, kept
+
+
+def policy_apply(base: str, key: str, records: list, policies: list, names: list, yes: bool) -> int:
+    failed = False
+    plans: dict = {}
+    for name in names:
+        found, why = assigned(name, records, policies)
+        if not found:
+            print(f"FAIL  {name}: {why}; register it in Mezmo with that Runtime Name", flush=True)
+            failed = True
+        for policy in found:
+            plans.setdefault(str(policy.get("policy_id")), (policy, []))[1].append(name)
+    planned = False
+    for policy, chosen in plans.values():
+        rules = as_list(policy.get("rules"))
+        added = starter_rules(rules, chosen)
+        print(f"policy  {policy.get('name')} ({policy.get('policy_id')}) for {', '.join(chosen)}:", flush=True)
+        for rule in rules:
+            print(f"  keep     {kept_text(rule)}", flush=True)
+        for rule in added:
+            print(f"  {'add' if yes else 'would add':<8} {rule_text(rule)}", flush=True)
+        if not added:
+            print(f"ok    {policy.get('name')}: a rule covers each shell and read tool, nothing to add", flush=True)
+            continue
+        planned = True
+        if not yes:
+            continue
+        try:
+            added, kept = write_rules(base, key, policy, chosen)
+        except Failure as error:
+            print(f"FAIL  {policy.get('name')}: {error}", flush=True)
+            failed = True
+            continue
+        print(f"ok    {policy.get('name')}: {len(added)} rules added, {len(kept)} kept", flush=True)
+    if planned and not yes:
+        print("Nothing changed. Run again with --yes to add these rules through a Mezmo draft.", flush=True)
+    return 1 if failed else 0
+
+
+def policy_args(args: list) -> tuple:
+    action = args.pop(0) if args else ""
+    if action not in ("show", "apply"):
+        raise Usage("policy: say show or apply")
+    url = None
+    if "--url" in args:
+        at = args.index("--url")
+        if at + 1 == len(args):
+            raise Usage("policy: --url needs the policy API base URL")
+        url = args.pop(at + 1)
+        args.pop(at)
+    flags = [arg for arg in args if arg.startswith("-")]
+    names = [arg for arg in args if not arg.startswith("-")]
+    unknown = set(flags) - ({"--yes"} if action == "apply" else set())
+    if unknown:
+        raise Usage(f"policy {action}: unknown option {' '.join(sorted(unknown))}")
+    if action == "show" and names:
+        raise Usage("policy show: takes no agent names")
+    pick(names, False, "policy")
+    return action, names, "--yes" in flags, url
+
+
+def policy(action: str, names: list, yes: bool, url: Optional[str]) -> int:
+    try:
+        base = policy_base(url)
+        key = admin_key()
+        records = listed(base, key, "/agent", "read agents")
+        policies = listed(base, key, "/policy", "read policies")
+        if action == "show":
+            return policy_show(records, policies)
+        chosen = names or [name for name in AGENTS if installed_at(name)]
+        if not chosen:
+            print("ok    policy apply: no agent is installed; name the agents to add rules for", flush=True)
+            return 0
+        return policy_apply(base, key, records, policies, chosen, yes)
+    except Failure as error:
+        print(f"FAIL  policy {action}: {error}", flush=True)
+        return 1
+
+
 FLAGS = {
     "agents": set(),
     "status": set(),
@@ -799,19 +1095,24 @@ def main(argv: Optional[list] = None) -> int:
     if verb == "mock":
         return mock_governance.main(args)
     try:
-        if verb not in FLAGS:
-            raise Usage(f"unknown command: {verb}")
-        flags = [arg for arg in args if arg.startswith("-")]
-        names = [arg for arg in args if not arg.startswith("-")]
-        if set(flags) - FLAGS[verb]:
-            raise Usage(f"{verb}: unknown option {' '.join(sorted(set(flags) - FLAGS[verb]))}")
-        if verb in ("install", "uninstall") and not names and "--all" not in flags:
-            raise Usage(f"{verb}: name at least one agent, or pass --all")
-        chosen = pick(names, "--all" in flags, verb)
+        if verb == "policy":
+            parsed = policy_args(args)
+        else:
+            if verb not in FLAGS:
+                raise Usage(f"unknown command: {verb}")
+            flags = [arg for arg in args if arg.startswith("-")]
+            names = [arg for arg in args if not arg.startswith("-")]
+            if set(flags) - FLAGS[verb]:
+                raise Usage(f"{verb}: unknown option {' '.join(sorted(set(flags) - FLAGS[verb]))}")
+            if verb in ("install", "uninstall") and not names and "--all" not in flags:
+                raise Usage(f"{verb}: name at least one agent, or pass --all")
+            chosen = pick(names, "--all" in flags, verb)
     except Usage as error:
         print(f"mezmo-governance: {error}\n", file=sys.stderr)
         print(HELP, end="", file=sys.stderr)
         return 2
+    if verb == "policy":
+        return policy(*parsed)
     if verb in ("agents", "status"):
         return agents(chosen)
     if verb == "doctor":
