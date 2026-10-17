@@ -69,7 +69,7 @@ test("execute.before rejects when Mezmo is unreachable", async () => {
     async (hooks) => {
       await assert.rejects(
         hooks["execute.before"]({ ...BASE, input: { command: "ls" } }),
-        /could not authorize this exact tool call, so OpenCode blocked it: .*ECONNREFUSED/,
+        /could not authorize this exact tool call, so OpenCode blocked it: Mezmo Governance is unavailable$/,
       );
     },
   );

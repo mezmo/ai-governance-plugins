@@ -60,7 +60,7 @@ arguments, and they win over the variables.
 
 ### TypeScript
 
-Node 22+. Copy `typescript/client.ts` and `typescript/mezmo-governance.ts`
+Node 22.18+. Copy `typescript/client.ts` and `typescript/mezmo-governance.ts`
 into your project:
 
 ```typescript
@@ -87,6 +87,10 @@ your own, append to the lists instead of replacing them:
 hooks = mezmo_governance_hooks()
 hooks["PreToolUse"].append(HookMatcher(matcher="Bash", hooks=[my_check]))
 ```
+
+No other hook, and no `canUseTool` (`can_use_tool` in Python), may rewrite the
+tool input after approval. Mezmo approved the input it saw: a later
+`updatedInput` runs a call Mezmo never saw, and nothing denies it.
 
 ## How it fails closed
 

@@ -49,11 +49,34 @@ await agent.generate(prompt, {
     ...mezmoGovernanceHooks,
     async beforeToolCall(ctx) {
       const mine = await myBeforeToolCall(ctx); // may return { proceed: false, output }
-      return mine ?? mezmoGovernanceHooks.beforeToolCall(ctx);
+      if (mine?.proceed === false) return mine;
+      return mezmoGovernanceHooks.beforeToolCall(ctx);
     },
   },
 });
 ```
+
+Only a `proceed: false` from your hook may skip the governance hook. Any other
+return value still goes on to Mezmo.
+
+### Give every agent the hooks
+
+The hooks belong to one `Agent`. A sub-agent that another agent calls runs its
+tools under its own hooks, not its caller's. Pass `hooks: mezmoGovernanceHooks`
+to every agent, sub-agents included.
+
+### Calls the hooks never see
+
+These run without asking Mezmo:
+
+- Provider-executed tools, such as a model provider's built-in web search, and
+  client tools with no `execute`: Mastra does not execute them, so no hook
+  fires.
+- A workflow step, or any other code, that calls a tool's `execute` directly:
+  the hooks run only in an agent's tool loop.
+
+Keep such tools away from agents that need the gate, or gate them in your own
+code.
 
 `createMezmoGovernanceHooks()` builds a fresh hook pair if you need to inject a
 custom fetch in tests.
@@ -64,7 +87,7 @@ approval UI. These hooks talk to Mezmo.
 ## Verify it works
 
 From the folder that holds `mezmo-governance.ts`, ask the hook about one call
-(Node 22+):
+(Node 22.18+):
 
 ```bash
 node --input-type=module -e 'import { mezmoGovernanceHooks } from "./mezmo-governance.ts";
@@ -92,7 +115,9 @@ Mastra has no built-in shell or file tools: `tool_name` is the id you gave
 `request_id` is `mastra:<session_id>:<toolCallId>#<digest>`.
 `<digest>` hashes the tool and its arguments, so an edited call gets its own
 decision ([identity](../docs/protocol.md#identity)). `session_id` is the memory
-`threadId` when present, otherwise the workflow `runId`, then `agentId`. A
+`threadId` when present, otherwise the workflow `runId`. Without either it is
+`agentId` plus a random id made once per process, so an approval never carries
+over to the next run. A
 call without a `toolCallId` (outside an agent loop) gets a random id, so it
 never reuses an earlier decision.
 
@@ -112,7 +137,7 @@ is still pending, the hook also skips the tool.
 
 ## Tests
 
-Node 22+ (type stripping):
+Node 22.18+ (type stripping):
 
 ```bash
 node --test test/*.test.ts

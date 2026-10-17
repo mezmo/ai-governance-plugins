@@ -98,7 +98,7 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ## Verify it works
 
 1. From the plugin directory, check the URL, the key and your policy. This
-   prints the decision for one shell call, or why there is none (Node 22+):
+   prints the decision for one shell call, or why there is none (Node 22.18+):
 
    ```bash
    node --input-type=module -e 'import { approvalPayload, authorize } from "./mezmo-governance/client.ts";
@@ -158,7 +158,7 @@ throw and stop the call.
 
 ## Tests
 
-Node 22+:
+Node 22.18+:
 
 ```bash
 node --test test/*.test.ts

@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -78,16 +78,32 @@ function requiredEnv(name: string): string {
   return value;
 }
 
+// The token travels in a header: plain http only to this machine, such as
+// tools/mock_governance.py.
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
 export function authorizeUrl(): string {
-  return requiredEnv("MEZMO_GOVERNANCE_URL");
+  const value = requiredEnv("MEZMO_GOVERNANCE_URL");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new GovernanceError("MEZMO_GOVERNANCE_URL is not a valid URL");
+  }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) {
+    throw new GovernanceError("MEZMO_GOVERNANCE_URL must use https, or http to this machine");
+  }
+  return value;
 }
 
 export function authorizationHeader(): string {
   const key = requiredEnv("MEZMO_GOVERNANCE_TOKEN");
-  if (/^(token|bearer) /i.test(key)) {
-    return key;
+  const scheme = /^(token|bearer) /i.exec(key)?.[0] ?? "";
+  // fetch quotes a header value it refuses, so no error may reach it.
+  if (!/^[\x21-\x7e]+$/.test(key.slice(scheme.length))) {
+    throw new GovernanceError("MEZMO_GOVERNANCE_TOKEN must be printable ASCII without spaces");
   }
-  return `Token ${key}`;
+  return scheme ? key : `Token ${key}`;
 }
 
 function positiveSeconds(name: string, fallback: number): number {
@@ -257,9 +273,11 @@ export async function httpJson(
     if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
       throw new TimeoutError("Mezmo Governance request timed out");
     }
-    throw new GovernanceError(
-      `Mezmo Governance is unavailable: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    if (error instanceof GovernanceError) {
+      throw error;
+    }
+    // A fetch error can quote the token or a user:pass URL: say nothing of it.
+    throw new GovernanceError("Mezmo Governance is unavailable");
   } finally {
     clearTimeout(timer);
   }
@@ -439,11 +457,22 @@ export function resultFailed(value: unknown): boolean {
   if (record.isError === true || record.is_error === true) {
     return true;
   }
-  return typeof record.exit_code === "number" && record.exit_code !== 0;
+  const exitCode = record.exit_code ?? record.exitCode;
+  return typeof exitCode === "number" && exitCode !== 0;
 }
 
+// The log holds tool output: only its owner may read it.
 export async function appendAudit(record: Record<string, unknown>): Promise<void> {
   const path = auditLogPath();
-  await mkdir(dirname(path), { recursive: true });
-  await appendFile(path, `${JSON.stringify(record)}\n`, "utf8");
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const handle = await open(path, "a", 0o600);
+  try {
+    // An older version created the log 0644.
+    if ((await handle.stat()).mode & 0o077) {
+      await handle.chmod(0o600);
+    }
+    await handle.appendFile(`${JSON.stringify(record)}\n`, "utf8");
+  } finally {
+    await handle.close();
+  }
 }

@@ -18,11 +18,11 @@ type Handler = (event: any, ctx: any) => Promise<unknown> | unknown;
 type FakeFetch = (url: string, init?: { body?: string }) => Promise<unknown>;
 
 // A fake Pi runtime: records handlers by event name, like ExtensionAPI.on.
-function fakePi() {
+function fakePi(sessionManager: Record<string, unknown> = { getSessionId: () => "sess-1" }) {
   const handlers = new Map<string, Handler>();
   const statuses: Array<[string, string | undefined]> = [];
   const ctx = {
-    sessionManager: { getSessionId: () => "sess-1" },
+    sessionManager,
     ui: { setStatus: (id: string, text: string | undefined) => statuses.push([id, text]) },
   };
   mezmoGovernance({
@@ -87,6 +87,22 @@ test("tool_call returns nothing when Mezmo approves", async () => {
   );
   assert.equal(sent.request_id, `pi:sess-1:call-1#${callDigest("bash", { command: "ls" })}`);
   assert.deepEqual(sent.items[0].arguments, { command: "ls" });
+});
+
+test("without a Pi session id, the session is one random id per process", async () => {
+  const sent: string[] = [];
+  await withRuntime(
+    async (_url, init) => {
+      sent.push(JSON.parse(String(init?.body)).request_id);
+      return { status: 200, text: async () => '{"approved":true}' };
+    },
+    async () => {
+      await fakePi({}).toolCall({ toolName: "bash", toolCallId: "call-1", input: { command: "ls" } });
+      await fakePi({ getSessionId: () => " " }).toolCall({ toolName: "bash", toolCallId: "call-1", input: { command: "ls" } });
+    },
+  );
+  assert.match(sent[0], /^pi:ephemeral-[0-9a-f]{16}:call-1#/);
+  assert.equal(sent[1], sent[0]);
 });
 
 test("tool_call blocks with the reason when Mezmo denies", async () => {
