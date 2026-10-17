@@ -124,19 +124,12 @@ them in your shell profile, then quit and start Windsurf; this is not verified
 for Windsurf. Without them the hook denies every call and names the missing
 variable.
 
-### Windows
+### Windows is not supported
 
-Windsurf runs `command` with `powershell -Command` on Windows when the entry
-has no `powershell` field. PowerShell cannot parse the bash guard, exits 1,
-and the action runs. On Windows, add a `powershell` field to each `pre_*`
-entry, with an absolute path and the guard in PowerShell form:
-
-```json
-"powershell": "py -3 C:\\Users\\<you>\\.codeium\\windsurf\\hooks\\mezmo_governance_hook.py; if ($LASTEXITCODE -ne 0) { exit 2 }"
-```
-
-Not run on Windows. In PowerShell, set the variables with
-`$env:MEZMO_GOVERNANCE_URL = "..."` and `$env:MEZMO_GOVERNANCE_TOKEN = "..."`.
+On Windows, Windsurf runs `command` with `powershell -Command`. PowerShell
+cannot parse the bash `|| exit 2` guard and exits 1, so the action runs: the
+hook would fail open. `./mezmo-governance install windsurf` refuses on
+Windows, and changes nothing.
 
 ## Tool names in policy
 

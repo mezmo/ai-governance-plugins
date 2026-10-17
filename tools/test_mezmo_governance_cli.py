@@ -614,6 +614,18 @@ class InstallTests(CliTestCase):
         result = self.cli("install", "windsurf")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_windsurf_install_refuses_on_windows(self) -> None:
+        # Windsurf runs the bash guard with PowerShell on Windows, which cannot parse it, so the action would run.
+        sys.path.insert(0, str(TOOLS))
+        self.addCleanup(sys.path.remove, str(TOOLS))
+        import mezmo_governance_cli as cli
+
+        with mock.patch.dict(os.environ, self.env, clear=True), mock.patch.object(cli.sys, "platform", "win32"):
+            with self.assertRaisesRegex(cli.Failure, "Windows is not supported") as caught:
+                cli.INSTALLERS["windsurf"].install()
+        self.assertIn("Nothing changed", str(caught.exception))
+        self.assertFalse((self.tmp / "home/.codeium").exists())
+
     def test_windsurf_reinstall_adds_each_missing_mezmo_entry(self) -> None:
         # Each pre_* event gates its own action; one Mezmo entry does not cover the others.
         path = self.tmp / "home/.codeium/windsurf/hooks.json"

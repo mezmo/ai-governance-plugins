@@ -707,6 +707,11 @@ def windsurf() -> Installer:
     )
 
     def install() -> list:
+        if sys.platform == "win32":
+            raise Failure(
+                "Windows is not supported: Windsurf runs the hook command with PowerShell there, which cannot parse"
+                " the || exit 2 guard, so a hook crash would let the action run. Nothing changed"
+            )
         path = doctor.windsurf_dir() / "hooks.json"
         problem = doctor.windsurf_problem(doctor.read_json(path)) if path.exists() else None
         if problem:
