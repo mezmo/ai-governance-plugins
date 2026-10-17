@@ -157,6 +157,11 @@ def droid_dir() -> Path:
     return env_dir("FACTORY_HOME_OVERRIDE", home()) / ".factory"
 
 
+def windsurf_dir() -> Path:
+    # Windsurf has no override; Windsurf Next and Insiders use windsurf-next and windsurf-insiders.
+    return home() / ".codeium" / "windsurf"
+
+
 def shown(path: Path) -> str:
     text = str(path)
     root = str(home())
@@ -932,6 +937,65 @@ def check_droid(report: Report, version: Optional[tuple]) -> Optional[list]:
     return smokes
 
 
+# The hook events Windsurf 1.126.0 knows (exa/hooks.ActionFromString), and the four that gate an action.
+WINDSURF_EVENTS = (
+    "pre_read_code", "post_read_code", "pre_write_code", "post_write_code",
+    "pre_mcp_tool_use", "post_mcp_tool_use", "pre_run_command", "post_run_command",
+    "pre_user_prompt", "post_cascade_response", "post_setup_worktree",
+    "post_cascade_response_with_transcript",
+)
+WINDSURF_GATES = ("pre_run_command", "pre_read_code", "pre_write_code", "pre_mcp_tool_use")
+
+
+def windsurf_problem(config: Any) -> Optional[str]:
+    """Why Windsurf 1.126.0 drops this hooks.json whole (exa/hooks.Validate), or None."""
+    if not isinstance(config, dict):
+        return "it is not a JSON object"
+    for key in config:
+        if key != "hooks":
+            return f"it has the top-level key {key}, and Windsurf allows only hooks"
+    hooks = config.get("hooks", {})
+    if not isinstance(hooks, dict):
+        return 'its "hooks" is not an object'
+    for event, entries in hooks.items():
+        if event.lower() not in WINDSURF_EVENTS:
+            return f"it has the event {event}, which Windsurf does not know"
+        if not isinstance(entries, list):
+            return f"its {event} is not a list"
+        for index, entry in enumerate(entries):
+            if not any(isinstance(as_dict(entry).get(key), str) and as_dict(entry)[key] for key in ("command", "powershell")):
+                return f"its {event} entry {index} has no command or powershell string"
+    return None
+
+
+def check_windsurf(report: Report, version: Optional[tuple]) -> Optional[list]:
+    path = windsurf_dir() / "hooks.json"
+    config = read_json(path)
+    hooks = as_dict(as_dict(config).get("hooks"))
+    if not any(mezmo_handlers(hooks.get(gate)) for gate in WINDSURF_GATES):
+        return None
+    problem = windsurf_problem(config)
+    if problem:
+        report.line("FAIL", "Windsurf hooks", f"Windsurf drops {shown(path)} because {problem}, {UNGOVERNED}", "fix the file as in windsurf/README.md")
+    event = {
+        "agent_action_name": "pre_run_command",
+        "trajectory_id": "doctor",
+        "execution_id": "doctor",
+        "tool_info": {"command_line": "echo hi", "cwd": "."},
+    }
+    smokes = []
+    for gate in WINDSURF_GATES:
+        found = mezmo_handlers(hooks.get(gate))
+        if not found:
+            report.line("FAIL", "Windsurf hook", f"no Mezmo hook on {gate}, so those actions run ungoverned", "add it as in windsurf/hooks.example.json")
+        for *_, handler in found:
+            command = str(handler.get("command"))
+            report.line("ok", "Windsurf hook", f"{gate} hook in {shown(path)}")
+            fail_closed(report, "Windsurf hook", "exit 2" in command, "|| exit 2 guard", "windsurf/hooks.example.json")
+            smokes.append(Smoke("Windsurf", hook_path(command), event))
+    return smokes
+
+
 class Agent(NamedTuple):
     name: str
     binary: str
@@ -956,6 +1020,8 @@ AGENTS = (
     Agent("Pi", "pi", ("1.3.0",), None, "pi", check_pi, "pi", "bash", "read"),
     # Droid 0.244.0 was read from its binary, not run.
     Agent("Droid", "droid", ("0.244.0",), None, "droid", check_droid, "droid", "Execute", "Read"),
+    # Windsurf 1.126.0 was read from its binary, not run.
+    Agent("Windsurf", "devin-desktop", ("1.126.0",), None, "windsurf", check_windsurf, "windsurf", "run_command", "read_code"),
 )
 
 
@@ -1033,6 +1099,7 @@ def install_copies() -> dict:
         copilot_dir() / "hooks" / HOOK_FILE: "copilot",
         goose_dir() / HOOK_FILE: "goose",
         droid_dir() / "hooks" / HOOK_FILE: "droid",
+        windsurf_dir() / "hooks" / HOOK_FILE: "windsurf",
     }
 
 

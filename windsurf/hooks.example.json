@@ -1,0 +1,44 @@
+{
+  "hooks": {
+    "pre_run_command": [
+      {
+        "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.codeium/windsurf/hooks/mezmo_governance_hook.py}\" || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
+      }
+    ],
+    "pre_read_code": [
+      {
+        "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.codeium/windsurf/hooks/mezmo_governance_hook.py}\" || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
+      }
+    ],
+    "pre_write_code": [
+      {
+        "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.codeium/windsurf/hooks/mezmo_governance_hook.py}\" || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
+      }
+    ],
+    "pre_mcp_tool_use": [
+      {
+        "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.codeium/windsurf/hooks/mezmo_governance_hook.py}\" || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
+      }
+    ],
+    "post_run_command": [
+      {
+        "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.codeium/windsurf/hooks/mezmo_governance_hook.py}\""
+      }
+    ],
+    "post_read_code": [
+      {
+        "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.codeium/windsurf/hooks/mezmo_governance_hook.py}\""
+      }
+    ],
+    "post_write_code": [
+      {
+        "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.codeium/windsurf/hooks/mezmo_governance_hook.py}\""
+      }
+    ],
+    "post_mcp_tool_use": [
+      {
+        "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.codeium/windsurf/hooks/mezmo_governance_hook.py}\""
+      }
+    ]
+  }
+}

@@ -724,6 +724,55 @@ class OtherHookAgentTests(DoctorTestCase):
                 self.assertTrue(shown[0].startswith(status), result.stdout)
                 self.assertIn(words, shown[0])
 
+    def windsurf_config(self, suffix: str, events: tuple = ("pre_run_command", "pre_read_code", "pre_write_code", "pre_mcp_tool_use")) -> dict:
+        command = 'python3 "${MEZMO_GOVERNANCE_HOOK:-$HOME/.codeium/windsurf/hooks/mezmo_governance_hook.py}"'
+        return {"hooks": {event: [{"command": command + suffix}] for event in events}}
+
+    def test_windsurf_needs_the_guard(self) -> None:
+        self.agent("devin-desktop", "1.126.0")
+        self.copy_hook("windsurf", ".codeium/windsurf/hooks/mezmo_governance_hook.py")
+        for suffix, status in ((" || { echo 'failed' >&2; exit 2; }", "ok"), ("", "FAIL")):
+            with self.subTest(guard=bool(suffix)):
+                self.write(".codeium/windsurf/hooks.json", self.windsurf_config(suffix))
+                result = self.doctor()
+                self.assertTrue(self.lines(result, "Windsurf hook")[1].startswith(status), result.stdout)
+                self.assertStatus(result, "Windsurf smoke", "ok")
+                self.assertTrue(self.lines(result, "Windsurf")[0].startswith("ok    Windsurf: 1.126.0"), result.stdout)
+
+    def test_windsurf_names_each_action_its_hook_does_not_gate(self) -> None:
+        self.agent("devin-desktop", "1.126.0")
+        self.copy_hook("windsurf", ".codeium/windsurf/hooks/mezmo_governance_hook.py")
+        self.write(".codeium/windsurf/hooks.json", self.windsurf_config(" || exit 2", ("pre_run_command", "pre_read_code")))
+        result = self.doctor()
+        failed = [line for line in self.lines(result, "Windsurf hook") if line.startswith("FAIL")]
+        self.assertEqual(len(failed), 2, result.stdout)
+        self.assertIn("no Mezmo hook on pre_write_code", failed[0])
+        self.assertIn("no Mezmo hook on pre_mcp_tool_use", failed[1])
+
+    def test_windsurf_without_a_command_hook_is_still_checked(self) -> None:
+        self.agent("devin-desktop", "1.126.0")
+        self.copy_hook("windsurf", ".codeium/windsurf/hooks/mezmo_governance_hook.py")
+        self.write(".codeium/windsurf/hooks.json", self.windsurf_config(" || exit 2", ("pre_read_code",)))
+        result = self.doctor()
+        failed = [line for line in self.lines(result, "Windsurf hook") if line.startswith("FAIL")]
+        self.assertEqual(len(failed), 3, result.stdout)
+        self.assertIn("no Mezmo hook on pre_run_command", failed[0])
+        self.assertStatus(result, "Windsurf smoke", "ok")
+
+    def test_windsurf_fails_a_hooks_json_windsurf_would_drop(self) -> None:
+        # Windsurf 1.126.0 drops the whole file when it fails its check, so no hook in it runs.
+        self.agent("devin-desktop", "1.126.0")
+        self.copy_hook("windsurf", ".codeium/windsurf/hooks/mezmo_governance_hook.py")
+        config = self.windsurf_config(" || exit 2")
+        for extra, words in (({"version": 1}, "top-level key version"), ({"hooks": {**config["hooks"], "on_stop": []}}, "event on_stop")):
+            with self.subTest(extra=extra):
+                self.write(".codeium/windsurf/hooks.json", {**config, **extra})
+                result = self.doctor()
+                shown = self.lines(result, "Windsurf hooks")
+                self.assertTrue(shown[0].startswith("FAIL"), result.stdout)
+                self.assertIn(words, shown[0])
+                self.assertIn("so every tool call runs ungoverned", shown[0])
+
     def test_gemini_needs_the_guard(self) -> None:
         self.agent("gemini", "0.64.0")
         self.copy_hook("gemini-cli", ".gemini/hooks/mezmo_governance_hook.py")

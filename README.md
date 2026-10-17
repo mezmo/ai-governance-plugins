@@ -6,7 +6,7 @@ denies the call, or never answers, the tool does not run.
 To get access to Mezmo Governance, see [mezmo.com/platform/governance](https://www.mezmo.com/platform/governance).
 
 ```text
-Claude Code / Claude Agent SDK / Codex / Cursor / Gemini CLI / Copilot / Goose / Droid / Pi / OpenCode / LangChain / OpenAI Agents SDK / Mastra
+Claude Code / Claude Agent SDK / Codex / Cursor / Gemini CLI / Copilot / Goose / Droid / Windsurf / Pi / OpenCode / LangChain / OpenAI Agents SDK / Mastra
         │  before the tool runs
         ▼
   plugin  ──POST /governance/workflow/authorize──►  Mezmo Governance
@@ -117,11 +117,12 @@ can watch the plugin wait and then deny.
    version, the user-level install and its fail-closed setting. An install the
    agent has turned off or does not trust fails: a disabled Claude Code plugin,
    Gemini CLI extension or hook, or Goose plugin, and a Codex hook whose
-   trust Codex does not list as current, and Droid's `hooksDisabled`. A Codex or Gemini CLI hook installed
+   trust Codex does not list as current, Droid's `hooksDisabled`, and a Windsurf
+   `hooks.json` that Windsurf would drop. A Codex or Gemini CLI hook installed
    before the guard learned to keep a deliberate block quiet gets a warning
    with the reinstall step. It also runs
    each installed Python hook against a closed port and checks that the hook
-   denies. A Codex, Cursor, Copilot, Goose or Droid hook copy that differs from this
+   denies. A Codex, Cursor, Copilot, Goose, Droid or Windsurf hook copy that differs from this
    checkout gets a warning to run `install` again. It reads the agent configs
    and changes nothing. Each check prints
    one `ok`, `warn`, `FAIL` or `skip` line with a fix, and the exit code is 1
@@ -155,7 +156,7 @@ A policy has its own dialog in Mezmo Governance, in five pages:
    name and, optionally, the tool call's arguments. For a denied call, pick
    an error code and write the message the agent shows. The tool space is
    the plugin's namespace, such as `claude_code`, `codex`, `cursor`,
-   `gemini_cli`, `copilot`, `goose`, `droid`, `opencode` or `pi`, or the MCP server
+   `gemini_cli`, `copilot`, `goose`, `droid`, `windsurf`, `opencode` or `pi`, or the MCP server
    name for an MCP tool. Each adapter README lists its tool names.
 3. **Fallthrough:** what happens to a call that no rule permits:
    **Deny Outright**, **Send for Approval** or **Allow**.
@@ -249,7 +250,7 @@ node for the OpenCode and Pi smoke test.
 `install` writes into each agent's user config folder and honors the agent's
 own override: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`,
 `COPILOT_HOME`, `GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME` (OpenCode),
-`PI_CODING_AGENT_DIR` and `FACTORY_HOME_OVERRIDE` (Droid). Before it edits a JSON file, it saves a copy next to it
+`PI_CODING_AGENT_DIR` and `FACTORY_HOME_OVERRIDE` (Droid); Windsurf has none. Before it edits a JSON file, it saves a copy next to it
 as `<name>.mezmo-backup-<time>` and prints the path. It writes through a
 symlink and keeps the file's mode, such as `0600`. It never writes the
 token. Running it twice changes nothing. Over an older install, it replaces
@@ -276,6 +277,7 @@ exits 1.
 | OpenCode 2.x | copies `opencode/` and names it in `opencode.json` with options; the key stays in a file you write | `opencode plugin add` takes an npm or git package only |
 | Pi | `pi install ./pi` | `pi install --help`: `pi install ./local/path` |
 | Droid | copies the hook, merges `droid/hooks.example.json` into `~/.factory/hooks.json`; refuses, changing nothing, when that would hide hooks Droid reads from `settings.json` or the older `hooks/hooks.json` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
+| Windsurf | copies the hook, merges `windsurf/hooks.example.json` into `~/.codeium/windsurf/hooks.json`; refuses, changing nothing, when Windsurf would drop that file whole | Windsurf reads hooks only from `hooks.json` files |
 
 The Gemini CLI install runs with `GEMINI_CLI_TRUST_WORKSPACE=true` for that
 one command, so Gemini asks nothing and adds no folder to `trustedFolders.json`.
@@ -326,6 +328,7 @@ does not fit your setup.
 | [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | on a crash yes; on a timeout no | copy the script, add `hooks.example.json` to `~/.copilot/hooks/` |
 | [Goose](goose/) | `PreToolUse` plugin hook | yes, with `on_failure: block` | copy the plugin to `~/.agents/plugins/mezmo-governance/` |
 | [Droid](droid/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | copy the script, merge `hooks.example.json` into `~/.factory/hooks.json` |
+| [Windsurf](windsurf/) | `pre_run_command`, `pre_read_code`, `pre_write_code` and `pre_mcp_tool_use` hooks. Partial coverage: grep/find, `write_to_file`, web search, URL reads, git commit, deploy and subagents run ungoverned, and Restricted Mode loads no hooks | on a crash yes (with the `\|\| exit 2` guard); Windsurf sets no hook timeout | copy the script, merge `hooks.example.json` into `~/.codeium/windsurf/hooks.json` |
 | [Pi](pi/) | `tool_call` extension | yes | `pi install ./pi`, or copy the folder to `~/.pi/agent/extensions/` |
 | [OpenCode](opencode/) 1.x and 2.x | `tool.execute.before` plugin | yes | 2.x: copy the folder, name it in `opencode.json` `plugins` with options; 1.x: copy to `~/.config/opencode/plugins/` |
 | [LangChain](langchain/) v1 | `AgentMiddleware` (`wrap_tool_call` and `awrap_tool_call`) | yes | `pip install ./langchain` |
@@ -341,7 +344,7 @@ cannot be reached, or returns something it does not understand.
 
 Before each tool call, the plugin sends Mezmo the tool name and its full
 arguments: the shell command, the file path, and for write tools the file
-content. It also sends the session id and the tool call id (Gemini CLI, Copilot and Droid send a fresh random id per call, because they expose none). Tool results are
+content. It also sends the session id and the tool call id (Gemini CLI, Copilot, Droid and Windsurf send a fresh random id per call, because they expose none). Tool results are
 not sent to Mezmo: post-tool hooks only append a line to a local file.
 
 One exception reaches past Mezmo: the LangChain middleware records each
@@ -363,7 +366,7 @@ out of tool arguments.
 | `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` |
 
 The hook examples set a 600 second hook timeout, so the plugin's own deadline
-ends first and returns a clear deny.
+ends first and returns a clear deny. Windsurf has no hook timeout.
 
 ## Troubleshooting
 
@@ -374,7 +377,7 @@ or Mastra setup, which lives in app code; for those, run
 
 | You see | Cause | Fix |
 | --- | --- | --- |
-| Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice; Copilot: install in `~/.copilot/hooks/`, not `.github/hooks/`; Gemini CLI: use `~/.gemini/settings.json` or trust the folder; Goose: put the plugin in `~/.agents/plugins/` and use no `"*"` matcher; Droid: check the **Effective** tab of `/hooks` and trust the folder |
+| Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice; Copilot: install in `~/.copilot/hooks/`, not `.github/hooks/`; Gemini CLI: use `~/.gemini/settings.json` or trust the folder; Goose: put the plugin in `~/.agents/plugins/` and use no `"*"` matcher; Droid: check the **Effective** tab of `/hooks` and trust the folder; Windsurf: trust the workspace, since no hook loads in Restricted Mode, and run `doctor` |
 | Every call is denied: `MEZMO_GOVERNANCE_URL must be a non-empty string` | the agent did not inherit the variables | export them in the shell that starts the agent, or use the agent's own settings `env` block |
 | `Mezmo Governance returned HTTP 401 EAUTH` | wrong or revoked service account token, or a service account without Governance permissions | give the agent's service account Governance permissions, then copy a fresh token from the service account in Mezmo |
 | `Mezmo Governance returned HTTP 403 ENOAGENT: no agent is registered for these credentials` | Mezmo accepts the token, but no agent uses its service account | register an agent in Mezmo Governance and use the token of the service account that agent uses |
@@ -421,14 +424,14 @@ A local HTTP server stands in for Mezmo. The tests confirm that:
   and negative values are refused;
 - the post-tool event writes an audit line and never blocks;
 - each example config registers every event and blocks on hook failure,
-  including the `|| exit 2` guard for Codex, Gemini CLI and Droid;
+  including the `|| exit 2` guard for Codex, Gemini CLI, Droid and Windsurf;
 - `./mezmo-governance` installs each agent, finds it installed, changes
   nothing on a second install, and on uninstall leaves each config as it was,
   with the user's other entries and a backup; a run stopped between two steps
   is finished by the next one; `--dry-run` changes nothing; the key is in no
   file or output (`tools/test_mezmo_governance_cli.py`, with fake `claude`,
   `gemini` and `pi` binaries);
-- the shared code is identical across the six Python hook adapters, across the
+- the shared code is identical across the seven Python hook adapters, across the
   four `client.ts` copies, and between the LangChain Python client and its
   OpenAI Agents SDK and Claude Agent SDK copies; the Python hooks import on
   Python 3.9.
@@ -448,6 +451,7 @@ one shell call (expected: denied) and one file read (expected: approved):
 | Copilot CLI | 1.0.95, 1.0.98 | pass, with user-level hooks | blocked (1.0.95) |
 | Goose CLI | 1.54.0 | pass | blocked with `on_failure: block`, also on a timeout; runs without it |
 | Droid | 0.244.0, read from its binary, not run | not checked | not checked |
+| Windsurf | 1.126.0 (Devin Desktop 3.10.67), read from its binary, not run | not checked | not checked |
 | OpenCode | 2.0.25 | pass, through the background service with plugin options | not checked |
 | Pi | 1.3.0 | pass | not checked |
 | Mastra | 1.77.0, `generate` and `stream` | pass | not checked |
