@@ -571,7 +571,8 @@ def handle_post_tool_use(event: Mapping[str, Any]) -> None:
 
 
 def deny_output(reason: str) -> dict[str, Any]:
-    return {"decision": "block", "reason": reason}
+    # Goose appends ". Do not retry", so a final period would show twice.
+    return {"decision": "block", "reason": reason.removesuffix(".")}
 
 
 def handle_event(

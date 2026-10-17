@@ -195,7 +195,13 @@ class GooseGovernanceHookTests(unittest.TestCase):
         output = hook.handle_event(hook_event("PreToolUse"), http=http)
 
         self.assertEqual(output["decision"], "block")
-        self.assertIn("Use a canary first.", output["reason"])
+        self.assertIn("Use a canary first", output["reason"])
+
+    def test_the_reason_drops_one_final_period(self) -> None:
+        # Goose appends ". Do not retry" to the reason, so "first." would show "first.. Do not retry".
+        self.assertEqual(hook.deny_output("Use a canary first.")["reason"], "Use a canary first")
+        self.assertEqual(hook.deny_output("Wait...")["reason"], "Wait..")
+        self.assertEqual(hook.deny_output("No reason")["reason"], "No reason")
 
     @patch.dict(os.environ, ENV)
     def test_code_mode_scripts_are_denied_before_mezmo(self) -> None:
@@ -794,7 +800,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             stdout_json(result),
-            deny_schema("Mezmo Governance denied this exact tool call: No."),
+            deny_schema("Mezmo Governance denied this exact tool call: No"),
         )
 
     def test_a_redirect_denies_and_never_sends_the_key_elsewhere(self) -> None:
@@ -822,7 +828,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             stdout_json(result),
-            deny_schema("Mezmo Governance denied this exact tool call: No."),
+            deny_schema("Mezmo Governance denied this exact tool call: No"),
         )
         decision_id = stub.requests[0]["body"]["decision_id"]
         self.assertEqual(stub.requests[1]["method"], "GET")
