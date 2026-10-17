@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 AGENT = "claude_code"
 DEFAULT_URL = "https://api.mezmo.com/governance/workflow/authorize"
@@ -295,6 +295,13 @@ def approval_payload(event: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+class RefuseRedirect(HTTPRedirectHandler):
+    """Hand a 3xx back as an error, so the key never goes to another URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
 def http_json(method: str, url: str, payload: Optional[Mapping[str, Any]], timeout: float) -> Tuple[int, Dict[str, Any]]:
     body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
     headers = {"Authorization": authorization_header(), "Accept": "application/json"}
@@ -302,7 +309,7 @@ def http_json(method: str, url: str, payload: Optional[Mapping[str, Any]], timeo
         headers["Content-Type"] = "application/json"
     request = Request(url, data=body, headers=headers, method=method)
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with build_opener(RefuseRedirect).open(request, timeout=timeout) as response:
             return response.status, parse_object(response.read())
     except HTTPError as error:
         try:

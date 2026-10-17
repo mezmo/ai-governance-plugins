@@ -14,6 +14,7 @@ import threading
 import time
 import unittest
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 from unittest.mock import patch
@@ -509,6 +510,47 @@ class CallBindingTests(unittest.TestCase):
         self.assertNotEqual(identity.request_id, hook.call_identity(other).request_id)
         full = f"claude_code:{'s' * 300}:turn-1:tool-use-1#" + identity.request_id.rsplit("#", 1)[1]
         self.assertEqual(identity.decision_id, str(uuid.uuid5(uuid.NAMESPACE_URL, full)))
+
+
+class RedirectTests(unittest.TestCase):
+    def test_a_redirect_denies_and_never_sends_the_key_elsewhere(self) -> None:
+        seen: List[Optional[str]] = []
+
+        class Elsewhere(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                seen.append(self.headers.get("Authorization"))
+                body = json.dumps({"approved": True}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_POST = do_GET
+
+            def log_message(self, *args: Any) -> None:
+                pass
+
+        class Redirect(Elsewhere):
+            def do_POST(self) -> None:
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        servers = [ThreadingHTTPServer(("127.0.0.1", 0), handler) for handler in (Elsewhere, Redirect)]
+        for server in servers:
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+        target = f"http://127.0.0.1:{servers[0].server_port}/elsewhere"
+        url = f"http://127.0.0.1:{servers[1].server_port}/governance/workflow/authorize"
+
+        with patch.dict(os.environ, environment(**dict(ENV, MEZMO_GOVERNANCE_URL=url)), clear=True):
+            output = hook.handle_event(hook_event("PreToolUse"))
+
+        self.assertEqual(seen, [])
+        self.assertEqual(decision_of(output), "deny")
+        self.assertIn("HTTP 302", reason_of(output))
 
 
 @patch.dict(os.environ, environment(**ENV), clear=True)
