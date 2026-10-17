@@ -555,6 +555,49 @@ class RedirectTests(unittest.TestCase):
         self.assertIn("HTTP 302", reason_of(output))
 
 
+class UnreadableReplyTests(unittest.TestCase):
+    def test_a_reply_it_cannot_read_denies(self) -> None:
+        cases = [
+            ([(200, b"<html>bad gateway</html>")], "invalid JSON response"),
+            ([(200, b"[]")], "non-object response"),
+            ([(200, b"")], "did not return an approval decision"),
+            ([(200, b'{"reason": "no field"}')], "did not return an approval decision"),
+            ([(200, b'{"approved": "true"}')], "did not return an approval decision"),
+            ([(200, b'{"approved": 1}')], "did not return an approval decision"),
+            ([(409, b"{}"), (200, b'{"status": "maybe"}')], "unexpected status"),
+            ([(409, b"{}"), (200, b"{}")], "unexpected status"),
+            ([(409, b"{}"), (200, b'{"approved": "yes"}')], "unexpected status"),
+            ([(409, b"{}"), (200, b"not json")], "invalid JSON response"),
+        ]
+        for answers, message in cases:
+            queue = list(answers)
+
+            class Raw(BaseHTTPRequestHandler):
+                def do_POST(self) -> None:
+                    status, body = queue.pop(0)
+                    self.send_response(status)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                do_GET = do_POST
+
+                def log_message(self, *args: Any) -> None:
+                    pass
+
+            server = ThreadingHTTPServer(("127.0.0.1", 0), Raw)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            url = f"http://127.0.0.1:{server.server_port}/governance/workflow/authorize"
+            try:
+                with self.subTest(answers=answers), patch.dict(os.environ, environment(**dict(ENV, MEZMO_GOVERNANCE_URL=url)), clear=True):
+                    output = hook.handle_event(hook_event("PreToolUse"))
+                    self.assertEqual(decision_of(output), "deny")
+                    self.assertIn(message, reason_of(output))
+            finally:
+                server.shutdown()
+                server.server_close()
+
+
 @patch.dict(os.environ, environment(**ENV), clear=True)
 class DeadlineBoundsTests(unittest.TestCase):
     def test_a_timeout_that_is_not_finite_denies_without_asking(self) -> None:

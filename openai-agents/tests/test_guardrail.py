@@ -159,6 +159,8 @@ class RunnerTests(unittest.TestCase):
             ((200, {"approved": "true"}),),
             ((500, {}),),
             ((409, {}), (200, {"status": "maybe"})),
+            ((409, {}), (200, {})),
+            ((409, {}), (200, {"approved": "yes"})),
         ]
         for responses in cases:
             with self.subTest(responses=responses):

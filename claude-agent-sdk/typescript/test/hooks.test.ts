@@ -179,6 +179,8 @@ test("a reply it cannot read denies", async () => {
     [[{ status: 200, body: '{"approved": "true"}' }], /did not return an approval decision/],
     [[{ status: 500, body: "{}" }], /returned HTTP 500/],
     [[{ status: 409, body: "{}" }, { status: 200, body: '{"status": "maybe"}' }], /unexpected status/],
+    [[{ status: 409, body: "{}" }, { status: 200, body: "{}" }], /unexpected status/],
+    [[{ status: 409, body: "{}" }, { status: 200, body: '{"approved": "yes"}' }], /unexpected status/],
   ];
   for (const [answers, message] of cases) {
     const server = await serve(answers);
