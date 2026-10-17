@@ -55,9 +55,14 @@ test("session prefers threadId, then workflow runId, then agentId", () => {
     sessionFromHook({ workflow: { runId: "run-9" } }),
     "run-9",
   );
-  assert.equal(sessionFromHook({ agent: { agentId: "weather" } }), "weather");
-  assert.equal(sessionFromHook({}, { agentId: "from-meta" }), "from-meta");
-  assert.equal(sessionFromHook({}), "unknown");
+  // agentId names the agent, not the run: a per-process nonce keeps an
+  // approval from carrying over to the next run.
+  const fallback = sessionFromHook({ agent: { agentId: "weather" } });
+  assert.match(fallback, /^weather-[0-9a-f]{16}$/);
+  assert.equal(sessionFromHook({ agent: { agentId: "weather" } }), fallback);
+  const nonce = fallback.slice("weather-".length);
+  assert.equal(sessionFromHook({}, { agentId: "from-meta" }), `from-meta-${nonce}`);
+  assert.equal(sessionFromHook({}), `unknown-${nonce}`);
 });
 
 test("toolCallId prefers agent.toolCallId", () => {

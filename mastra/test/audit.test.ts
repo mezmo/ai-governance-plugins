@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { appendAudit } from "../client.ts";
+import { appendAudit, resultFailed } from "../client.ts";
 
 async function withLog(path: string, fn: () => Promise<void>) {
   const previous = process.env.MEZMO_GOVERNANCE_AUDIT_LOG;
@@ -42,4 +42,11 @@ test("an audit log an older version left readable is tightened", async () => {
     await appendAudit({ tool_name: "bash", status: "observed" });
     assert.equal((await mode(path)).toString(8), "600");
   });
+});
+
+test("a nonzero exit code in either spelling marks the result failed", () => {
+  assert.equal(resultFailed({ exit_code: 2 }), true);
+  assert.equal(resultFailed({ exitCode: 2 }), true);
+  assert.equal(resultFailed({ exitCode: 0 }), false);
+  assert.equal(resultFailed({ exit_code: 0, exitCode: 2 }), false);
 });

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 import {
   AGENT,
@@ -39,6 +39,10 @@ function stringField(record: Record<string, unknown> | undefined, key: string): 
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
+// agentId names the agent, not the run: a per-process nonce keeps an
+// approval from carrying over to the next run.
+const PROCESS_NONCE = randomBytes(8).toString("hex");
+
 export function sessionFromHook(
   context: unknown,
   metadata?: Record<string, unknown>,
@@ -46,13 +50,12 @@ export function sessionFromHook(
   const ctx = asRecord(context);
   const agent = asRecord(ctx?.agent);
   const workflow = asRecord(ctx?.workflow);
-  return (
-    stringField(agent, "threadId") ||
-    stringField(workflow, "runId") ||
-    stringField(agent, "agentId") ||
-    stringField(metadata, "agentId") ||
-    "unknown"
-  );
+  const run = stringField(agent, "threadId") || stringField(workflow, "runId");
+  if (run) {
+    return run;
+  }
+  const name = stringField(agent, "agentId") || stringField(metadata, "agentId") || "unknown";
+  return `${name}-${PROCESS_NONCE}`;
 }
 
 export function toolCallIdFromHook(context: unknown): string {

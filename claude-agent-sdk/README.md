@@ -60,7 +60,7 @@ arguments, and they win over the variables.
 
 ### TypeScript
 
-Node 22+. Copy `typescript/client.ts` and `typescript/mezmo-governance.ts`
+Node 22.18+. Copy `typescript/client.ts` and `typescript/mezmo-governance.ts`
 into your project:
 
 ```typescript

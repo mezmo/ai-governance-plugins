@@ -455,7 +455,8 @@ export function resultFailed(value: unknown): boolean {
   if (record.isError === true || record.is_error === true) {
     return true;
   }
-  return typeof record.exit_code === "number" && record.exit_code !== 0;
+  const exitCode = record.exit_code ?? record.exitCode;
+  return typeof exitCode === "number" && exitCode !== 0;
 }
 
 // The log holds tool output: only its owner may read it.

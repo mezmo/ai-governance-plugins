@@ -4,8 +4,9 @@ A Pi coding-agent extension that blocks on Mezmo Governance in `tool_call` and
 writes a local JSONL record in `tool_result`. Handler errors on `tool_call`
 also block (Pi fail-safe).
 
-Tested against `@earendil-works/pi-coding-agent` 1.2.0: a type check against
-its `ExtensionAPI`, plus tests with a fake runtime. Pi moved from
+Tested with Pi 1.3.0: a live `pi -p -e` run against `tools/mock_governance.py`
+(see below). The type check against its `ExtensionAPI` and the tests with a
+fake runtime used `@earendil-works/pi-coding-agent` 1.2.0. Pi moved from
 `@mariozechner/pi-coding-agent` to `@earendil-works/pi-coding-agent`. The
 `tool_call` and `tool_result` fields this extension reads are the same in
 `@mariozechner/pi-coding-agent` 0.73. The extension imports neither package.
@@ -76,7 +77,9 @@ the audit line carries `"arguments_changed": true`.
 ## What it sends
 
 The extension calls `ctx.ui.setStatus("mezmo-governance", ...)` while waiting.
-`request_id` is `pi:<sessionId>:<toolCallId>#<digest>`.
+`request_id` is `pi:<sessionId>:<toolCallId>#<digest>`. Without a Pi session
+id, `<sessionId>` is `ephemeral-` plus a random id made once per process, so an
+approval never carries over to the next run.
 `<digest>` hashes the tool and its arguments, so an edited call gets its own
 decision ([identity](../docs/protocol.md#identity)). Built-in tools use namespace
 `pi`. Names of the form `mcp__<server>__<tool>` split the same way as Codex.
@@ -89,11 +92,11 @@ Pi's built-in tools are `bash`, `powershell`, `read`, `edit`, `write`,
 
 ## Tests
 
-Node 22+ (type stripping):
+Node 22.18+ (type stripping):
 
 ```bash
 node --test test/*.test.ts
 ```
 
-`test/drift.test.ts` compares this `client.ts` with the OpenCode and Mastra
-copies. It skips when those directories are absent.
+`test/drift.test.ts` compares this `client.ts` with the OpenCode, Mastra and
+Claude Agent SDK copies. It skips when those directories are absent.

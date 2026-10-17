@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import {
   AGENT,
   appendAudit,
@@ -42,12 +44,16 @@ type ExtensionAPI = {
   on(event: "tool_result", handler: (event: ToolResultEvent, ctx: ExtensionContext) => Promise<unknown> | unknown): void;
 };
 
+// Without a Pi session id, one random id per process: an approval never
+// carries over to the next run.
+const EPHEMERAL = `ephemeral-${randomBytes(8).toString("hex")}`;
+
 function sessionId(ctx: ExtensionContext): string {
   const value = ctx.sessionManager.getSessionId?.();
   if (typeof value === "string" && value.trim()) {
     return value.trim();
   }
-  return "ephemeral";
+  return EPHEMERAL;
 }
 
 // Pi runs tool_call handlers in load order, and a handler may mutate
