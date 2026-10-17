@@ -778,6 +778,22 @@ class OtherHookAgentTests(DoctorTestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("on_failure", self.lines(result, "Goose plugin")[1])
         self.assertStatus(result, "Goose smoke", "ok")
+        self.assertEqual(self.lines(result, "Goose hook copy"), [])
+
+    def test_a_hook_copy_from_an_older_release_warns(self) -> None:
+        # An older copy still denies when Mezmo is down, but lacks later fixes, such as the delegate deny.
+        self.agent("goose", " 1.54.0")
+        self.install_goose(self.home)
+        hook = self.home / ".agents/plugins/mezmo-governance/mezmo_governance_hook.py"
+        hook.write_text(hook.read_text() + "\n# an older release\n")
+
+        result = self.doctor()
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertStatus(result, "Goose smoke", "ok")
+        line = self.assertStatus(result, "Goose hook copy", "warn")
+        self.assertIn("differs from this repo", line)
+        self.assertIn("./mezmo-governance install goose", line)
 
     def test_goose_without_on_failure_or_with_a_star_matcher_fails(self) -> None:
         self.agent("goose", " 1.54.0")

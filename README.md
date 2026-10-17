@@ -121,7 +121,9 @@ can watch the plugin wait and then deny.
    before the guard learned to keep a deliberate block quiet gets a warning
    with the reinstall step. It also runs
    each installed Python hook against a closed port and checks that the hook
-   denies. It reads the agent configs and changes nothing. Each check prints
+   denies. A Codex, Cursor, Copilot or Goose hook copy that differs from this
+   checkout gets a warning to run `install` again. It reads the agent configs
+   and changes nothing. Each check prints
    one `ok`, `warn`, `FAIL` or `skip` line with a fix, and the exit code is 1
    when a check fails. `info` lines give the add-agent form values from
    step 1. A key can pass the key check and still belong to no agent. Add `--probe` to send Mezmo one test call for the tool

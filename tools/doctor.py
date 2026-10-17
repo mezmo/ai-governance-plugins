@@ -991,6 +991,16 @@ def denied(result: subprocess.CompletedProcess) -> bool:
     )
 
 
+def install_copies() -> dict:
+    """Each hook copy ./mezmo-governance install writes, and refreshes when it differs, with its adapter folder."""
+    return {
+        codex_dir() / "hooks" / HOOK_FILE: "codex",
+        cursor_dir() / "hooks" / HOOK_FILE: "cursor",
+        copilot_dir() / "hooks" / HOOK_FILE: "copilot",
+        goose_dir() / HOOK_FILE: "goose",
+    }
+
+
 def check_smokes(report: Report, smokes: list) -> None:
     if not smokes:
         return
@@ -1032,6 +1042,17 @@ def check_smokes(report: Report, smokes: list) -> None:
         if not smoke.path.is_file():
             report.line("FAIL", subject, f"{shown(smoke.path)} is missing", "copy the hook script as in the agent's README")
             continue
+        adapter = install_copies().get(smoke.path)
+        try:
+            stale = adapter is not None and smoke.path.read_bytes() != (REPO / adapter / HOOK_FILE).read_bytes()
+        except OSError as error:
+            report.line("warn", f"{smoke.agent} hook copy", f"unknown: could not compare {shown(smoke.path)}: {error}")
+        else:
+            if stale:
+                report.line(
+                    "warn", f"{smoke.agent} hook copy", f"{shown(smoke.path)} differs from this repo's {adapter}/{HOOK_FILE}",
+                    f"run ./mezmo-governance install {adapter}",
+                )
         try:
             result = subprocess.run(
                 [python, str(smoke.path), *smoke.args],
