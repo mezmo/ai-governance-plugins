@@ -26,6 +26,8 @@ AGENT = "goose"
 EXTENSION_SEPARATOR = "__"
 # Goose 1.54.0 runs the tool calls a Code Mode script makes without a hook.
 CODE_MODE_SCRIPT_TOOLS = frozenset({"execute_typescript", "execute_bash"})
+# It also runs the tool calls of a subagent that delegate starts without a hook.
+SUBAGENT_TOOLS = frozenset({"delegate"})
 DEFAULT_TIMEOUT_SECONDS = 590.0
 MAX_TIMEOUT_SECONDS = 590.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
@@ -532,6 +534,12 @@ def handle_pre_tool_use(
             f"Mezmo Governance cannot check the tool calls inside a Code Mode "
             f"script, so it denies {tool_call.name}. Turn Code Mode off: run "
             f"`goose configure`, choose Toggle Extensions, and disable Code Mode."
+        )
+    if tool_call.namespace == AGENT and tool_call.name in SUBAGENT_TOOLS:
+        return deny_output(
+            f"Mezmo Governance cannot check the tool calls a {tool_call.name} "
+            f"subagent makes, so it denies {tool_call.name}. Ask Goose to do the "
+            f"task itself."
         )
     decision = authorize(approval_payload(event), http=http, clock=clock, sleep=sleep)
     if decision.approved:

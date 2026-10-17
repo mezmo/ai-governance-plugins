@@ -220,6 +220,21 @@ class GooseGovernanceHookTests(unittest.TestCase):
                 self.assertEqual(http.calls, [])
 
     @patch.dict(os.environ, ENV)
+    def test_delegate_is_denied_before_mezmo(self) -> None:
+        # Goose 1.54.0 runs a delegate subagent's tool calls without a
+        # PreToolUse event, so an approved delegate would run them ungoverned.
+        event = hook_event("PreToolUse")
+        event["tool_name"] = event["matcher_context"] = "delegate"
+        event["tool_input"] = {"instructions": "run echo hi", "max_turns": 3}
+        http = FakeHttp([(200, {"approved": True})])
+
+        output = hook.handle_event(event, http=http)
+
+        self.assertEqual(output["decision"], "block")
+        self.assertIn("delegate", output["reason"])
+        self.assertEqual(http.calls, [])
+
+    @patch.dict(os.environ, ENV)
     def test_code_mode_listing_tools_still_go_to_mezmo(self) -> None:
         for name in ("list_functions", "get_function_details"):
             with self.subTest(name=name):

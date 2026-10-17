@@ -95,6 +95,11 @@ directly, without a `PreToolUse` event. Verified live before this rule: with
 Code Mode off: run `goose configure`, choose Toggle Extensions, and disable
 Code Mode.
 
+The hook also denies `delegate` without asking Mezmo. A subagent that
+`delegate` starts runs its tools without a `PreToolUse` event. Verified live
+in 1.54.0 before this rule: with `shell` and `write` denied, a delegated
+`shell` call wrote a file, and Mezmo saw only `delegate`.
+
 ## Smoke test
 
 Run these from this directory. First check that the hook denies when Mezmo

@@ -14,8 +14,9 @@ Known limits, not vulnerabilities:
 
 - Codex, Gemini CLI and GitHub Copilot run the tool when the hook times out
   (see their READMEs). A hook that crashes still blocks the call.
-- Goose's Code Mode runs the tool calls inside its scripts without a hook, so
-  the Goose hook denies every Code Mode script.
+- Goose runs the tool calls inside Code Mode scripts and `delegate` subagents
+  without a hook, so the Goose hook denies every Code Mode script and every
+  `delegate` call.
 - The OpenAI Agents SDK does not gate hosted tools.
 - The token sits in the agent's environment or settings, so a governed agent
   that can read them can call Mezmo with it. Give the agent's service account
