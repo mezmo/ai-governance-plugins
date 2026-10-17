@@ -313,7 +313,7 @@ both run the hook twice. `smoke` checks only the file install; `doctor` also che
 - Copilot CLI: `copilot plugin marketplace add mezmo/ai-governance-plugins`, then `copilot plugin install mezmo-governance@mezmo`.
   A local-path marketplace loads the hook from that checkout, so editing it or switching its branch changes the hook.
 - Droid: `droid plugin marketplace add mezmo/ai-governance-plugins`, then `droid plugin install mezmo-governance@<marketplace> --scope user`.
-  Droid names the marketplace after its source; `droid plugin marketplace list` shows the name. Not run: see [droid/](droid/).
+  Droid names the marketplace after its source; `droid plugin marketplace list` shows the name. The plugin install was not run: see [droid/](droid/).
 
 ### Install by hand
 
@@ -450,7 +450,7 @@ one shell call (expected: denied) and one file read (expected: approved):
 | Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
 | Copilot CLI | 1.0.95, 1.0.98 | pass, with user-level hooks | blocked (1.0.95) |
 | Goose CLI | 1.54.0 | pass | blocked with `on_failure: block`, also on a timeout; runs without it |
-| Droid | 0.244.0, read from its binary, not run: `droid exec` needs a paid Factory plan | not checked | not checked |
+| Droid | 0.244.0, `droid exec` with a bring-your-own-key model (no Factory plan) | pass | not checked |
 | Windsurf | 1.126.0 (Devin Desktop 3.10.67) | pass, started from a shell; the Dock launch passes no settings, so every call is denied | not checked |
 | OpenCode | 2.0.25 | pass, through the background service with plugin options | not checked |
 | Pi | 1.3.0 | pass | not checked |

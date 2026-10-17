@@ -12,7 +12,10 @@ https://docs.factory.com/harness/plugins (plugins), read 2026-10-17.
 
 The script needs Python 3.9 or later and uses only the standard library.
 
-Not run in Droid. The hook fields, exit codes and file locations below come
+Run live in `droid exec` 0.244.0 on 2026-10-17 against `tools/mock_governance.py`, with a
+bring-your-own-key Anthropic model: `Execute` (`touch marker`) was denied and no file was
+written; `Read` was approved. The plugin install was not run. The other hook fields, exit
+codes and file locations below come
 from those docs and from the Droid 0.244.0 binary (`@factory/cli-darwin-arm64`
 on npm), read but never started. The hook script itself passes its tests and
 `./mezmo-governance smoke`.
