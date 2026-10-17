@@ -227,6 +227,13 @@ def session_state_path(session_id: str) -> Path:
     return state_dir() / (re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:128] + ".json")
 
 
+def server_namespace(name: str) -> str:
+    """Refuse a server or extension named like the agent: its tools would pass as built-ins."""
+    if name.lower() == AGENT:
+        raise HookContractError(f"a tool namespace named {name!r} would pass as a built-in tool")
+    return name
+
+
 def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
     canonical_name = required_string(event.get("tool_name"), "tool_name")
     raw_input = event.get("tool_input")
@@ -236,7 +243,7 @@ def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
         parts = canonical_name.split("__", 2)
         if len(parts) != 3 or not parts[1] or not parts[2]:
             raise HookContractError("MCP tool names must use mcp__<server>__<tool>")
-        return NormalizedToolCall(parts[1], parts[2], dict(raw_input))
+        return NormalizedToolCall(server_namespace(parts[1]), parts[2], dict(raw_input))
     return NormalizedToolCall(AGENT, canonical_name, dict(raw_input))
 
 
@@ -698,8 +705,14 @@ def main() -> int:
         if not isinstance(event, dict):
             raise HookContractError("hook input must be a JSON object")
         output = handle_event(event)
-    except (HookContractError, json.JSONDecodeError) as error:
-        print(str(error), file=sys.stderr)
+    except Exception as error:
+        # Any failure blocks, such as a RecursionError on deeply nested input.
+        reason = f"Mezmo Governance blocked this tool call: {str(error) or type(error).__name__}"
+        try:
+            print(json.dumps(deny_output(reason), separators=(",", ":")))
+            print(reason, file=sys.stderr)
+        except OSError:
+            pass
         return 2
     if output is not None:
         print(json.dumps(output, separators=(",", ":")))

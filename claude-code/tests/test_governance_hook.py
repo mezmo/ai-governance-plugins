@@ -9,6 +9,7 @@ import json
 import os
 import pathlib
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -633,6 +634,33 @@ class ExposedTokenTests(unittest.TestCase):
                 self.assertEqual(decision_of(output), "deny")
                 self.assertIn("an HTTP header cannot carry", reason_of(output))
                 self.assertNotIn("secret", reason_of(output))
+
+
+@patch.dict(os.environ, environment(**ENV), clear=True)
+class HostileInputTests(unittest.TestCase):
+    def test_deeply_nested_input_denies_without_a_traceback(self) -> None:
+        depth = 200_000
+        event = json.dumps(hook_event("PreToolUse")).replace(
+            '"tool_input": {', '"tool_input": {"deep": ' + "[" * depth + "]" * depth + ", ", 1
+        )
+        script = pathlib.Path(hook.__file__).resolve()
+        result = subprocess.run(
+            [sys.executable, str(script)], input=event, capture_output=True, text=True,
+            env=dict(os.environ), timeout=60,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(decision_of(json.loads(result.stdout)), "deny")
+
+    def test_an_mcp_server_named_like_the_agent_denies_without_asking(self) -> None:
+        for name in ("mcp__claude_code__Bash", "mcp__Claude_Code__Bash"):
+            with self.subTest(name=name):
+                event = {**hook_event("PreToolUse"), "tool_name": name, "tool_input": {"command": "ls"}}
+                http = FakeHttp([(200, {"approved": True})])
+                output = hook.handle_event(event, http=http)
+                self.assertEqual(decision_of(output), "deny")
+                self.assertIn("would pass as a built-in tool", reason_of(output))
+                self.assertEqual(http.calls, [])
 
 
 if __name__ == "__main__":
