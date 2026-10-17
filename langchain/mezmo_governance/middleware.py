@@ -12,7 +12,7 @@ from contextvars import ContextVar, Token, copy_context
 from types import TracebackType
 from typing import Any, TypeVar
 
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, ModelRequest
 from langchain.messages import ToolMessage
 from langchain.tools.tool_node import ToolCallRequest
 from langgraph.types import Command
@@ -64,6 +64,19 @@ def session_id_from_request(request: ToolCallRequest, default: str) -> str:
     if turn_id:
         return turn_id
     return default
+
+
+def refuse_provider_mcp(tools: list[Any]) -> None:
+    """Stop the run when the model provider would call an MCP server itself.
+
+    The provider runs such a tool, so no tool call passes this middleware.
+    """
+    for tool in tools:
+        if isinstance(tool, Mapping) and str(tool.get("type", "")).startswith("mcp"):
+            raise GovernanceError(
+                f"Mezmo Governance cannot gate a {tool['type']!r} tool the model provider runs; "
+                "connect the MCP server with langchain-mcp-adapters instead"
+            )
 
 
 def tool_result_text(result: ToolMessage | Command) -> str:
@@ -179,6 +192,18 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
             request,
             f"Mezmo Governance could not authorize this tool call, so LangChain blocked it: {exc}",
         )
+
+    def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Any]) -> Any:
+        refuse_provider_mcp(request.tools)
+        return handler(request)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[Any]],
+    ) -> Any:
+        refuse_provider_mcp(request.tools)
+        return await handler(request)
 
     def wrap_tool_call(
         self,

@@ -90,6 +90,11 @@ hooks = mezmo_governance_hooks()
 hooks["PreToolUse"].append(HookMatcher(matcher="Bash", hooks=[my_check]))
 ```
 
+Mezmo approves the input it saw. No other `PreToolUse` hook may return
+`updatedInput`, and no `can_use_tool` (`canUseTool` in TypeScript) may allow
+with updated input: the tool would then run with input Mezmo never saw. The
+callbacks do not check for such a rewrite.
+
 ## How it fails closed
 
 - The `PreToolUse` matcher has no pattern, so every tool call is checked:

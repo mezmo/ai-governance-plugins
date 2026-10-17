@@ -77,6 +77,7 @@ are not gated:
 | `WebSearchTool`, `FileSearchTool`, `CodeInterpreterTool`, `ImageGenerationTool`, `ToolSearchTool` | on OpenAI's servers; no call reaches your process before it runs | leaves them in place, not gated |
 | `HostedMCPTool` | on OpenAI's servers, which call the remote MCP server's tools, side effects included | raises `GovernanceError`; connect the server through `Agent(mcp_servers=[...])`, which is gated |
 | `ShellTool`, `LocalShellTool`, `ComputerTool`, `ApplyPatchTool`, `CustomTool` | on your machine, with no guardrail | raises `GovernanceError`, so the agent never runs them ungated |
+| Any other kind, such as one a newer SDK adds | unknown | raises `GovernanceError`: `govern` passes only `FunctionTool`, the hosted kinds above and `ProgrammaticToolCallingTool` |
 
 `ProgrammaticToolCallingTool` stays. Its hosted program calls your function
 tools through the runner, and openai-agents 0.24.0 runs their input

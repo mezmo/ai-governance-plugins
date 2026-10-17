@@ -447,6 +447,20 @@ class GovernTests(unittest.TestCase):
         with self.assertRaisesRegex(GovernanceError, "HostedMCPTool 'hosted_mcp' on agent 'remote' cannot be gated"):
             MezmoGovernance().govern(agent)
 
+    def test_a_tool_kind_it_does_not_know_is_refused(self) -> None:
+        # A newer SDK may add a kind; it must not slip through ungated.
+        from dataclasses import dataclass
+
+        from mezmo_governance_openai_agents import GovernanceError, MezmoGovernance
+
+        @dataclass
+        class FutureTool:
+            name: str = "future"
+
+        agent = Agent(name="new", tools=[function_tool(read_note_impl, name_override="read_note"), FutureTool()])
+        with self.assertRaisesRegex(GovernanceError, "FutureTool 'future' on agent 'new' cannot be gated"):
+            MezmoGovernance().govern(agent)
+
     def test_hosted_tools_without_side_effects_on_this_machine_stay(self) -> None:
         from agents import (
             CodeInterpreterTool,

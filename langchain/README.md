@@ -72,6 +72,28 @@ export OPENAI_API_KEY="…"
 python3 example_agent.py
 ```
 
+## Middleware order
+
+List `MezmoGovernanceMiddleware` last in `middleware=[...]`. LangChain runs
+the first middleware outermost, so the last one sees the tool call just
+before the tool runs. A middleware listed after Mezmo could rewrite the
+arguments of a call Mezmo already approved; listed before it, Mezmo gates the
+rewritten call. A test runs a rewriting middleware ahead of Mezmo and checks
+that Mezmo decides on the rewritten arguments.
+
+## What is not gated
+
+The middleware gates the tool calls LangChain runs. Tools the model provider
+runs itself never reach it:
+
+| Tool kind | Where it runs | What the middleware does |
+| --- | --- | --- |
+| A dict tool of type `mcp` or `mcp_toolset` (a remote MCP server) | on the provider's servers, which call the MCP server's tools, side effects included | raises `GovernanceError` before the model call; connect the server with `langchain-mcp-adapters` instead, whose tools are gated |
+| Other dict tools, such as web search or code execution | on the provider's servers | leaves them in place, not gated |
+
+A model you bind to provider tools yourself, before `create_agent`, is not
+inspected.
+
 ## Verify it works
 
 With the package installed and the two variables set, ask Mezmo about one
