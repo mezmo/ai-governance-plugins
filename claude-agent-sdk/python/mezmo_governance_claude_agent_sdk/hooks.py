@@ -98,13 +98,14 @@ def result_has_known_error(value: Any) -> bool:
 
 
 def append_audit(record: Mapping[str, Any]) -> None:
+    # The log keeps tool results, so only its owner may read it.
     path = audit_log_path()
-    # The log keeps tool output, so only its owner may read it.
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
-        # A log an older version created keeps its wider mode until now.
-        if stat.S_ISREG(os.fstat(descriptor).st_mode):
+        # A log an older version wrote keeps its mode until narrowed here.
+        mode = os.fstat(descriptor).st_mode
+        if os.name != "nt" and stat.S_ISREG(mode) and mode & 0o077:
             os.fchmod(descriptor, 0o600)
         handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
