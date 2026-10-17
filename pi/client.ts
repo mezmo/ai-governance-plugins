@@ -78,16 +78,32 @@ function requiredEnv(name: string): string {
   return value;
 }
 
+// The token travels in a header: plain http only to this machine, such as
+// tools/mock_governance.py.
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
 export function authorizeUrl(): string {
-  return requiredEnv("MEZMO_GOVERNANCE_URL");
+  const value = requiredEnv("MEZMO_GOVERNANCE_URL");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new GovernanceError("MEZMO_GOVERNANCE_URL is not a valid URL");
+  }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) {
+    throw new GovernanceError("MEZMO_GOVERNANCE_URL must use https, or http to this machine");
+  }
+  return value;
 }
 
 export function authorizationHeader(): string {
   const key = requiredEnv("MEZMO_GOVERNANCE_TOKEN");
-  if (/^(token|bearer) /i.test(key)) {
-    return key;
+  const scheme = /^(token|bearer) /i.exec(key)?.[0] ?? "";
+  // fetch quotes a header value it refuses, so no error may reach it.
+  if (!/^[\x21-\x7e]+$/.test(key.slice(scheme.length))) {
+    throw new GovernanceError("MEZMO_GOVERNANCE_TOKEN must be printable ASCII without spaces");
   }
-  return `Token ${key}`;
+  return scheme ? key : `Token ${key}`;
 }
 
 function positiveSeconds(name: string, fallback: number): number {
@@ -257,9 +273,11 @@ export async function httpJson(
     if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
       throw new TimeoutError("Mezmo Governance request timed out");
     }
-    throw new GovernanceError(
-      `Mezmo Governance is unavailable: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    if (error instanceof GovernanceError) {
+      throw error;
+    }
+    // A fetch error can quote the token or a user:pass URL: say nothing of it.
+    throw new GovernanceError("Mezmo Governance is unavailable");
   } finally {
     clearTimeout(timer);
   }
