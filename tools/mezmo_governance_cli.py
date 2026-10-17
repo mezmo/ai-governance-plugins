@@ -88,7 +88,8 @@ Settings:
   The Claude Code plugin can keep its own copy (/mezmo:setup); OpenCode 2.x reads plugin
   options in opencode.json, with the key in a file. Install never writes the key.
   Config folders follow each agent's override: CLAUDE_CONFIG_DIR, CODEX_HOME, GEMINI_CLI_HOME,
-  COPILOT_HOME, GOOSE_PATH_ROOT, XDG_CONFIG_HOME (OpenCode), PI_CODING_AGENT_DIR, else HOME.
+  COPILOT_HOME, GOOSE_PATH_ROOT, XDG_CONFIG_HOME (OpenCode), PI_CODING_AGENT_DIR,
+  FACTORY_HOME_OVERRIDE (Droid), else HOME.
   policy reads MEZMO_GOVERNANCE_ADMIN_KEY, or asks for it, and never MEZMO_GOVERNANCE_TOKEN: every
   governed agent can read that one. --url BASE sets the policy API, else it comes from
   MEZMO_GOVERNANCE_URL, else https://api.mezmo.com/v3/governance.
@@ -621,6 +622,76 @@ def pi() -> Installer:
     return Installer(installed, install, uninstall, "Pi loads the extension from this checkout, so keep the checkout where it is.")
 
 
+def droid() -> Installer:
+    """Like Codex, but Droid's hooks.json holds the events at its top level, with no "hooks" key."""
+
+    def paths() -> tuple:
+        return doctor.droid_dir() / "hooks.json", doctor.droid_dir() / "hooks" / HOOK_FILE
+
+    def events(config: dict) -> dict:
+        return {key: value for key, value in config.items() if isinstance(value, list)}
+
+    def installed() -> Optional[str]:
+        path, _ = paths()
+        return shown(path) if doctor.mezmo_handlers(load_object(path).get("PreToolUse")) else None
+
+    def hidden(data: dict) -> list:
+        """The settings.json hook events a new hooks.json entry would stop Droid from reading."""
+        path, _ = paths()
+        settings = events(as_dict(load_object(doctor.droid_dir() / "settings.json").get("hooks")))
+        config = load_object(path)
+        # Droid 0.244.0 reads an event from hooks.json once hooks.json has it; its docs say
+        # settings.json hooks are read only while hooks.json is absent.
+        wanted = set(data) if path.is_file() else set(settings)
+        return sorted(event for event in wanted & set(settings) if settings[event] and event not in config)
+
+    def install() -> list:
+        path, script = paths()
+        source = REPO / "droid" / HOOK_FILE
+        if installed():
+            return hook_refresh(source, script)
+        legacy = doctor.droid_dir() / "hooks" / "hooks.json"
+        if not path.is_file() and legacy.is_file():
+            raise Failure(
+                f"Droid reads {shown(legacy)} only while {shown(path)} is absent, so a new {path.name} would turn its hooks off."
+                f" Nothing changed. Start droid, run /hooks and save once to move it to {shown(path)}, then run this command again"
+            )
+        data = example("droid", "hooks.example.json", doctor.droid_dir(), doctor.home() / ".factory")
+        lost = hidden(data)
+        if lost:
+            raise Failure(
+                f"{shown(doctor.droid_dir() / 'settings.json')} has {', '.join(lost)} hooks, which Droid stops reading once"
+                f" {shown(path)} has those events. Nothing changed. Move them into {shown(path)}, then run this command again"
+            )
+
+        def add() -> None:
+            config = load_object(path)
+            write_json(path, {**config, **merged({"hooks": events(config)}, {"hooks": data}, "command")["hooks"]})
+
+        return [hook_copy(source, script), Step(f"add the Mezmo hook entries to {shown(path)}", (path,), add)]
+
+    def without(config: dict) -> dict:
+        rest = as_dict(without_hook({"hooks": events(config)}, "command").get("hooks"))
+        return {key: rest.get(key, value) for key, value in config.items() if key in rest or not isinstance(value, list)}
+
+    def uninstall() -> list:
+        path, script = paths()
+        steps = []
+        if without(load_object(path)) != load_object(path):
+
+            def run() -> None:
+                rest = without(load_object(path))
+                if rest:
+                    write_json(path, rest)
+                else:
+                    path.unlink()
+
+            steps.append(Step(f"remove the Mezmo hook entries from {shown(path)}", (path,), run))
+        return steps + hook_removal(script, doctor.droid_dir())
+
+    return Installer(installed, install, uninstall, "Start droid and run /hooks to check that both Mezmo hooks are listed: Droid reads hooks at startup.")
+
+
 INSTALLERS = {
     "claude-code": claude_code(),
     "codex": file_hook_agent(
@@ -634,6 +705,7 @@ INSTALLERS = {
     "goose": goose(),
     "opencode": opencode(),
     "pi": pi(),
+    "droid": droid(),
 }
 AGENTS = {agent.readme: agent for agent in doctor.AGENTS}
 

@@ -1,0 +1,11 @@
+{
+  "name": "mezmo-governance",
+  "description": "Gate Factory Droid tool calls through Mezmo Governance before they run",
+  "version": "0.2.0",
+  "author": {
+    "name": "Mezmo"
+  },
+  "homepage": "https://github.com/mezmo/ai-governance-plugins",
+  "repository": "https://github.com/mezmo/ai-governance-plugins",
+  "license": "Apache-2.0"
+}

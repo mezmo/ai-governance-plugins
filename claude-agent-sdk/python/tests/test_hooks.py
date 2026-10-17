@@ -275,6 +275,8 @@ class RealTransportTests(unittest.IsolatedAsyncioTestCase):
             ([(200, b'{"approved": "true"}')], "did not return an approval decision"),
             ([(500, b"{}")], "returned HTTP 500"),
             ([(409, b"{}"), (200, b'{"status": "maybe"}')], "unexpected status"),
+            ([(409, b"{}"), (200, b"{}")], "unexpected status"),
+            ([(409, b"{}"), (200, b'{"approved": "yes"}')], "unexpected status"),
         ]
         for answers, message in cases:
             with self.subTest(answers=answers):

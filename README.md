@@ -6,7 +6,7 @@ denies the call, or never answers, the tool does not run.
 To get access to Mezmo Governance, see [mezmo.com/platform/governance](https://www.mezmo.com/platform/governance).
 
 ```text
-Claude Code / Claude Agent SDK / Codex / Cursor / Gemini CLI / Copilot / Goose / Pi / OpenCode / LangChain / OpenAI Agents SDK / Mastra
+Claude Code / Claude Agent SDK / Codex / Cursor / Gemini CLI / Copilot / Goose / Droid / Pi / OpenCode / LangChain / OpenAI Agents SDK / Mastra
         │  before the tool runs
         ▼
   plugin  ──POST /governance/workflow/authorize──►  Mezmo Governance
@@ -117,11 +117,11 @@ can watch the plugin wait and then deny.
    version, the user-level install and its fail-closed setting. An install the
    agent has turned off or does not trust fails: a disabled Claude Code plugin,
    Gemini CLI extension or hook, or Goose plugin, and a Codex hook whose
-   trust Codex does not list as current. A Codex or Gemini CLI hook installed
+   trust Codex does not list as current, and Droid's `hooksDisabled`. A Codex or Gemini CLI hook installed
    before the guard learned to keep a deliberate block quiet gets a warning
    with the reinstall step. It also runs
    each installed Python hook against a closed port and checks that the hook
-   denies. A Codex, Cursor, Copilot or Goose hook copy that differs from this
+   denies. A Codex, Cursor, Copilot, Goose or Droid hook copy that differs from this
    checkout gets a warning to run `install` again. It reads the agent configs
    and changes nothing. Each check prints
    one `ok`, `warn`, `FAIL` or `skip` line with a fix, and the exit code is 1
@@ -155,7 +155,7 @@ A policy has its own dialog in Mezmo Governance, in five pages:
    name and, optionally, the tool call's arguments. For a denied call, pick
    an error code and write the message the agent shows. The tool space is
    the plugin's namespace, such as `claude_code`, `codex`, `cursor`,
-   `gemini_cli`, `copilot`, `goose`, `opencode` or `pi`, or the MCP server
+   `gemini_cli`, `copilot`, `goose`, `droid`, `opencode` or `pi`, or the MCP server
    name for an MCP tool. Each adapter README lists its tool names.
 3. **Fallthrough:** what happens to a call that no rule permits:
    **Deny Outright**, **Send for Approval** or **Allow**.
@@ -248,8 +248,8 @@ node for the OpenCode and Pi smoke test.
 
 `install` writes into each agent's user config folder and honors the agent's
 own override: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`,
-`COPILOT_HOME`, `GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME` (OpenCode) and
-`PI_CODING_AGENT_DIR`. Before it edits a JSON file, it saves a copy next to it
+`COPILOT_HOME`, `GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME` (OpenCode),
+`PI_CODING_AGENT_DIR` and `FACTORY_HOME_OVERRIDE` (Droid). Before it edits a JSON file, it saves a copy next to it
 as `<name>.mezmo-backup-<time>` and prints the path. It writes through a
 symlink and keeps the file's mode, such as `0600`. It never writes the
 token. Running it twice changes nothing. Over an older install, it replaces
@@ -268,13 +268,14 @@ exits 1.
 | Agent | `install` runs | Why this way |
 | --- | --- | --- |
 | Claude Code | `claude plugin install mezmo --marketplace <this repo> -s user`, after it uninstalls an older `mezmo-governance` plugin | `claude plugin install --help`: the marketplace may be "a path" |
-| Codex CLI | copies the hook, merges `codex/hooks.example.json` into `hooks.json` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-and-copilot-cli) |
+| Codex CLI | copies the hook, merges `codex/hooks.example.json` into `hooks.json` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
 | Cursor | copies the hook, merges `cursor/hooks.example.json` into `~/.cursor/hooks.json` | `cursor-agent plugin` only adds marketplaces from a git URL |
 | Gemini CLI | `gemini extensions install ./gemini-cli --consent --skip-settings` | `gemini extensions install --help`: "from a git repository URL or a local path" |
-| Copilot CLI | copies the hook and `hooks.example.json` to `~/.copilot/hooks/` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-and-copilot-cli) |
+| Copilot CLI | copies the hook and `hooks.example.json` to `~/.copilot/hooks/` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
 | Goose | copies the plugin to `~/.agents/plugins/mezmo-governance/` | `goose plugin install` takes a git URL whose root is the plugin |
 | OpenCode 2.x | copies `opencode/` and names it in `opencode.json` with options; the key stays in a file you write | `opencode plugin add` takes an npm or git package only |
 | Pi | `pi install ./pi` | `pi install --help`: `pi install ./local/path` |
+| Droid | copies the hook, merges `droid/hooks.example.json` into `~/.factory/hooks.json`; refuses, changing nothing, when that would hide hooks Droid reads from `settings.json` or the older `hooks/hooks.json` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
 
 The Gemini CLI install runs with `GEMINI_CLI_TRUST_WORKSPACE=true` for that
 one command, so Gemini asks nothing and adds no folder to `trustedFolders.json`.
@@ -296,7 +297,7 @@ credential store. Until it has a key, from setup or `MEZMO_GOVERNANCE_TOKEN`,
 the plugin lets every call run; `MEZMO_GOVERNANCE_REQUIRED=1` makes it deny
 instead. Details: [claude-code/](claude-code/).
 
-### Codex CLI and Copilot CLI
+### Codex CLI, Copilot CLI and Droid
 
 The same repository is a marketplace for each, and each reads its own manifest
 and gets its own adapter. Use this or `./mezmo-governance install`, not both:
@@ -309,6 +310,8 @@ both run the hook twice. `smoke` checks only the file install; `doctor` also che
   `[hooks.state."<key>"]` table with `trusted_hash = "<hash>"` to `$CODEX_HOME/config.toml` for each.
 - Copilot CLI: `copilot plugin marketplace add mezmo/ai-governance-plugins`, then `copilot plugin install mezmo-governance@mezmo`.
   A local-path marketplace loads the hook from that checkout, so editing it or switching its branch changes the hook.
+- Droid: `droid plugin marketplace add mezmo/ai-governance-plugins`, then `droid plugin install mezmo-governance@<marketplace> --scope user`.
+  Droid names the marketplace after its source; `droid plugin marketplace list` shows the name. Not run: see [droid/](droid/).
 
 ### Install by hand
 
@@ -322,6 +325,7 @@ does not fit your setup.
 | [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | `gemini extensions install ./gemini-cli`, or copy the script and merge `settings.example.json` |
 | [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | on a crash yes; on a timeout no | copy the script, add `hooks.example.json` to `~/.copilot/hooks/` |
 | [Goose](goose/) | `PreToolUse` plugin hook | yes, with `on_failure: block` | copy the plugin to `~/.agents/plugins/mezmo-governance/` |
+| [Droid](droid/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | copy the script, merge `hooks.example.json` into `~/.factory/hooks.json` |
 | [Pi](pi/) | `tool_call` extension | yes | `pi install ./pi`, or copy the folder to `~/.pi/agent/extensions/` |
 | [OpenCode](opencode/) 1.x and 2.x | `tool.execute.before` plugin | yes | 2.x: copy the folder, name it in `opencode.json` `plugins` with options; 1.x: copy to `~/.config/opencode/plugins/` |
 | [LangChain](langchain/) v1 | `AgentMiddleware` (`wrap_tool_call` and `awrap_tool_call`) | yes | `pip install ./langchain` |
@@ -337,7 +341,7 @@ cannot be reached, or returns something it does not understand.
 
 Before each tool call, the plugin sends Mezmo the tool name and its full
 arguments: the shell command, the file path, and for write tools the file
-content. It also sends the session id and the tool call id (Gemini CLI and Copilot send a fresh random id per call, because they expose none). Tool results are
+content. It also sends the session id and the tool call id (Gemini CLI, Copilot and Droid send a fresh random id per call, because they expose none). Tool results are
 not sent to Mezmo: post-tool hooks only append a line to a local file.
 
 One exception reaches past Mezmo: the LangChain middleware records each
@@ -370,7 +374,7 @@ or Mastra setup, which lives in app code; for those, run
 
 | You see | Cause | Fix |
 | --- | --- | --- |
-| Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice; Copilot: install in `~/.copilot/hooks/`, not `.github/hooks/`; Gemini CLI: use `~/.gemini/settings.json` or trust the folder; Goose: put the plugin in `~/.agents/plugins/` and use no `"*"` matcher |
+| Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice; Copilot: install in `~/.copilot/hooks/`, not `.github/hooks/`; Gemini CLI: use `~/.gemini/settings.json` or trust the folder; Goose: put the plugin in `~/.agents/plugins/` and use no `"*"` matcher; Droid: check the **Effective** tab of `/hooks` and trust the folder |
 | Every call is denied: `MEZMO_GOVERNANCE_URL must be a non-empty string` | the agent did not inherit the variables | export them in the shell that starts the agent, or use the agent's own settings `env` block |
 | `Mezmo Governance returned HTTP 401 EAUTH` | wrong or revoked service account token, or a service account without Governance permissions | give the agent's service account Governance permissions, then copy a fresh token from the service account in Mezmo |
 | `Mezmo Governance returned HTTP 403 ENOAGENT: no agent is registered for these credentials` | Mezmo accepts the token, but no agent uses its service account | register an agent in Mezmo Governance and use the token of the service account that agent uses |
@@ -417,14 +421,14 @@ A local HTTP server stands in for Mezmo. The tests confirm that:
   and negative values are refused;
 - the post-tool event writes an audit line and never blocks;
 - each example config registers every event and blocks on hook failure,
-  including the `|| exit 2` guard for Codex and Gemini CLI;
+  including the `|| exit 2` guard for Codex, Gemini CLI and Droid;
 - `./mezmo-governance` installs each agent, finds it installed, changes
   nothing on a second install, and on uninstall leaves each config as it was,
   with the user's other entries and a backup; a run stopped between two steps
   is finished by the next one; `--dry-run` changes nothing; the key is in no
   file or output (`tools/test_mezmo_governance_cli.py`, with fake `claude`,
   `gemini` and `pi` binaries);
-- the shared code is identical across the five Python hook adapters, across the
+- the shared code is identical across the six Python hook adapters, across the
   four `client.ts` copies, and between the LangChain Python client and its
   OpenAI Agents SDK and Claude Agent SDK copies; the Python hooks import on
   Python 3.9.
@@ -443,6 +447,7 @@ one shell call (expected: denied) and one file read (expected: approved):
 | Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
 | Copilot CLI | 1.0.95, 1.0.98 | pass, with user-level hooks | blocked (1.0.95) |
 | Goose CLI | 1.54.0 | pass | blocked with `on_failure: block`, also on a timeout; runs without it |
+| Droid | 0.244.0, read from its binary, not run | not checked | not checked |
 | OpenCode | 2.0.25 | pass, through the background service with plugin options | not checked |
 | Pi | 1.3.0 | pass | not checked |
 | Mastra | 1.77.0, `generate` and `stream` | pass | not checked |

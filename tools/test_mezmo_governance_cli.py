@@ -28,7 +28,7 @@ CANARY = "canary-key-5d1c8e40"
 ADMIN = "admin-key-9b27f6d3"
 sys.path.insert(0, str(TOOLS))
 import mock_governance  # noqa: E402
-AGENTS = ("claude-code", "codex", "cursor", "gemini-cli", "copilot", "goose", "opencode", "pi")
+AGENTS = ("claude-code", "codex", "cursor", "gemini-cli", "copilot", "goose", "opencode", "pi", "droid")
 VERSIONS = {
     "claude": "2.1.300 (Claude Code)",
     "codex": "codex-cli 0.162.1",
@@ -38,6 +38,7 @@ VERSIONS = {
     "goose": "1.54.0",
     "opencode": "2.0.25",
     "pi": "1.3.0",
+    "droid": "0.244.0",
 }
 
 FAKE_CLI = r'''
@@ -132,6 +133,7 @@ ORIGINALS = {
     "goose": {"goose/.agents/plugins/other/plugin.json": {"name": "other"}},
     "opencode": {"xdg/opencode/opencode.json": {"plugins": ["other-plugin"], "theme": "x"}},
     "pi": {"pi/settings.json": {"packages": ["npm:other"]}},
+    "droid": {"factory/.factory/hooks.json": {"PreToolUse": [{"matcher": "Execute", "hooks": [{"type": "command", "command": "other-hook"}]}]}},
 }
 # What the real CLI leaves behind after uninstall, beyond the user's own files.
 LEFTOVERS = {
@@ -172,6 +174,7 @@ class CliTestCase(unittest.TestCase):
                 "GOOSE_PATH_ROOT": str(self.tmp / "goose"),
                 "XDG_CONFIG_HOME": str(self.tmp / "xdg"),
                 "PI_CODING_AGENT_DIR": str(self.tmp / "pi"),
+                "FACTORY_HOME_OVERRIDE": str(self.tmp / "factory"),
                 "MEZMO_GOVERNANCE_TOKEN": CANARY,
             }
         )
@@ -222,7 +225,7 @@ class InstallTests(CliTestCase):
         for agent in AGENTS:
             with self.subTest(agent=agent):
                 shutil.rmtree(self.tmp / "home")
-                for folder in ("claude", "codex", "gemini", "copilot", "goose", "xdg", "pi"):
+                for folder in ("claude", "codex", "gemini", "copilot", "goose", "xdg", "pi", "factory"):
                     shutil.rmtree(self.tmp / folder, ignore_errors=True)
                 (self.tmp / "home").mkdir()
                 self.write(ORIGINALS[agent])
@@ -254,7 +257,7 @@ class InstallTests(CliTestCase):
                 # The install's backup of each user config equals the original, and its path was printed.
                 (name,) = original
                 copies = sorted(b for b in backups if b.startswith(name + ".mezmo-backup-"))
-                edited = {"claude-code", "codex", "cursor", "opencode", "pi"}
+                edited = {"claude-code", "codex", "cursor", "opencode", "pi", "droid"}
                 self.assertEqual(bool(copies), agent in edited, sorted(backups))
                 if copies:
                     self.assertEqual(after[copies[0]], original[name])
@@ -270,6 +273,7 @@ class InstallTests(CliTestCase):
                 f"goose/.agents/plugins/mezmo-governance/{name}" for name in ("plugin.json", "mezmo_governance_hook.py", "hooks/hooks.json")
             ),
             "opencode": ("xdg/opencode/mezmo-governance/index.ts", "xdg/opencode/mezmo-governance/mezmo-governance/client.ts"),
+            "droid": ("factory/.factory/hooks/mezmo_governance_hook.py",),
         }
         for agent, names in copied.items():
             with self.subTest(agent=agent):
@@ -398,6 +402,12 @@ class InstallTests(CliTestCase):
         self.assertTrue((self.tmp / "codex/hooks/mezmo_governance_hook.py").is_file())
         cursor = json.loads((self.tmp / "home/.cursor/hooks.json").read_text())
         self.assertEqual(cursor, json.loads((REPO / "cursor/hooks.example.json").read_text()))
+        droid = json.loads((self.tmp / "factory/.factory/hooks.json").read_text())
+        command = droid["PreToolUse"][0]["hooks"][0]["command"]
+        self.assertIn(f'{self.tmp}/factory/.factory/hooks/mezmo_governance_hook.py', command)
+        self.assertTrue(command.endswith("exit 2; }"), command)
+        self.assertNotIn("hooks", droid)
+        self.assertTrue((self.tmp / "factory/.factory/hooks/mezmo_governance_hook.py").is_file())
         copilot = (self.tmp / "copilot/hooks/mezmo-governance.json").read_text()
         self.assertIn(f"{self.tmp}/copilot/hooks/mezmo_governance_hook.py", copilot)
         self.assertNotIn("$HOME", copilot)
@@ -425,8 +435,9 @@ class InstallTests(CliTestCase):
 
     def test_without_overrides_the_folders_are_under_home(self) -> None:
         env = {key: "" for key in ("CLAUDE_CONFIG_DIR", "CODEX_HOME", "GEMINI_CLI_HOME", "COPILOT_HOME",
-                                   "GOOSE_PATH_ROOT", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR")}
-        result = self.cli("install", "codex", "copilot", "goose", "opencode", "--dry-run", **env)
+                                   "GOOSE_PATH_ROOT", "XDG_CONFIG_HOME", "PI_CODING_AGENT_DIR", "FACTORY_HOME_OVERRIDE")}
+        result = self.cli("install", "codex", "copilot", "goose", "opencode", "droid", "--dry-run", **env)
+        self.assertIn("~/.factory/hooks.json", result.stdout)
         self.assertIn("~/.codex/hooks.json", result.stdout)
         self.assertIn("~/.copilot/hooks/mezmo-governance.json", result.stdout)
         self.assertIn("~/.agents/plugins/mezmo-governance/hooks/hooks.json", result.stdout)
@@ -450,7 +461,7 @@ class InstallTests(CliTestCase):
         self.assertEqual(self.files(), installed)
 
     def test_install_all_picks_agents_whose_binary_is_found(self) -> None:
-        for binary in ("claude", "gemini", "pi", "copilot", "goose", "opencode"):
+        for binary in ("claude", "gemini", "pi", "copilot", "goose", "opencode", "droid"):
             (self.bin / binary).unlink()
         result = self.cli("install", "--all", "--dry-run")
         planned = [line.split()[1].rstrip(":") for line in result.stdout.splitlines() if line.startswith("plan")]
@@ -486,12 +497,13 @@ class InstallTests(CliTestCase):
         # What each README's manual steps leave behind; install must not add a second hook.
         gemini = json.loads((REPO / "gemini-cli/settings.example.json").read_text())
         codex = json.loads((REPO / "codex/hooks.example.json").read_text())
-        self.write({"gemini/.gemini/settings.json": gemini, "codex/hooks.json": codex})
+        droid = json.loads((REPO / "droid/hooks.example.json").read_text())
+        self.write({"gemini/.gemini/settings.json": gemini, "codex/hooks.json": codex, "factory/.factory/hooks.json": droid})
         shutil.copytree(REPO / "pi", self.tmp / "pi/extensions/mezmo-governance")
         before = self.files()
-        result = self.cli("install", "gemini-cli", "codex", "pi")
+        result = self.cli("install", "gemini-cli", "codex", "pi", "droid")
         self.assertEqual(result.returncode, 0, result.stdout)
-        for agent in ("gemini-cli", "codex", "pi"):
+        for agent in ("gemini-cli", "codex", "pi", "droid"):
             self.assertIn(f"ok    {agent}: already installed, nothing to change", result.stdout)
         self.assertEqual(self.files(), before)
         self.assertFalse(self.log.exists())
@@ -524,6 +536,46 @@ class InstallTests(CliTestCase):
         self.assertIn("Install on 1.x", result.stdout)
         self.assertFalse((self.tmp / "xdg").exists())
 
+    def test_droid_install_refuses_to_hide_hooks_droid_reads_elsewhere(self) -> None:
+        # Droid reads hooks/hooks.json only while hooks.json is absent, and settings.json hooks
+        # only for events hooks.json lacks (Droid 0.244.0; its docs: only while hooks.json is absent).
+        own = [{"hooks": [{"type": "command", "command": "other-hook"}]}]
+        cases = [
+            ({"factory/.factory/hooks/hooks.json": {"PostToolUse": own}}, "hooks/hooks.json only while"),
+            ({"factory/.factory/settings.json": {"hooks": {"PreToolUse": own}}}, "has PreToolUse hooks"),
+            ({"factory/.factory/settings.json": {"hooks": {"Stop": own}}}, "has Stop hooks"),
+            ({"factory/.factory/settings.json": {"hooks": {"PostToolUse": own}}, "factory/.factory/hooks.json": {"Stop": own}},
+             "has PostToolUse hooks"),
+        ]
+        for files, words in cases:
+            with self.subTest(files=sorted(files)):
+                shutil.rmtree(self.tmp / "factory", ignore_errors=True)
+                self.write(files)
+                before = self.files()
+                result = self.cli("install", "droid")
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(words, result.stdout)
+                self.assertIn("Nothing changed.", result.stdout)
+                self.assertEqual(self.files(), before)
+        # Hooks for an event hooks.json already has, or for one install leaves alone, stay as Droid reads them.
+        shutil.rmtree(self.tmp / "factory")
+        self.write({"factory/.factory/settings.json": {"hooks": {"Stop": own, "hooksDisabled": False}}, "factory/.factory/hooks.json": {"Notification": own}})
+        result = self.cli("install", "droid")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_droid_uninstall_keeps_the_users_other_hooks_settings(self) -> None:
+        own = [{"matcher": "Execute", "hooks": [{"type": "command", "command": "other-hook"}]}]
+        original = {"showHookOutput": True, "PreToolUse": own}
+        self.write({"factory/.factory/hooks.json": original})
+        self.assertEqual(self.cli("install", "droid").returncode, 0)
+        installed = json.loads((self.tmp / "factory/.factory/hooks.json").read_text())
+        self.assertEqual(list(installed), ["showHookOutput", "PreToolUse", "PostToolUse"])
+        self.assertEqual(installed["PreToolUse"][0], own[0])
+        result = self.cli("uninstall", "droid")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads((self.tmp / "factory/.factory/hooks.json").read_text()), original)
+        self.assertFalse((self.tmp / "factory/.factory/hooks").exists())
+
 
 class CommandTests(CliTestCase):
     def test_help_lists_every_command_and_agent(self) -> None:
@@ -532,7 +584,7 @@ class CommandTests(CliTestCase):
                 result = self.cli(*args)
                 self.assertEqual(result.returncode, 0)
                 for word in ("agents", "install", "uninstall", "doctor", "mock", "smoke", "policy show", "policy apply", "--agent NAME|ID", "smoke [agent...] [--live]",
-                             "MEZMO_GOVERNANCE_ADMIN_KEY", *AGENTS, "CODEX_HOME"):
+                             "MEZMO_GOVERNANCE_ADMIN_KEY", *AGENTS, "CODEX_HOME", "FACTORY_HOME_OVERRIDE"):
                     self.assertIn(word, result.stdout)
 
     def test_an_unknown_agent_or_command_exits_2_with_help(self) -> None:
@@ -1132,6 +1184,8 @@ class ManifestTests(unittest.TestCase):
     def test_each_native_plugin_points_at_its_own_adapter_and_hook(self) -> None:
         # marketplace, plugin manifest, hook config, and the example's hook path the plugin swaps out.
         cases = (
+            (".factory-plugin/marketplace.json", ".factory-plugin/plugin.json", "droid",
+             {'${MEZMO_GOVERNANCE_HOOK:-$HOME/.factory/hooks/mezmo_governance_hook.py}': "${DROID_PLUGIN_ROOT}/mezmo_governance_hook.py"}),
             (".agents/plugins/marketplace.json", ".codex-plugin/plugin.json", "codex",
              {'${MEZMO_GOVERNANCE_HOOK:-$HOME/.codex/hooks/mezmo_governance_hook.py}': "${PLUGIN_ROOT}/mezmo_governance_hook.py"}),
             (".github/plugin/marketplace.json", "plugin.json", "copilot",
@@ -1149,8 +1203,9 @@ class ManifestTests(unittest.TestCase):
                 text = (root / "hooks.example.json").read_text()
                 for old, new in swaps.items():
                     text = text.replace(old, new)
-                plugin = json.loads((root / "hooks/hooks.json").read_text())
-                self.assertEqual(plugin["hooks"], json.loads(text)["hooks"])
+                plugin, example = json.loads((root / "hooks/hooks.json").read_text()), json.loads(text)
+                # Droid's hooks.json holds the events at its top level, with no "hooks" key.
+                self.assertEqual(plugin.get("hooks", plugin), example.get("hooks", example))
 
 
 class WrapperTests(CliTestCase):

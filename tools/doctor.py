@@ -112,6 +112,7 @@ CONFIG_OVERRIDES = (
     "GOOSE_PATH_ROOT",
     "XDG_CONFIG_HOME",
     "PI_CODING_AGENT_DIR",
+    "FACTORY_HOME_OVERRIDE",
 )
 
 
@@ -150,6 +151,10 @@ def opencode_dir() -> Path:
 
 def pi_dir() -> Path:
     return env_dir("PI_CODING_AGENT_DIR", home() / ".pi" / "agent")
+
+
+def droid_dir() -> Path:
+    return env_dir("FACTORY_HOME_OVERRIDE", home()) / ".factory"
 
 
 def shown(path: Path) -> str:
@@ -900,6 +905,33 @@ def check_pi(report: Report, version: Optional[tuple]) -> Optional[list]:
     return []
 
 
+def check_droid(report: Report, version: Optional[tuple]) -> Optional[list]:
+    path = droid_dir() / "hooks.json"
+    settings = droid_dir() / "settings.json"
+    config = as_dict(read_json(path))
+    # Droid 0.244.0 lays hooks.json over the hooks in settings.json, one event at a time.
+    hooks = {**as_dict(as_dict(read_json(settings)).get("hooks")), **config}
+    found = mezmo_handlers(hooks.get("PreToolUse"))
+    if not found:
+        return None
+    where = path if "PreToolUse" in config else settings
+    if hooks.get("hooksDisabled") is True:
+        report.line("FAIL", "Droid hooks", f"hooksDisabled turns every hook off, {UNGOVERNED}", f"remove it from {shown(where)}")
+    event = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "doctor",
+        "tool_name": "Execute",
+        "tool_input": {"command": "echo hi"},
+    }
+    smokes = []
+    for *_, handler in found:
+        command = str(handler.get("command"))
+        report.line("ok", "Droid hook", f"PreToolUse hook in {shown(where)}")
+        fail_closed(report, "Droid hook", "exit 2" in command, "|| exit 2 guard", "droid/hooks.example.json")
+        smokes.append(Smoke("Droid", hook_path(command), event))
+    return smokes
+
+
 class Agent(NamedTuple):
     name: str
     binary: str
@@ -922,6 +954,8 @@ AGENTS = (
     Agent("Goose", "goose", ("1.54.0",), None, "goose", check_goose, "goose", "shell", "tree"),
     Agent("OpenCode", "opencode", ("1.19.0", "2.0.25"), None, "opencode", check_opencode, "opencode", "shell", "read"),
     Agent("Pi", "pi", ("1.3.0",), None, "pi", check_pi, "pi", "bash", "read"),
+    # Droid 0.244.0 was read from its binary, not run.
+    Agent("Droid", "droid", ("0.244.0",), None, "droid", check_droid, "droid", "Execute", "Read"),
 )
 
 
@@ -998,6 +1032,7 @@ def install_copies() -> dict:
         cursor_dir() / "hooks" / HOOK_FILE: "cursor",
         copilot_dir() / "hooks" / HOOK_FILE: "copilot",
         goose_dir() / HOOK_FILE: "goose",
+        droid_dir() / "hooks" / HOOK_FILE: "droid",
     }
 
 

@@ -255,6 +255,8 @@ test(
         [[[200, '{"approved":"true"}']], "did not return an approval decision"],
         [[[200, '{"approved":1}']], "did not return an approval decision"],
         [[[409, "{}"], [200, '{"status":"maybe"}']], "unexpected status"],
+        [[[409, "{}"], [200, "{}"]], "unexpected status"],
+        [[[409, "{}"], [200, '{"approved":"yes"}']], "unexpected status"],
         [[[409, "{}"], [200, "not json"]], "invalid JSON response"],
       ];
       for (const [answers, message] of cases) {
