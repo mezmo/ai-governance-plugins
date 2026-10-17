@@ -21,7 +21,8 @@ Post-tool hooks only append a local JSONL file. They do not call Mezmo.
 ## Authentication
 
 Register an agent in Mezmo with a service account that has Governance
-permissions, and copy that service account's token. Use a service account
+permissions, and copy that service account's token, a standard Mezmo
+service key ([Generate Service and Ingestion Keys](https://docs.mezmo.com/docs/ingestion-key)). Use a service account
 made for Governance alone, with no other permissions. Plugins send:
 
 ```http

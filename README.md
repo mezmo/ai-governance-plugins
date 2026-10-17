@@ -78,8 +78,10 @@ can watch the plugin wait and then deny.
    only two values from it, the `url` (your `MEZMO_GOVERNANCE_URL`) and
    `MEZMO_GOVERNANCE_TOKEN`.
 
-   `MEZMO_GOVERNANCE_TOKEN` is the service account's token, not a key of the
-   agent. Copy it from the service account in Mezmo.
+   `MEZMO_GOVERNANCE_TOKEN` is the service account's token, a standard Mezmo
+   service key, not a key of the agent. Create it under Settings >
+   Organization > API Keys, as in [Generate Service and Ingestion Keys](https://docs.mezmo.com/docs/ingestion-key), and copy it when
+   Mezmo shows it: the full key appears only once.
 2. Install the plugin for your agent, from this repository. The install
    governs every session of that agent on this machine, so try a new policy
    in one session first, as in
@@ -456,7 +458,7 @@ one shell call (expected: denied) and one file read (expected: approved):
 | Goose CLI | 1.54.0 | pass | blocked with `on_failure: block`, also on a timeout; runs without it |
 | Droid | 0.244.0, `droid exec` with a bring-your-own-key model (no Factory plan); also against production Mezmo | pass | blocked with the guard |
 | Windsurf | 1.126.0 (Devin Desktop 3.10.67); also against production Mezmo | pass, started from a shell or from the Dock after `launchctl setenv`; a plain Dock launch passes no settings, so every call is denied | blocked with the guard |
-| Antigravity CLI | 1.4.0, `agy -p` with a workspace `.agents/hooks.json` | pass | blocked, also on exit 1, output that is not JSON, a missing script and a timeout |
+| Antigravity CLI | 1.4.0, `agy -p` with a workspace `.agents/hooks.json`; 1.4.1 with `~/.gemini/config/hooks.json` against production Mezmo | pass | blocked, also on exit 1, output that is not JSON, a missing script and a timeout |
 | OpenCode | 2.0.25 | pass, through the background service with plugin options | not checked |
 | Pi | 1.3.0 | pass | not checked |
 | Mastra | 1.77.0, `generate` and `stream` | pass | not checked |
