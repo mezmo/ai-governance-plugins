@@ -1,0 +1,28 @@
+{
+  "mezmo-governance": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.gemini/config/hooks/mezmo_governance_hook.py}\" PreToolUse",
+            "timeout": 600
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.gemini/config/hooks/mezmo_governance_hook.py}\" PostToolUse",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

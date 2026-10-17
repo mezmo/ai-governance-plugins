@@ -773,6 +773,48 @@ class OtherHookAgentTests(DoctorTestCase):
                 self.assertIn(words, shown[0])
                 self.assertIn("so every tool call runs ungoverned", shown[0])
 
+    def antigravity_config(self, **spec: Any) -> dict:
+        return {**json.loads((REPO / "antigravity/hooks.example.json").read_text()), **spec}
+
+    def test_antigravity_fails_closed_without_a_guard(self) -> None:
+        # Antigravity CLI 1.4.0 blocked the tool on a hook exit 1, exit 2, crash, non-JSON output and timeout, live.
+        self.agent("agy", "1.4.0")
+        self.copy_hook("antigravity", ".gemini/config/hooks/mezmo_governance_hook.py")
+        self.write(".gemini/config/hooks.json", self.antigravity_config(other={"PreInvocation": [{"command": "other-hook"}]}))
+        result = self.doctor()
+        hook = self.lines(result, "Antigravity CLI hook")
+        self.assertTrue(hook[0].startswith("ok    Antigravity CLI hook: PreToolUse hook mezmo-governance in ~/.gemini/config/hooks.json"), result.stdout)
+        self.assertTrue(hook[1].startswith("ok    Antigravity CLI hook: fails closed"), result.stdout)
+        self.assertStatus(result, "Antigravity CLI smoke", "ok")
+        self.assertEqual(self.lines(result, "Antigravity CLI hooks"), [])
+
+    def test_antigravity_fails_a_disabled_hook_and_a_file_antigravity_would_drop(self) -> None:
+        # Antigravity CLI 1.4.0 skips a named hook with "enabled": false, and drops a file it cannot read whole, live.
+        self.agent("agy", "1.4.0")
+        self.copy_hook("antigravity", ".gemini/config/hooks/mezmo_governance_hook.py")
+        mezmo = self.antigravity_config()["mezmo-governance"]
+        cases = [
+            ({"mezmo-governance": {**mezmo, "enabled": False}}, '"enabled": false'),
+            ({"mezmo-governance": {**mezmo, "ENABLED": False}}, '"enabled": false'),
+            ({"other": {"PostToolUse": [{"hooks": [{"command": "x", "timeout": 1.5}]}]}}, "timeout"),
+        ]
+        for extra, words in cases:
+            with self.subTest(extra=extra):
+                self.write(".gemini/config/hooks.json", self.antigravity_config(**extra))
+                result = self.doctor()
+                shown = self.lines(result, "Antigravity CLI hooks")
+                self.assertTrue(shown[0].startswith("FAIL"), result.stdout)
+                self.assertIn(words, shown[0])
+                self.assertIn("so every tool call runs ungoverned", shown[0])
+
+    def test_an_antigravity_handler_outside_a_matcher_group_is_not_installed(self) -> None:
+        # Antigravity CLI 1.4.0 ignores a flat handler under PreToolUse: it runs only handlers in a matcher group.
+        self.agent("agy", "1.4.0")
+        handler = self.antigravity_config()["mezmo-governance"]["PreToolUse"][0]["hooks"][0]
+        self.write(".gemini/config/hooks.json", {"mezmo-governance": {"PreToolUse": [handler]}})
+        result = self.doctor()
+        self.assertIn("not installed", self.lines(result, "Antigravity CLI")[-1])
+
     def test_gemini_needs_the_guard(self) -> None:
         self.agent("gemini", "0.64.0")
         self.copy_hook("gemini-cli", ".gemini/hooks/mezmo_governance_hook.py")
@@ -1149,6 +1191,57 @@ class SourceTests(unittest.TestCase):
             self.assertTrue((REPO / agent.readme / "README.md").is_file())
         claude = (REPO / "claude-code" / "README.md").read_text(encoding="utf-8")
         self.assertIn(f"Claude Code v{doctor.AGENTS[0].minimum} or later", claude)
+
+
+class AntigravityProblemTests(unittest.TestCase):
+    def test_each_file_antigravity_drops_is_named_and_each_it_keeps_is_not(self) -> None:
+        # Each kind of drop was seen live in agy 1.4.0 (agy -p /hooks lists none of the file's hooks);
+        # the other cases follow from Go's encoding/json, which matches keys in any case and takes null as unset.
+        sys.path.insert(0, str(DOCTOR.parent))
+        self.addCleanup(sys.path.remove, str(DOCTOR.parent))
+        import doctor
+
+        def group(**handler: Any) -> dict:
+            return {"x": {"PreToolUse": [{"matcher": "*", "hooks": [{"command": "other-hook", **handler}]}]}}
+
+        dropped = [
+            ([], "not a JSON object"),
+            ({"x": "on"}, "x is not an object"),
+            ({"x": {"enabled": "false"}}, '"enabled"'),
+            ({"x": {"Enabled": 0}}, '"enabled"'),
+            ({"x": {"PreToolUse": {}}}, "PreToolUse is not a list"),
+            ({"x": {"stop": "other-hook"}}, "Stop is not a list"),
+            ({"x": {"PreToolUse": ["other-hook"]}}, "PreToolUse entry 0 is not an object"),
+            ({"x": {"PreToolUse": [{"matcher": 1, "hooks": []}]}}, "matcher"),
+            ({"x": {"PreToolUse": [{"hooks": {}}]}}, "PreToolUse entry 0 hooks is not a list"),
+            ({"x": {"PreToolUse": [{"hooks": ["other-hook"]}]}}, "PreToolUse entry 0 hook 0 is not an object"),
+            (group(timeout=1.5), "timeout"),
+            (group(timeout="10"), "timeout"),
+            (group(timeout=True), "timeout"),
+            (group(command=["other-hook"]), "command"),
+            (group(type="Command"), "type"),
+            (group(type="prompt"), "prompt"),
+            ({"x": {"PreInvocation": [{"command": "other-hook", "timeout": 2.5}]}}, "PreInvocation entry 0 has a timeout"),
+        ]
+        for config, words in dropped:
+            with self.subTest(config=config):
+                problem = doctor.antigravity_problem(config)
+                self.assertIsNotNone(problem)
+                self.assertIn(words, problem)
+        kept = [
+            None,
+            {},
+            {"x": None},
+            {"x": {"PreToolUse": None, "enabled": None}},
+            {"x": {"Notification": "other-hook", "PreToolUse": [{"command": 5}]}},
+            {"x": {"PreToolUse": [{"matcher": "(", "hooks": [{"command": "other-hook"}]}]}},
+            {"x": {"PreToolUse": [None, {"hooks": [None]}]}},
+            group(type="", timeout=10),
+            group(type="command", timeout=None),
+        ]
+        for config in kept:
+            with self.subTest(config=config):
+                self.assertIsNone(doctor.antigravity_problem(config))
 
 
 if __name__ == "__main__":

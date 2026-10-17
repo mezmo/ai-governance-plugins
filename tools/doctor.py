@@ -162,6 +162,11 @@ def windsurf_dir() -> Path:
     return home() / ".codeium" / "windsurf"
 
 
+def antigravity_dir() -> Path:
+    # Antigravity CLI 1.4.0 has no override for its user config folder.
+    return home() / ".gemini" / "config"
+
+
 def shown(path: Path) -> str:
     text = str(path)
     root = str(home())
@@ -996,6 +1001,114 @@ def check_windsurf(report: Report, version: Optional[tuple]) -> Optional[list]:
     return smokes
 
 
+# The events of an Antigravity CLI named hook: two hold matcher groups, the rest hold handlers.
+ANTIGRAVITY_EVENTS = {name.lower(): name for name in ("PreToolUse", "PostToolUse", "SessionStart", "PreInvocation", "PostInvocation", "Stop")}
+ANTIGRAVITY_GROUPED = ("pretooluse", "posttooluse")
+
+
+def go_fields(value: dict) -> dict:
+    """The object's keys lowercased: Go's encoding/json, which Antigravity reads hooks.json with, matches them in any case."""
+    return {str(key).lower(): item for key, item in value.items()}
+
+
+def antigravity_handler_problem(where: str, handler: Any) -> Optional[str]:
+    if not isinstance(handler, dict):
+        return f"{where} is not an object"
+    handler = go_fields(handler)
+    kind, command, timeout = handler.get("type"), handler.get("command"), handler.get("timeout")
+    if kind == "prompt" and command is not None:
+        return f'{where} is a prompt hook with a command'
+    if kind not in (None, "", "command", "prompt"):
+        return f'{where} has the type {json.dumps(kind)}, and Antigravity runs only "command"'
+    if command is not None and not isinstance(command, str):
+        return f"{where} has a command that is not a string"
+    if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, int)):
+        return f"{where} has a timeout that is not a whole number"
+    return None
+
+
+def antigravity_problem(config: Any) -> Optional[str]:
+    """Why Antigravity CLI 1.4.0 drops this hooks.json whole, or None; Go takes a null anywhere as unset."""
+    if config is None:
+        return None
+    if not isinstance(config, dict):
+        return "it is not a JSON object"
+    for name, spec in config.items():
+        if spec is None:
+            continue
+        if not isinstance(spec, dict):
+            return f"its {name} is not an object"
+        spec = go_fields(spec)
+        if spec.get("enabled") is not None and not isinstance(spec["enabled"], bool):
+            return f'its {name} "enabled" is not true or false'
+        for key, event in ANTIGRAVITY_EVENTS.items():
+            entries = spec.get(key)
+            if entries is None:
+                continue
+            if not isinstance(entries, list):
+                return f"its {name} {event} is not a list"
+            for g, entry in enumerate(entries):
+                where = f"its {name} {event} entry {g}"
+                if entry is None:
+                    continue
+                if key not in ANTIGRAVITY_GROUPED:
+                    problem = antigravity_handler_problem(where, entry)
+                    if problem:
+                        return problem
+                    continue
+                if not isinstance(entry, dict):
+                    return f"{where} is not an object"
+                group = go_fields(entry)
+                if group.get("matcher") is not None and not isinstance(group["matcher"], str):
+                    return f"{where} has a matcher that is not a string"
+                handlers = group.get("hooks")
+                if handlers is None:
+                    continue
+                if not isinstance(handlers, list):
+                    return f"{where} hooks is not a list"
+                for h, handler in enumerate(handlers):
+                    problem = None if handler is None else antigravity_handler_problem(f"{where} hook {h}", handler)
+                    if problem:
+                        return problem
+    return None
+
+
+def antigravity_hooks(config: Any) -> list:
+    """(hook name, named hook, handler) for each PreToolUse handler that runs the hook.
+
+    Antigravity runs only handlers in a matcher group there, and ignores a flat one.
+    """
+    found = []
+    for name, spec in as_dict(config).items():
+        spec = go_fields(as_dict(spec))
+        for group in as_list(spec.get("pretooluse")):
+            for handler in as_list(go_fields(as_dict(group)).get("hooks")):
+                command = go_fields(as_dict(handler)).get("command")
+                if isinstance(command, str) and HOOK_FILE in command:
+                    found.append((name, spec, command))
+    return found
+
+
+def check_antigravity(report: Report, version: Optional[tuple]) -> Optional[list]:
+    path = antigravity_dir() / "hooks.json"
+    config = read_json(path)
+    found = antigravity_hooks(config)
+    if not found:
+        return None
+    problem = antigravity_problem(config)
+    if problem:
+        report.line("FAIL", "Antigravity CLI hooks", f"Antigravity drops {shown(path)} because {problem}, {UNGOVERNED}", "fix the file as in antigravity/README.md")
+    event = {"conversationId": "doctor", "stepIdx": 1, "toolCall": {"name": "run_command", "args": {"CommandLine": "echo hi"}}}
+    smokes = []
+    for name, spec, command in found:
+        if spec.get("enabled") is False:
+            report.line("FAIL", "Antigravity CLI hooks", f'the {name} hook has "enabled": false, {UNGOVERNED}', f"remove it from {shown(path)}")
+        report.line("ok", "Antigravity CLI hook", f"PreToolUse hook {name} in {shown(path)}")
+        fail_closed(report, "Antigravity CLI hook", True, "Antigravity blocks the tool when a hook fails", "antigravity/hooks.example.json")
+        smokes.append(Smoke("Antigravity CLI", hook_path(command), event, ("PreToolUse",)))
+    return smokes
+
+
 class Agent(NamedTuple):
     name: str
     binary: str
@@ -1022,6 +1135,7 @@ AGENTS = (
     Agent("Droid", "droid", ("0.244.0",), None, "droid", check_droid, "droid", "Execute", "Read"),
     # Windsurf 1.126.0 was read from its binary, not run.
     Agent("Windsurf", "devin-desktop", ("1.126.0",), None, "windsurf", check_windsurf, "windsurf", "run_command", "read_code"),
+    Agent("Antigravity CLI", "agy", ("1.4.0",), None, "antigravity", check_antigravity, "antigravity", "run_command", "view_file"),
 )
 
 
@@ -1100,6 +1214,7 @@ def install_copies() -> dict:
         goose_dir() / HOOK_FILE: "goose",
         droid_dir() / "hooks" / HOOK_FILE: "droid",
         windsurf_dir() / "hooks" / HOOK_FILE: "windsurf",
+        antigravity_dir() / "hooks" / HOOK_FILE: "antigravity",
     }
 
 
