@@ -239,7 +239,8 @@ node for the OpenCode and Pi smoke test.
 own override: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`,
 `COPILOT_HOME`, `GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME` (OpenCode) and
 `PI_CODING_AGENT_DIR`. Before it edits a JSON file, it saves a copy next to it
-as `<name>.mezmo-backup-<time>` and prints the path. It never writes the
+as `<name>.mezmo-backup-<time>` and prints the path. It writes through a
+symlink and keeps the file's mode, such as `0600`. It never writes the
 token. Running it twice changes nothing. `uninstall` removes only the
 entries and files `install` added. Codex keys hook trust by position, so where
 other groups follow the Mezmo group in `hooks.json`, `uninstall` leaves an empty

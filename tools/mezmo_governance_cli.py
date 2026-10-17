@@ -128,6 +128,8 @@ def backup(path: Path) -> Path:
 
 def write_json(path: Path, data: Any) -> None:
     """Write data in the file's own indent and line endings, so the lines install did not change stay the same."""
+    # Write through a symlink, so a config linked from elsewhere stays linked.
+    path = path.resolve()
     indent, newline, ending = "  ", "\n", "\n"
     if path.is_file():
         text = path.read_bytes().decode("utf-8")
@@ -138,6 +140,9 @@ def write_json(path: Path, data: Any) -> None:
     partial = path.with_name(path.name + ".mezmo-partial")
     output = json.dumps(data, indent=indent, ensure_ascii=False).replace("\n", newline) + ending
     partial.write_bytes(output.encode("utf-8"))
+    if path.is_file():
+        # Keep the file's mode, such as 0600.
+        shutil.copymode(path, partial)
     os.replace(partial, path)
 
 

@@ -274,6 +274,24 @@ class InstallTests(CliTestCase):
         for name, text in texts.items():
             self.assertEqual((self.tmp / name).read_bytes().decode("utf-8"), text, name)
 
+    def test_a_rewritten_config_keeps_its_symlink_and_its_mode(self) -> None:
+        # A dotfiles user links hooks.json from a repository and keeps opencode.json, which names the key file, 0600.
+        target = self.tmp / "dotfiles/hooks.json"
+        self.write({"dotfiles/hooks.json": ORIGINALS["codex"]["codex/hooks.json"], **ORIGINALS["opencode"]})
+        (self.tmp / "codex").mkdir()
+        (self.tmp / "codex/hooks.json").symlink_to(target)
+        opencode = self.tmp / "xdg/opencode/opencode.json"
+        opencode.chmod(0o600)
+        for verb in ("install", "uninstall"):
+            with self.subTest(verb=verb):
+                result = self.cli(verb, "codex", "opencode")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue((self.tmp / "codex/hooks.json").is_symlink())
+                self.assertEqual(os.readlink(self.tmp / "codex/hooks.json"), str(target))
+                self.assertEqual(oct(opencode.stat().st_mode & 0o777), oct(0o600))
+        self.assertEqual(json.loads(target.read_text()), ORIGINALS["codex"]["codex/hooks.json"])
+        self.assertFalse(list(self.tmp.rglob("*.mezmo-partial")))
+
     def test_codex_uninstall_keeps_the_place_of_later_hook_groups(self) -> None:
         # Codex keys hook trust by group index (hooks.state."<file>:pre_tool_use:<group>:<handler>").
         self.write(ORIGINALS["codex"])
