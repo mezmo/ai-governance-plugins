@@ -117,6 +117,8 @@ asyncio loop. Under trio every call is denied.
 
 The same variables as the other plugins: see the [root README](../README.md#settings).
 The audit log defaults to `~/.mezmo/governance-audit.jsonl`.
+Each line keeps up to 2,000 characters of the tool's result, so the Python
+hooks keep the log readable by its owner only: mode 0600, in a 0700 folder.
 
 ## What the hooks send
 

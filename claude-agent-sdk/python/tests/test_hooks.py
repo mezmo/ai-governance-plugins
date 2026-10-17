@@ -350,6 +350,27 @@ class PostToolUseTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(line["decision_id"])
         self.assertIsNone(line["request_id"])
 
+    async def test_only_the_owner_can_read_a_new_log_and_its_folder(self) -> None:
+        log = Path(self.directory.name) / "fresh" / "audit.jsonl"
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_AUDIT_LOG": str(log)}):
+            await post_tool_use(post_event(), "toolu_01", {"signal": None})
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(log.parent.stat().st_mode & 0o777, 0o700)
+
+    async def test_a_readable_log_from_an_older_version_is_tightened(self) -> None:
+        self.log.write_text("", encoding="utf-8")
+        self.log.chmod(0o644)
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_AUDIT_LOG": str(self.log)}):
+            await post_tool_use(post_event(), "toolu_01", {"signal": None})
+        self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(len(self.lines()), 1)
+
+    async def test_a_log_sent_to_dev_null_writes_without_a_warning(self) -> None:
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_AUDIT_LOG": os.devnull}):
+            with patch("sys.stderr") as stderr:
+                await post_tool_use(post_event(), "toolu_01", {"signal": None})
+        self.assertEqual(stderr.write.call_args_list, [])
+
     async def test_an_unwritable_log_never_blocks(self) -> None:
         blocker = Path(self.directory.name) / "file"
         blocker.write_text("", encoding="utf-8")
