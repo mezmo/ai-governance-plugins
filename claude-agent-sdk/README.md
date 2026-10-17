@@ -88,6 +88,10 @@ hooks = mezmo_governance_hooks()
 hooks["PreToolUse"].append(HookMatcher(matcher="Bash", hooks=[my_check]))
 ```
 
+No other hook, and no `canUseTool` (`can_use_tool` in Python), may rewrite the
+tool input after approval. Mezmo approved the input it saw: a later
+`updatedInput` runs a call Mezmo never saw, and nothing denies it.
+
 ## How it fails closed
 
 - The `PreToolUse` matcher has no pattern, so every tool call is checked:

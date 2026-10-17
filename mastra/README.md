@@ -49,11 +49,34 @@ await agent.generate(prompt, {
     ...mezmoGovernanceHooks,
     async beforeToolCall(ctx) {
       const mine = await myBeforeToolCall(ctx); // may return { proceed: false, output }
-      return mine ?? mezmoGovernanceHooks.beforeToolCall(ctx);
+      if (mine?.proceed === false) return mine;
+      return mezmoGovernanceHooks.beforeToolCall(ctx);
     },
   },
 });
 ```
+
+Only a `proceed: false` from your hook may skip the governance hook. Any other
+return value still goes on to Mezmo.
+
+### Give every agent the hooks
+
+The hooks belong to one `Agent`. A sub-agent that another agent calls runs its
+tools under its own hooks, not its caller's. Pass `hooks: mezmoGovernanceHooks`
+to every agent, sub-agents included.
+
+### Calls the hooks never see
+
+These run without asking Mezmo:
+
+- Provider-executed tools, such as a model provider's built-in web search, and
+  client tools with no `execute`: Mastra does not execute them, so no hook
+  fires.
+- A workflow step, or any other code, that calls a tool's `execute` directly:
+  the hooks run only in an agent's tool loop.
+
+Keep such tools away from agents that need the gate, or gate them in your own
+code.
 
 `createMezmoGovernanceHooks()` builds a fresh hook pair if you need to inject a
 custom fetch in tests.
