@@ -93,6 +93,13 @@ def resolve_key(explicit: Optional[str], environ: Mapping[str, str] = os.environ
     return explicit or environ.get(KEY_ENV_VAR) or None
 
 
+class RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """Hand a 3xx back as the answer, so a key never goes to another URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
 def http_request(
     method: str,
     url: str,
@@ -103,7 +110,7 @@ def http_request(
     """Send a request and return (status, body). Raises OSError on network failures."""
     request = urllib.request.Request(url, data=body, headers=dict(headers), method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.build_opener(RefuseRedirect).open(request, timeout=timeout) as response:
             return response.status, response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as err:
         return err.code, err.read().decode("utf-8", "replace")
