@@ -21,6 +21,7 @@ repo, with these changes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -237,6 +238,26 @@ def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
     return NormalizedToolCall(AGENT, canonical_name, dict(raw_input))
 
 
+def call_digest(namespace: str, name: str, arguments: Mapping[str, Any]) -> str:
+    """Hash the exact call, so an edited call never reuses an earlier decision."""
+    canonical = json.dumps([namespace, name, dict(arguments)], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+# Mezmo answers HTTP 400 to a longer request_id. The decision_id hashes the full id,
+# so a cut id still gets its own decision.
+MAX_REQUEST_ID_CHARACTERS = 128
+
+
+def bounded_request_id(request_id: str) -> str:
+    if len(request_id) <= MAX_REQUEST_ID_CHARACTERS:
+        return request_id
+    # A hash of the whole head keeps two cut ids apart.
+    head, digest = request_id.rsplit("#", 1)
+    tail = "~" + hashlib.sha256(head.encode()).hexdigest()[:16] + "#" + digest
+    return head[: MAX_REQUEST_ID_CHARACTERS - len(tail)] + tail
+
+
 def call_identity(event: Mapping[str, Any]) -> CallIdentity:
     session_id = required_string(event.get("session_id"), "session_id")
     tool_use_id = required_string(event.get("tool_use_id"), "tool_use_id")
@@ -245,8 +266,9 @@ def call_identity(event: Mapping[str, Any]) -> CallIdentity:
         request_id = f"{AGENT}:{session_id}:{turn_id.strip()}:{tool_use_id}"
     else:
         request_id = f"{AGENT}:{session_id}:{tool_use_id}"
+    request_id += "#" + call_digest(*normalize_tool_call(event))
     decision_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request_id))
-    return CallIdentity(decision_id, request_id, session_id)
+    return CallIdentity(decision_id, bounded_request_id(request_id), session_id)
 
 
 def origin(event: Mapping[str, Any]) -> Dict[str, Any]:

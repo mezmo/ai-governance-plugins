@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from io import StringIO
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 from unittest.mock import patch
@@ -125,7 +126,7 @@ class AdapterContractTests(unittest.TestCase):
         before = hook.call_identity(hook_event("PreToolUse"))
         after = hook.call_identity(hook_event("PostToolUse"))
         self.assertEqual(before, after)
-        self.assertEqual(before.request_id, "claude_code:session-1:turn-1:tool-use-1")
+        self.assertRegex(before.request_id, r"^claude_code:session-1:turn-1:tool-use-1#[0-9a-f]{16}$")
 
     def test_approval_payload_identifies_claude_code_and_the_mcp_namespace(self) -> None:
         payload = hook.approval_payload(hook_event("PreToolUse"))
@@ -485,6 +486,29 @@ class SessionStateTests(unittest.TestCase):
         os.environ.pop("MEZMO_GOVERNANCE_STATE_DIR")
         self.assertEqual(hook.session_state_path("abc"), pathlib.Path.home() / ".mezmo" / "governance" / "sessions" / "abc.json")
 
+
+
+@patch.dict(os.environ, environment(**ENV), clear=True)
+class CallBindingTests(unittest.TestCase):
+    def test_changed_arguments_under_one_call_id_get_their_own_decision(self) -> None:
+        # A 409 hands back the decision of an earlier POST with the same id.
+        first = hook_event("PreToolUse")
+        edited = hook_event("PreToolUse")
+        edited["tool_input"] = {"namespace": "production", "name": "demo-pod"}
+        self.assertNotEqual(hook.call_identity(first).decision_id, hook.call_identity(edited).decision_id)
+        self.assertNotEqual(hook.call_identity(first).request_id, hook.call_identity(edited).request_id)
+
+    def test_a_long_request_id_fits_mezmo_and_keeps_its_digest(self) -> None:
+        # Mezmo answers HTTP 400 to a request_id over 128 characters.
+        event = hook_event("PreToolUse")
+        event["session_id"] = "s" * 300
+        other = dict(event, session_id="s" * 299 + "t")
+        identity = hook.call_identity(event)
+        self.assertLessEqual(len(identity.request_id), 128)
+        self.assertRegex(identity.request_id, r"#[0-9a-f]{16}$")
+        self.assertNotEqual(identity.request_id, hook.call_identity(other).request_id)
+        full = f"claude_code:{'s' * 300}:turn-1:tool-use-1#" + identity.request_id.rsplit("#", 1)[1]
+        self.assertEqual(identity.decision_id, str(uuid.uuid5(uuid.NAMESPACE_URL, full)))
 
 
 @patch.dict(os.environ, environment(**ENV), clear=True)
