@@ -57,6 +57,8 @@ async for message in query(prompt="Clean up the build folder", options=options):
 `ClaudeSDKClient(options=options)` takes the same options.
 `mezmo_governance_hooks(endpoint, access_key=...)` takes the URL and key as
 arguments, and they win over the variables.
+The URL must use `https://`; plain `http://` works only to a loopback
+address such as `127.0.0.1`, for a local mock. A URL with a password is refused.
 
 ### TypeScript
 

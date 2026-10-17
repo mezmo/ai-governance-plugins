@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -48,9 +49,42 @@ def authorize_url() -> str:
     return required_string(os.environ.get("MEZMO_GOVERNANCE_URL"), "MEZMO_GOVERNANCE_URL")
 
 
+def is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def checked_url(url: str) -> str:
+    """Refuse a URL that would send the key in clear text or that carries a password.
+
+    No message quotes the URL, which may hold a secret.
+    """
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        parsed.port
+    except ValueError:
+        raise GovernanceError("MEZMO_GOVERNANCE_URL is not a valid URL") from None
+    if parsed.username is not None or parsed.password is not None:
+        raise GovernanceError("MEZMO_GOVERNANCE_URL must not carry a user name or password")
+    scheme = parsed.scheme.lower()
+    if host and (scheme == "https" or (scheme == "http" and is_loopback(host))):
+        return url
+    raise GovernanceError(
+        "MEZMO_GOVERNANCE_URL must use https://, or http:// to a loopback address"
+    )
+
+
 def authorization_header(access_key: str | None = None) -> str:
     key = access_key or os.environ.get("MEZMO_GOVERNANCE_TOKEN")
     key = required_string(key, "MEZMO_GOVERNANCE_TOKEN")
+    # A line break would split the header, and httpx would quote the key in its error.
+    if not (key.isascii() and key.isprintable()):
+        raise GovernanceError("MEZMO_GOVERNANCE_TOKEN must be one line of printable ASCII")
     if key.lower().startswith("token ") or key.lower().startswith("bearer "):
         return key
     return f"Token {key}"
@@ -187,10 +221,18 @@ async def httpx_json(
 ) -> tuple[int, dict[str, Any]]:
     import httpx
 
+    authorization = authorization_header(access_key)
     headers = {
-        "Authorization": authorization_header(access_key),
+        "Authorization": authorization,
         "Accept": "application/json",
     }
+
+    def redacted(error: BaseException) -> str:
+        # Error text reaches the agent as a deny reason: keep the key and URL out.
+        text = str(error)
+        for secret in (url, authorization, authorization.split(" ", 1)[-1]):
+            text = text.replace(secret, "<redacted>")
+        return text
 
     async def request() -> tuple[int, Any]:
         # A 3xx comes back as itself and denies, so the key never goes elsewhere.
@@ -213,9 +255,11 @@ async def httpx_json(
         # so a server that drips its body cannot outlast the deadline.
         status, body = await asyncio.wait_for(request(), timeout)
     except (httpx.TimeoutException, asyncio.TimeoutError) as error:
-        raise TimeoutError(str(error) or "Mezmo Governance request timed out") from error
-    except httpx.HTTPError as error:
-        raise GovernanceError(f"Mezmo Governance is unavailable: {error}") from error
+        raise TimeoutError(redacted(error) or "Mezmo Governance request timed out") from error
+    except GovernanceError:
+        raise
+    except Exception as error:
+        raise GovernanceError(f"Mezmo Governance is unavailable: {redacted(error)}") from error
     if not isinstance(body, dict):
         raise GovernanceError("Mezmo Governance returned a non-object response")
     return status, body
@@ -325,7 +369,7 @@ async def authorize(
     """Ask Mezmo about one call. ``url`` overrides ``MEZMO_GOVERNANCE_URL``."""
     http_fn = http or httpx_json
     sleep_fn = sleep or asyncio.sleep
-    base_url = url or authorize_url()
+    base_url = checked_url(url or authorize_url())
     deadline = clock() + timeout_seconds()
     leftover = remaining_seconds(deadline, clock)
     try:

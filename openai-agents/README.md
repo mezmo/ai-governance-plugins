@@ -46,6 +46,8 @@ result = Runner.run_sync(agent, "Delete the note todo", run_config=RunConfig(gro
 `MezmoGovernance()` reads `MEZMO_GOVERNANCE_URL` and
 `MEZMO_GOVERNANCE_TOKEN` per call. Pass an endpoint and
 `access_key=` to use those instead.
+The URL must use `https://`; plain `http://` works only to a loopback
+address such as `127.0.0.1`, for a local mock. A URL with a password is refused.
 
 `govern(agent)` adds the guardrail, first in line, to:
 

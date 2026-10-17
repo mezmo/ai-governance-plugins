@@ -56,6 +56,8 @@ The endpoint and token you pass win over `MEZMO_GOVERNANCE_URL` and
 `MEZMO_GOVERNANCE_TOKEN`; pass `None` to read those per call. Pass a
 LangGraph `thread_id` so `session_id` is stable across a conversation.
 `ainvoke` takes the same arguments.
+The URL must use `https://`; plain `http://` works only to a loopback
+address such as `127.0.0.1`, for a local mock. A URL with a password is refused.
 
 Without a `thread_id`, the middleware uses `set_current_turn_id(...)` when you
 set one around the call (see [example_agent.py](example_agent.py)). Otherwise
