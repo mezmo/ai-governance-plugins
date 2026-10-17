@@ -724,6 +724,74 @@ def windsurf() -> Installer:
     return base._replace(install=install)
 
 
+def antigravity() -> Installer:
+    """A named hook in hooks.json; Antigravity CLI drops a file it cannot read whole, so install leaves such a file alone."""
+    name = "mezmo-governance"
+
+    def paths() -> tuple:
+        return doctor.antigravity_dir() / "hooks.json", doctor.antigravity_dir() / "hooks" / HOOK_FILE
+
+    def installed() -> Optional[str]:
+        path, _ = paths()
+        return shown(path) if doctor.antigravity_hooks(load_object(path)) else None
+
+    def install() -> list:
+        path, script = paths()
+        source = REPO / "antigravity" / HOOK_FILE
+        if installed():
+            return hook_refresh(source, script)
+        config = load_object(path)
+        problem = doctor.antigravity_problem(config)
+        if problem:
+            raise Failure(
+                f"Antigravity CLI drops {shown(path)} whole, and runs none of its hooks, because {problem}."
+                " Nothing changed. Fix the file as in antigravity/README.md, then run this command again"
+            )
+        if name in config:
+            raise Failure(
+                f"{shown(path)} already has a hook named {name}, and it does not run {HOOK_FILE}."
+                f" Nothing changed. Rename or remove it, then run this command again"
+            )
+        data = example("antigravity", "hooks.example.json", doctor.antigravity_dir(), doctor.home() / ".gemini" / "config")
+
+        def add() -> None:
+            write_json(path, {**load_object(path), **data})
+
+        return [hook_copy(source, script), Step(f"add the Mezmo hook entries to {shown(path)}", (path,), add)]
+
+    def without(config: dict) -> dict:
+        """The config with each handler that runs the hook taken out, and each named hook that held only those."""
+        rest = {}
+        for key, spec in config.items():
+            if isinstance(spec, dict):
+                events = {"hooks": {event: value for event, value in spec.items() if isinstance(value, list)}}
+                left = without_hook(events, "command")
+                if left != events:
+                    kept = as_dict(left.get("hooks"))
+                    if not kept:
+                        continue
+                    spec = {event: kept.get(event, value) for event, value in spec.items() if event in kept or not isinstance(value, list)}
+            rest[key] = spec
+        return rest
+
+    def uninstall() -> list:
+        path, script = paths()
+        steps = []
+        if without(load_object(path)) != load_object(path):
+
+            def run() -> None:
+                rest = without(load_object(path))
+                if rest:
+                    write_json(path, rest)
+                else:
+                    path.unlink()
+
+            steps.append(Step(f"remove the Mezmo hook entries from {shown(path)}", (path,), run))
+        return steps + hook_removal(script, doctor.antigravity_dir())
+
+    return Installer(installed, install, uninstall, "Run agy -p /hooks to check that mezmo-governance lists PreToolUse and PostToolUse.")
+
+
 INSTALLERS = {
     "claude-code": claude_code(),
     "codex": file_hook_agent(
@@ -739,6 +807,7 @@ INSTALLERS = {
     "pi": pi(),
     "droid": droid(),
     "windsurf": windsurf(),
+    "antigravity": antigravity(),
 }
 AGENTS = {agent.readme: agent for agent in doctor.AGENTS}
 
@@ -860,6 +929,8 @@ def fresh(event: dict, name: Optional[str] = None) -> dict:
     if name and "agent_action_name" in result:
         # A Windsurf event names its action, not a tool: any other tool is a file read.
         result.update(agent_action_name="pre_read_code", tool_info={"file_path": "README.md"})
+    elif name and "toolCall" in result:
+        result["toolCall"] = {**result["toolCall"], "name": name}
     elif name:
         result["toolName" if "toolName" in result else "tool_name"] = name
     return result

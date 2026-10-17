@@ -51,7 +51,10 @@ Run the [smoke test](#smoke-test) after each install, and run
 ## Install
 
 `./mezmo-governance install antigravity` from the repository root does this
-for you, and `uninstall` undoes it. The steps below are the manual way.
+for you, and `uninstall` undoes it. It refuses, and changes nothing, when
+`hooks.json` already has a `mezmo-governance` hook that runs no Mezmo script,
+or holds an entry that would make Antigravity drop the file. The steps below
+are the manual way.
 
 1. Copy the hook:
 
@@ -83,7 +86,9 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
    `PreToolUse` and `PostToolUse`, both `enabled`. It starts no agent turn.
 
 Antigravity inherits the environment of the shell that launches it, and runs
-each hook with `sh -c` in the folder that holds its `hooks.json`.
+each hook with `sh -c` in the folder that holds its `hooks.json`. On Windows
+its guide says it uses `cmd /c`, which does not expand `${...}`: the example
+command would fail there and block every tool. Windows is not verified.
 
 To gate only some tools, set `matcher`, a regex on the tool name such as
 `run_command|write_to_file`. `*` or an empty matcher matches every tool.

@@ -171,6 +171,7 @@ The table lists the pieces before `#<digest>`.
 | Goose | `goose`, `session_id`, `tool_call_id` | `goose_hook` | `goose`, or `<extension>` from `<extension>__<tool>` |
 | Droid | `droid`, `session_id`, a fresh `run-<uuid>` (no call id) | `droid_hook` | `droid`, or MCP server from `mcp__<server>__<tool>` |
 | Windsurf | `windsurf`, `trajectory_id`, a fresh `run-<uuid>` (no call id) | `windsurf_hook` | `windsurf`, or `mcp_server_name` |
+| Antigravity CLI | `antigravity`, `conversationId`, a fresh `run-<uuid>` (no call id) | `antigravity_hook` | `antigravity`, or `ServerName` of `call_mcp_tool` |
 | Pi | `pi`, session id, `toolCallId` | `pi_extension` | `pi` |
 | OpenCode | `opencode`, `sessionID`, `callID`; on 2.x `<callID>#<random UUID>`, because Code Mode reuses one call id for many inner calls | `opencode_plugin` | `opencode` |
 | LangChain | `langchain`, `thread_id`, turn id, or one random id per middleware instance; tool call id, or a random id when it is missing | `langchain_middleware` | `langchain` |
@@ -216,14 +217,15 @@ After an approved tool runs, observe hooks append one JSON object per line:
 ```
 
 `decision_id` and `request_id` are `null` when the event carries no tool call
-id, as with Cursor's shell and MCP events and every Gemini CLI, Copilot,
-Droid and Windsurf event.
+id, as with Cursor's shell and MCP events and every Gemini CLI, Antigravity
+CLI, Copilot, Droid and Windsurf event.
 
 `status` is `failed` when the result looks like an error (`isError`, `is_error`,
 or non-zero `exit_code` or `exitCode`), otherwise `observed`. A result sent as
 JSON text, such as Cursor's `tool_output`, is parsed first. Gemini CLI also marks a
 `tool_response` with an `error` field as failed, and Goose a `PostToolUseFailure`
-event. Failures writing the file go to
+event. Antigravity CLI sends no result, only an `error` text that is not empty
+when the tool failed; the record is `failed` with that text as its preview. Failures writing the file go to
 stderr and do not block the agent.
 
 Pi and OpenCode add `"arguments_changed": true` when the arguments the tool ran

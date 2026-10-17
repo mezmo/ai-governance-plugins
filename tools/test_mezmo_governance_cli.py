@@ -28,7 +28,7 @@ CANARY = "canary-key-5d1c8e40"
 ADMIN = "admin-key-9b27f6d3"
 sys.path.insert(0, str(TOOLS))
 import mock_governance  # noqa: E402
-AGENTS = ("claude-code", "codex", "cursor", "gemini-cli", "copilot", "goose", "opencode", "pi", "droid", "windsurf")
+AGENTS = ("claude-code", "codex", "cursor", "gemini-cli", "copilot", "goose", "opencode", "pi", "droid", "windsurf", "antigravity")
 VERSIONS = {
     "claude": "2.1.300 (Claude Code)",
     "codex": "codex-cli 0.162.1",
@@ -41,6 +41,7 @@ VERSIONS = {
     "droid": "0.244.0",
     # What devin-desktop --version printed, as Windsurf 1.126.0 lays it out.
     "devin-desktop": "1.126.0\n0b186d6e13a1a48a46430c51fe414dd0747d46f6\narm64",
+    "agy": "1.4.0",
 }
 
 FAKE_CLI = r'''
@@ -137,6 +138,7 @@ ORIGINALS = {
     "pi": {"pi/settings.json": {"packages": ["npm:other"]}},
     "droid": {"factory/.factory/hooks.json": {"PreToolUse": [{"matcher": "Execute", "hooks": [{"type": "command", "command": "other-hook"}]}]}},
     "windsurf": {"home/.codeium/windsurf/hooks.json": {"hooks": {"pre_run_command": [{"command": "other-hook", "show_output": True}]}}},
+    "antigravity": {"home/.gemini/config/hooks.json": {"other": {"PreInvocation": [{"type": "command", "command": "other-hook", "timeout": 10}]}}},
 }
 # What the real CLI leaves behind after uninstall, beyond the user's own files.
 LEFTOVERS = {
@@ -260,7 +262,7 @@ class InstallTests(CliTestCase):
                 # The install's backup of each user config equals the original, and its path was printed.
                 (name,) = original
                 copies = sorted(b for b in backups if b.startswith(name + ".mezmo-backup-"))
-                edited = {"claude-code", "codex", "cursor", "opencode", "pi", "droid", "windsurf"}
+                edited = {"claude-code", "codex", "cursor", "opencode", "pi", "droid", "windsurf", "antigravity"}
                 self.assertEqual(bool(copies), agent in edited, sorted(backups))
                 if copies:
                     self.assertEqual(after[copies[0]], original[name])
@@ -278,6 +280,7 @@ class InstallTests(CliTestCase):
             "opencode": ("xdg/opencode/mezmo-governance/index.ts", "xdg/opencode/mezmo-governance/mezmo-governance/client.ts"),
             "droid": ("factory/.factory/hooks/mezmo_governance_hook.py",),
             "windsurf": ("home/.codeium/windsurf/hooks/mezmo_governance_hook.py",),
+            "antigravity": ("home/.gemini/config/hooks/mezmo_governance_hook.py",),
         }
         for agent, names in copied.items():
             with self.subTest(agent=agent):
@@ -415,6 +418,9 @@ class InstallTests(CliTestCase):
         windsurf = json.loads((self.tmp / "home/.codeium/windsurf/hooks.json").read_text())
         self.assertEqual(windsurf, json.loads((REPO / "windsurf/hooks.example.json").read_text()))
         self.assertTrue((self.tmp / "home/.codeium/windsurf/hooks/mezmo_governance_hook.py").is_file())
+        antigravity = json.loads((self.tmp / "home/.gemini/config/hooks.json").read_text())
+        self.assertEqual(antigravity, json.loads((REPO / "antigravity/hooks.example.json").read_text()))
+        self.assertTrue((self.tmp / "home/.gemini/config/hooks/mezmo_governance_hook.py").is_file())
         copilot = (self.tmp / "copilot/hooks/mezmo-governance.json").read_text()
         self.assertIn(f"{self.tmp}/copilot/hooks/mezmo_governance_hook.py", copilot)
         self.assertNotIn("$HOME", copilot)
@@ -468,7 +474,7 @@ class InstallTests(CliTestCase):
         self.assertEqual(self.files(), installed)
 
     def test_install_all_picks_agents_whose_binary_is_found(self) -> None:
-        for binary in ("claude", "gemini", "pi", "copilot", "goose", "opencode", "droid", "devin-desktop"):
+        for binary in ("claude", "gemini", "pi", "copilot", "goose", "opencode", "droid", "devin-desktop", "agy"):
             (self.bin / binary).unlink()
         result = self.cli("install", "--all", "--dry-run")
         planned = [line.split()[1].rstrip(":") for line in result.stdout.splitlines() if line.startswith("plan")]
@@ -506,13 +512,14 @@ class InstallTests(CliTestCase):
         codex = json.loads((REPO / "codex/hooks.example.json").read_text())
         droid = json.loads((REPO / "droid/hooks.example.json").read_text())
         windsurf = json.loads((REPO / "windsurf/hooks.example.json").read_text())
+        antigravity = json.loads((REPO / "antigravity/hooks.example.json").read_text())
         self.write({"gemini/.gemini/settings.json": gemini, "codex/hooks.json": codex, "factory/.factory/hooks.json": droid,
-                    "home/.codeium/windsurf/hooks.json": windsurf})
+                    "home/.codeium/windsurf/hooks.json": windsurf, "home/.gemini/config/hooks.json": antigravity})
         shutil.copytree(REPO / "pi", self.tmp / "pi/extensions/mezmo-governance")
         before = self.files()
-        result = self.cli("install", "gemini-cli", "codex", "pi", "droid", "windsurf")
+        result = self.cli("install", "gemini-cli", "codex", "pi", "droid", "windsurf", "antigravity")
         self.assertEqual(result.returncode, 0, result.stdout)
-        for agent in ("gemini-cli", "codex", "pi", "droid", "windsurf"):
+        for agent in ("gemini-cli", "codex", "pi", "droid", "windsurf", "antigravity"):
             self.assertIn(f"ok    {agent}: already installed, nothing to change", result.stdout)
         self.assertEqual(self.files(), before)
         self.assertFalse(self.log.exists())
@@ -654,6 +661,51 @@ class InstallTests(CliTestCase):
         self.assertEqual(json.loads((self.tmp / "home/.codeium/windsurf/hooks.json").read_text()), original)
         self.assertFalse((self.tmp / "home/.codeium/windsurf/hooks").exists())
 
+    def test_antigravity_install_refuses_a_file_antigravity_would_drop_or_a_name_it_would_take(self) -> None:
+        # Antigravity CLI 1.4.0 drops a hooks.json it cannot read whole, so every hook in it stops (live).
+        own = [{"matcher": "*", "hooks": [{"command": "other-hook"}]}]
+        cases = [
+            ({"other": {"PreToolUse": [{"hooks": [{"command": "other-hook", "timeout": 1.5}]}]}}, "timeout"),
+            ({"other": {"enabled": "yes", "PreToolUse": own}}, '"enabled"'),
+            ({"mezmo-governance": {"PreToolUse": own}}, "already has a hook named mezmo-governance"),
+        ]
+        for config, words in cases:
+            with self.subTest(config=config):
+                shutil.rmtree(self.tmp / "home/.gemini", ignore_errors=True)
+                self.write({"home/.gemini/config/hooks.json": config})
+                before = self.files()
+                result = self.cli("install", "antigravity")
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(words, result.stdout)
+                self.assertIn("Nothing changed.", result.stdout)
+                self.assertEqual(self.files(), before)
+
+    def test_antigravity_install_and_uninstall_keep_the_users_own_hooks(self) -> None:
+        own = {"matcher": "run_command", "hooks": [{"type": "command", "command": "other-hook", "timeout": 5}]}
+        original = {"lint": {"enabled": True, "PreToolUse": [own]}, "off": {"enabled": False, "Stop": [{"command": "x"}]}}
+        self.write({"home/.gemini/config/hooks.json": original})
+        self.assertEqual(self.cli("install", "antigravity").returncode, 0)
+        installed = json.loads((self.tmp / "home/.gemini/config/hooks.json").read_text())
+        self.assertEqual(list(installed), ["lint", "off", "mezmo-governance"])
+        self.assertEqual({name: installed[name] for name in ("lint", "off")}, original)
+        result = self.cli("uninstall", "antigravity")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads((self.tmp / "home/.gemini/config/hooks.json").read_text()), original)
+        self.assertFalse((self.tmp / "home/.gemini/config/hooks").exists())
+
+    def test_antigravity_uninstall_takes_the_hook_out_of_a_hook_the_user_renamed(self) -> None:
+        # The README's manual step adds the entry by hand; a user may have put it under another name, next to their own handler.
+        example = json.loads((REPO / "antigravity/hooks.example.json").read_text())["mezmo-governance"]
+        own = {"type": "command", "command": "other-hook"}
+        mine = {"gate": {**example, "PreToolUse": [{"matcher": "*", "hooks": [own, *example["PreToolUse"][0]["hooks"]]}]}}
+        self.write({"home/.gemini/config/hooks.json": mine})
+        self.assertIn("installed: yes", self.status("antigravity"))
+        result = self.cli("uninstall", "antigravity")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads((self.tmp / "home/.gemini/config/hooks.json").read_text()),
+                         {"gate": {"PreToolUse": [{"matcher": "*", "hooks": [own]}]}})
+        self.assertIn("installed: no", self.status("antigravity"))
+
 
 class CommandTests(CliTestCase):
     def test_help_lists_every_command_and_agent(self) -> None:
@@ -793,6 +845,14 @@ class LiveSmokeTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("live  windsurf: run_command allowed (", result.stdout)
         self.assertIn("live  windsurf: read_code allowed (", result.stdout)
+
+    def test_antigravity_sends_a_command_and_a_file_read(self) -> None:
+        # An Antigravity event holds the tool in toolCall, so the read call renames toolCall.name.
+        self.cli("install", "antigravity")
+        result = self.cli("smoke", "--live", "antigravity")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("live  antigravity: run_command allowed (", result.stdout)
+        self.assertIn("live  antigravity: view_file allowed (", result.stdout)
 
     def test_opencode_gets_its_opencode_json_options(self) -> None:
         # OpenCode passes the plugin its options, with {file:...} read; the shell's variables lose to them.
