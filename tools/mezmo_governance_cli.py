@@ -689,7 +689,7 @@ def agents(names: list) -> int:
         except doctor.Unknown as error:
             print(f"{name:<12} {binary:<24} installed: unknown ({error})", flush=True)
             continue
-        if any(status == "FAIL" and "lets the tool run" in detail for status, detail in report.lines):
+        if any(status == "FAIL" and ("lets the tool run" in detail or doctor.UNGOVERNED in detail) for status, detail in report.lines):
             closed = "no"
         elif any(status == "ok" and "fails closed" in detail for status, detail in report.lines):
             closed = "yes"

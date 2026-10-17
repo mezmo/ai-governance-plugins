@@ -114,7 +114,10 @@ can watch the plugin wait and then deny.
 
    `doctor` (also `python3 tools/doctor.py`) checks the settings, that Mezmo
    answers and takes the key, and, for each coding agent on your `PATH`, its
-   version, the user-level install and its fail-closed setting. It also runs
+   version, the user-level install and its fail-closed setting. An install the
+   agent has turned off or does not trust fails: a disabled Claude Code plugin,
+   Gemini CLI extension or hook, or Goose plugin, and a Codex hook whose
+   trust Codex does not list as current. It also runs
    each installed Python hook against a closed port and checks that the hook
    denies. It reads the agent configs and changes nothing. Each check prints
    one `ok`, `warn`, `FAIL` or `skip` line with a fix, and the exit code is 1

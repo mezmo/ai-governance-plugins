@@ -474,6 +474,8 @@ class CommandTests(CliTestCase):
     def test_agents_shows_binary_version_install_and_fail_closed(self) -> None:
         (self.bin / "goose").unlink()
         self.cli("install", "codex", "pi")
+        # Trusted in /hooks; the fake codex lists no hooks, so the saved hash goes unchecked.
+        (self.tmp / "codex/config.toml").write_text(f'[hooks.state."{self.tmp}/codex/hooks.json:pre_tool_use:0:0"]\ntrusted_hash = "sha256:00"\n')
         lines = self.cli("status").stdout.splitlines()
         self.assertEqual([line.split()[0] for line in lines], list(AGENTS))
         self.assertIn("codex 0.162.1", lines[1])
@@ -482,6 +484,15 @@ class CommandTests(CliTestCase):
         self.assertIn("goose not found", lines[5])
         self.assertIn("installed: no", lines[5])
         self.assertIn("fails closed: n/a", lines[7])
+
+    def test_agents_says_a_disabled_install_does_not_fail_closed(self) -> None:
+        self.cli("install", "claude-code")
+        settings = self.tmp / "claude/settings.json"
+        settings.write_text(json.dumps({**json.loads(settings.read_text()), "enabledPlugins": {"mezmo-governance@mezmo": False}}))
+        line = self.status("claude-code")
+        self.assertIn("installed: yes", line)
+        self.assertIn("fails closed: no", line)
+        self.assertIn("problems: 1", line)
 
     def test_doctor_checks_only_the_named_agents(self) -> None:
         self.cli("install", "codex")

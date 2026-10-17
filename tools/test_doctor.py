@@ -107,6 +107,29 @@ class DoctorTestCase(unittest.TestCase):
         path.write_text(f"#!/bin/sh\necho '{version_line}'\n")
         path.chmod(0o755)
 
+    def fake_codex(self, hooks: list, server: str = "") -> None:
+        """A codex whose app-server answers hooks/list with these hooks, as Codex 0.163.0 did live."""
+        self.calls = self.tmp / "app-server.jsonl"
+        fake = self.bin / "codex"
+        fake.write_text(
+            f"#!{sys.executable}\n"
+            "import json, sys\n"
+            "if sys.argv[1:] == ['--version']:\n"
+            "    print('codex-cli 0.163.0')\n"
+            "    sys.exit()\n"
+            f"{server}\n"
+            f"hooks = {hooks!r}\n"
+            "for line in sys.stdin:\n"
+            "    message = json.loads(line)\n"
+            f"    open({str(self.calls)!r}, 'a').write(json.dumps([sys.argv[1:], message]) + '\\n')\n"
+            "    if message.get('id') == 1:\n"
+            "        print(json.dumps({'id': 1, 'result': {}}), flush=True)\n"
+            "    if message.get('id') == 2:\n"
+            "        print(json.dumps({'method': 'remoteControl/status/changed', 'params': {}}), flush=True)\n"
+            "        print(json.dumps({'id': 2, 'result': {'data': [{'cwd': '.', 'hooks': hooks}]}}), flush=True)\n"
+        )
+        fake.chmod(0o755)
+
     def write(self, relative: str, content: Any) -> Path:
         path = self.home / relative
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -419,7 +442,7 @@ class ClaudeCodeTests(DoctorTestCase):
 
         self.assertIn("~/elsewhere/mezmo_governance_hook.py", self.assertStatus(result, "Claude Code smoke", "ok"))
 
-    def test_plugin_install_passes_and_a_disabled_plugin_warns(self) -> None:
+    def test_plugin_install_passes_and_a_disabled_plugin_fails(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")
         self.install_plugin()
 
@@ -433,7 +456,9 @@ class ClaudeCodeTests(DoctorTestCase):
 
         self.install_plugin(enabled=False)
         result = self.doctor()
-        self.assertTrue(self.lines(result, "Claude Code plugin")[0].startswith("warn"))
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("not enabled, so every tool call runs ungoverned", self.lines(result, "Claude Code plugin")[0])
+        self.assertTrue(self.lines(result, "Claude Code plugin")[0].startswith("FAIL"))
 
     def test_a_config_it_cannot_parse_is_unknown_not_absent(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")
@@ -454,7 +479,6 @@ CODEX_COMMAND = (
 
 class CodexTests(DoctorTestCase):
     def install(self, command: str = CODEX_COMMAND, trusted: bool = True, extra: str = "") -> None:
-        self.agent("codex", "codex-cli 0.162.1")
         hooks = self.write(
             ".codex/hooks.json",
             {"hooks": {"PreToolUse": [{"matcher": ".*", "hooks": [{"type": "command", "command": command}]}]}},
@@ -462,6 +486,8 @@ class CodexTests(DoctorTestCase):
         trust = f'[hooks.state."{hooks}:pre_tool_use:0:0"]\ntrusted_hash = "sha256:00"\n' if trusted else ""
         self.write(".codex/config.toml", f"model = \"x\"\n\n{trust}{extra}")
         self.copy_hook("codex", ".codex/hooks/mezmo_governance_hook.py")
+        self.fake_codex([{"key": f"{hooks}:pre_tool_use:0:0", "eventName": "preToolUse", "sourcePath": str(hooks), "pluginId": None,
+                          "command": command, "enabled": True, "trustStatus": "trusted" if trusted else "untrusted"}])
 
     def test_a_guarded_trusted_hook_passes(self) -> None:
         self.install()
@@ -472,6 +498,39 @@ class CodexTests(DoctorTestCase):
         self.assertIn("exit 2", self.lines(result, "Codex hook")[1])
         self.assertStatus(result, "Codex trust", "ok")
         self.assertStatus(result, "Codex smoke", "ok")
+
+    def test_the_file_hook_trust_is_what_codex_lists(self) -> None:
+        # config.toml keeps a trusted_hash after the hook changes; only Codex can say it no longer matches.
+        cases = [
+            ({"trustStatus": "trusted"}, "ok", "hook is trusted"),
+            ({"trustStatus": "modified"}, "FAIL", "changed since you trusted it"),
+            ({"trustStatus": "trusted", "enabled": False}, "FAIL", "turned off in /hooks"),
+            (None, "FAIL", "lists no PreToolUse hook"),
+        ]
+        for listed, status, words in cases:
+            with self.subTest(listed=listed):
+                self.install()
+                path = self.home / ".codex/hooks.json"
+                item = {"key": f"{path}:pre_tool_use:0:0", "eventName": "preToolUse", "sourcePath": str(path), "pluginId": None,
+                        "command": CODEX_COMMAND, "enabled": True, "currentHash": "sha256:11", **(listed or {})}
+                other = {**item, "key": f"{path}:post_tool_use:0:0", "eventName": "postToolUse", "trustStatus": "untrusted"}
+                self.fake_codex([item, other] if listed else [other])
+
+                result = self.doctor()
+
+                self.assertEqual(result.returncode, 1 if status == "FAIL" else 0, result.stdout)
+                self.assertIn(words, self.assertStatus(result, "Codex trust", status))
+
+    def test_a_codex_that_cannot_list_hooks_leaves_a_saved_trust_unchecked(self) -> None:
+        self.install()
+        self.agent("codex", "codex-cli 0.162.1")
+
+        result = self.doctor()
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        line = self.assertStatus(result, "Codex trust", "info")
+        self.assertIn("not checked", line)
+        self.assertIn("codex app-server gave no answer", line)
 
     def test_failures_in_codex_config(self) -> None:
         cases = [
@@ -508,26 +567,7 @@ class CodexPluginTests(DoctorTestCase):
              "command": f'python3 "{folder}/mezmo_governance_hook.py"',
              "enabled": True, "currentHash": "sha256:bb", "trustStatus": "untrusted"},
         ]
-        self.calls = self.tmp / "app-server.jsonl"
-        fake = self.bin / "codex"
-        fake.write_text(
-            f"#!{sys.executable}\n"
-            "import json, sys\n"
-            "if sys.argv[1:] == ['--version']:\n"
-            "    print('codex-cli 0.163.0')\n"
-            "    sys.exit()\n"
-            f"{server}\n"
-            f"hooks = {(hooks if listed else [])!r}\n"
-            "for line in sys.stdin:\n"
-            "    message = json.loads(line)\n"
-            f"    open({str(self.calls)!r}, 'a').write(json.dumps([sys.argv[1:], message]) + '\\n')\n"
-            "    if message.get('id') == 1:\n"
-            "        print(json.dumps({'id': 1, 'result': {}}), flush=True)\n"
-            "    if message.get('id') == 2:\n"
-            "        print(json.dumps({'method': 'remoteControl/status/changed', 'params': {}}), flush=True)\n"
-            "        print(json.dumps({'id': 2, 'result': {'data': [{'cwd': '.', 'hooks': hooks}]}}), flush=True)\n"
-        )
-        fake.chmod(0o755)
+        self.fake_codex(hooks if listed else [], server)
 
     def test_a_trusted_plugin_passes(self) -> None:
         for trust in ("trusted", "managed"):
@@ -635,6 +675,32 @@ class OtherHookAgentTests(DoctorTestCase):
                 self.assertTrue(self.lines(result, "Gemini CLI hook")[1].startswith(status), result.stdout)
                 self.assertStatus(result, "Gemini CLI smoke", "ok")
 
+    def test_a_disabled_gemini_extension_or_hook_fails(self) -> None:
+        self.agent("gemini", "0.64.0")
+        shutil.copytree(REPO / "gemini-cli", self.home / ".gemini/extensions/mezmo-governance")
+        enablement = ".gemini/extensions/extension-enablement.json"
+        # What gemini extensions disable and the /hooks panel wrote, Gemini CLI 0.64.0.
+        cases = [
+            ({enablement: {"mezmo-governance": {"overrides": [f"!{self.home}/*"]}}}, f"turned off in {self.home}"),
+            ({enablement: {"mezmo-governance": {"overrides": [f"{self.home}/*", f"!{self.tmp}/work/*"]}}}, f"turned off in {self.tmp}/work"),
+            ({".gemini/settings.json": {"hooksConfig": {"disabled": ["mezmo-governance"]}}}, "hooksConfig.disabled"),
+            ({".gemini/settings.json": {"hooksConfig": {"enabled": False}}}, "hooksConfig.enabled"),
+        ]
+        for files, words in cases:
+            with self.subTest(words=words):
+                for relative in (enablement, ".gemini/settings.json"):
+                    (self.home / relative).unlink(missing_ok=True)
+                for relative, content in files.items():
+                    self.write(relative, content)
+
+                result = self.doctor()
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertTrue(any(line.startswith("FAIL") and words in line for line in self.lines(result, "Gemini CLI hook")), result.stdout)
+        self.write(enablement, {"mezmo-governance": {"overrides": [f"!{self.home}/*", f"{self.home}/*"]}})
+        (self.home / ".gemini/settings.json").unlink()
+        self.assertEqual(self.doctor().returncode, 0)
+
     def test_copilot_hook_file_checks(self) -> None:
         self.agent("copilot", "GitHub Copilot CLI 1.0.95.")
         self.copy_hook("copilot", ".copilot/hooks/mezmo_governance_hook.py")
@@ -694,6 +760,28 @@ class OtherHookAgentTests(DoctorTestCase):
                 result = self.doctor(GOOSE_PATH_ROOT=str(root))
                 self.assertEqual(result.returncode, 1)
                 self.assertTrue(any(line.startswith("FAIL") and words in line for line in self.lines(result, "Goose plugin")), result.stdout)
+
+    def test_a_disabled_goose_plugin_fails(self) -> None:
+        # Goose 1.54.0 crates/goose/src/plugins/discovery.rs: settings.json disabledPlugins, config.yaml plugins.<root>.enabled.
+        self.agent("goose", " 1.54.0")
+        self.install_goose(self.home)
+        folder = self.home / ".agents/plugins/mezmo-governance"
+        cases = [
+            (".config/goose/settings.json", json.dumps({"disabledPlugins": ["mezmo-governance"]}), "disabledPlugins"),
+            (".config/goose/config.yaml", f"GOOSE_MODE: auto\nplugins:\n  {folder}:\n    enabled: false\n  /other:\n    enabled: true\n", "enabled: false"),
+            (".config/goose/config.yaml", f"plugins:\n  '{folder}': {{enabled: false}}\n", "enabled: false"),
+        ]
+        for relative, text, words in cases:
+            with self.subTest(text=text):
+                shutil.rmtree(self.home / ".config", ignore_errors=True)
+                self.write(relative, text)
+
+                result = self.doctor()
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertTrue(any(line.startswith("FAIL") and words in line for line in self.lines(result, "Goose plugin")), result.stdout)
+        self.write(".config/goose/config.yaml", f"plugins:\n  {folder}:\n    enabled: true\n  /other:\n    enabled: false\n")
+        self.assertEqual(self.doctor().returncode, 0)
 
     def test_goose_incomplete_install_fails(self) -> None:
         self.agent("goose", " 1.54.0")
