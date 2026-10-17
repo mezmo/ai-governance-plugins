@@ -548,7 +548,8 @@ class LiveSmokeTests(CliTestCase):
         self.assertIn("live  claude-code: Bash denied: mock policy: claude_code:Bash is denied (", result.stdout)
         self.assertIn("live  claude-code: Read pending approval (", result.stdout)
         self.assertIn("live  codex: Bash denied: mock policy: codex:Bash is denied (", result.stdout)
-        self.assertIn("live  codex: apply_patch allowed (", result.stdout)
+        # Codex has no read-only tool, so it gets the shell call only.
+        self.assertNotIn("apply_patch", result.stdout)
         self.assertNotIn("mock  Mezmo stand-in", result.stdout)
         self.assertNotIn("FAIL", result.stdout)
         # The smoke calls stay out of the user's audit log.
@@ -645,7 +646,7 @@ class PolicyTests(CliTestCase):
         self.assertIn("  default  approval_required: No rule in this policy covers this request.", result.stdout)
         self.assertIn("cover   claude-code in Mock policy: shell Bash not covered; read Read not covered", result.stdout)
         # Mezmo has one agent, so every installed agent, which sends its token, gets its policy.
-        self.assertIn("cover   codex in Mock policy: shell Bash not covered; read apply_patch not covered", result.stdout)
+        self.assertIn("cover   codex in Mock policy: shell Bash not covered\n", result.stdout)
         self.assertNotIn("cursor", result.stdout)
         self.assertEqual(self.writes(), [])
 
@@ -679,8 +680,8 @@ class PolicyTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"policy  Mock policy ({self.mock_policy['policy_id']}) for claude-code, cursor, copilot:", result.stdout)
         self.assertIn(f"  keep     allow doctor tool eq probe: - (rule_id {self.seeded['rule_id']})", result.stdout)
-        self.assertIn("  would add deny * tool in Bash, Shell, bash: Shell blocked by Mezmo policy", result.stdout)
-        self.assertIn("  would add allow * tool in Read, view: -", result.stdout)
+        self.assertIn("  would add deny in claude_code, cursor, copilot tool in Bash, Shell, bash: Shell blocked by Mezmo policy", result.stdout)
+        self.assertIn("  would add allow in claude_code, cursor, copilot tool in Read, view: -", result.stdout)
         self.assertIn("--yes", result.stdout)
         self.assertEqual(json.dumps(self.governance["policies"]), before)
         self.assertEqual(self.writes(), [])
@@ -702,12 +703,12 @@ class PolicyTests(CliTestCase):
         self.assertEqual(
             [rule["definition"] for rule in rules[2:]],
             [
-                {"recourse": "deny", "tool": {"op": "in", "value": ["Bash"]}, "code": "FORBIDDEN_TOOL",
-                 "error_message": "Shell blocked by Mezmo policy"},
-                {"recourse": "allow", "tool": {"op": "in", "value": ["Read"]}},
+                {"recourse": "deny", "tool": {"op": "in", "value": ["Bash"]}, "namespace": {"op": "in", "value": ["claude_code"]},
+                 "code": "FORBIDDEN_TOOL", "error_message": "Shell blocked by Mezmo policy"},
+                {"recourse": "allow", "tool": {"op": "in", "value": ["Read"]}, "namespace": {"op": "in", "value": ["claude_code"]}},
             ],
         )
-        self.assertIn("  add      deny * tool in Bash: Shell blocked by Mezmo policy", result.stdout)
+        self.assertIn("  add      deny in claude_code tool in Bash: Shell blocked by Mezmo policy", result.stdout)
         self.assertIn("ok    Mock policy: 2 rules added, 2 kept", result.stdout)
         # A second run finds both tools covered and opens no draft.
         self.governance["calls"].clear()
@@ -716,6 +717,39 @@ class PolicyTests(CliTestCase):
         self.assertIn("nothing to add", again.stdout)
         self.assertEqual(self.writes(), [])
 
+    def test_starter_rules_name_the_agents_namespaces_and_never_allow_codex_edits(self) -> None:
+        # Codex's apply_patch writes files, so no allow rule may name it; each rule names only its agents' namespaces.
+        self.cli("install", "claude-code", "codex")
+        result = self.policy("apply", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("apply_patch", result.stdout)
+        self.assertEqual(
+            [rule["definition"] for rule in self.mock_policy["rules"][1:]],
+            [
+                {"recourse": "deny", "tool": {"op": "in", "value": ["Bash"]}, "namespace": {"op": "in", "value": ["claude_code", "codex"]},
+                 "code": "FORBIDDEN_TOOL", "error_message": "Shell blocked by Mezmo policy"},
+                {"recourse": "allow", "tool": {"op": "in", "value": ["Read"]}, "namespace": {"op": "in", "value": ["claude_code"]}},
+            ],
+        )
+        self.assertIn("  add      deny in claude_code, codex tool in Bash: Shell blocked by Mezmo policy", result.stdout)
+        show = self.policy("show")
+        self.assertIn("cover   codex in Mock policy: shell Bash covered (deny", show.stdout)
+        self.assertNotIn("apply_patch", show.stdout)
+        # The rules cover each tool only in the namespaces they name.
+        self.assertNotIn("not covered", show.stdout)
+
+    def test_a_draft_write_keeps_the_approver_and_channels_it_leaves_out(self) -> None:
+        # Mezmo's draft PUT keeps an omitted approver_role_id and hitl_approval_channels, and clears an omitted description.
+        self.mock_policy.update(approver_role_id="role-1", hitl_approval_channels=["channel-1"])
+        root = f"/policy/{self.mock_policy['policy_id']}"
+        draft = self.call("POST", f"{root}/draft", {})["data"]
+        self.assertEqual((draft["approver_role_id"], draft["hitl_approval_channels"]), ("role-1", ["channel-1"]))
+        written = self.call("PUT", f"{root}/draft/{draft['draft_id']}", {"name": "x", "default_action": {"recourse": "deny"}, "rules": []})["data"]
+        self.assertEqual((written["approver_role_id"], written["hitl_approval_channels"], written["description"]), ("role-1", ["channel-1"], None))
+        self.call("PUT", f"{root}/draft/{draft['draft_id']}", {"name": "x", "default_action": {"recourse": "deny"}, "approver_role_id": "role-2"})
+        self.call("PATCH", root, {"draft_id": draft["draft_id"]})
+        self.assertEqual((self.mock_policy["approver_role_id"], self.mock_policy["hitl_approval_channels"]), ("role-2", ["channel-1"]))
+
     def test_with_one_mezmo_agent_apply_covers_every_installed_agent(self) -> None:
         # Live setup on 2026-10-16: one Mezmo agent, runtime claude-code, and Codex sends its token.
         self.cli("install", "codex")
@@ -723,7 +757,7 @@ class PolicyTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"policy  Mock policy ({self.mock_policy['policy_id']}) for codex:", result.stdout)
         tools = [rule["definition"]["tool"]["value"] for rule in self.mock_policy["rules"][1:]]
-        self.assertEqual(tools, [["Bash"], ["apply_patch"]])
+        self.assertEqual(tools, [["Bash"]])
 
     def test_with_several_mezmo_agents_runtime_name_picks_unless_agent_is_given(self) -> None:
         self.cli("install", "codex")
@@ -744,7 +778,7 @@ class PolicyTests(CliTestCase):
                 self.assertIn(f"cover   codex in {policy}: shell Bash not covered", result.stdout)
         result = self.policy("apply", "--agent", "Cursor on example.test", "--yes")
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(len(other["rules"]), 3)
+        self.assertEqual(len(other["rules"]), 2)
         self.assertEqual(self.mock_policy["rules"], [self.seeded])
         result = self.policy("show", "--agent", "nobody")
         self.assertEqual(result.returncode, 1, result.stdout)
@@ -755,15 +789,15 @@ class PolicyTests(CliTestCase):
         self.cli("install", "claude-code")
         self.policy_rules([flat({"op": "eq", "value": "Bash"}, "allow", {"op": "eq", "value": "claude_code"})])
         result = self.policy("apply")
-        self.assertIn("  would add allow * tool in Read: -", result.stdout)
+        self.assertIn("  would add allow in claude_code tool in Read: -", result.stdout)
         self.assertNotIn("would add deny", result.stdout)
 
     def test_apply_takes_named_agents_and_refuses_unknown_ones(self) -> None:
         self.register("codex")
         result = self.policy("apply", "codex")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("would add deny * tool in Bash", result.stdout)
-        self.assertIn("would add allow * tool in apply_patch", result.stdout)
+        self.assertIn("would add deny in codex tool in Bash", result.stdout)
+        self.assertNotIn("would add allow", result.stdout)
         for args in (("apply", "nope"), ("show", "codex"), ("apply", "--force"), ("frob",), ()):
             with self.subTest(args=args):
                 result = self.cli("policy", *args)

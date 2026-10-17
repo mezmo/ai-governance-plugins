@@ -43,7 +43,7 @@ CLI_SECONDS = 300
 POLICY_URL = "https://api.mezmo.com/v3/governance"
 ADMIN_KEY = "MEZMO_GOVERNANCE_ADMIN_KEY"
 PAGE_LIMIT = 50  # the most policies Mezmo returns a page
-# The starter rules policy apply adds, keyed by the agent's tool they list.
+# The starter rules policy apply adds, keyed by the agent's tool they list; an agent without that tool gets none.
 STARTER = {
     "shell": {"recourse": "deny", "code": "FORBIDDEN_TOOL", "error_message": "Shell blocked by Mezmo policy"},
     "read": {"recourse": "allow"},
@@ -846,7 +846,7 @@ def smoke_calls(names: list, env: dict, live: bool, seconds: float) -> int:
             tried += 1
             if live:
                 # The policy decides, so each call is reported, not judged; only a call with no decision fails.
-                for tool in (agent.shell, agent.read):
+                for tool in [tool for tool in (agent.shell, agent.read) if tool]:
                     outcome, detail = live_outcome(call(tool))
                     if outcome == "error":
                         failed = True
@@ -1018,12 +1018,15 @@ def assigned(name: str, records: list, policies: list, fixed: Optional[dict]) ->
 
 
 def starter_rules(rules: list, names: list) -> list:
-    """The starter rules, each listing the agents' tools that no rule covers yet."""
+    """The starter rules, each listing the agents' tools that no rule covers yet, in those agents' namespaces only."""
     added = []
     for kind, fields in STARTER.items():
-        tools = [getattr(AGENTS[name], kind) for name in names if not covering(rules, AGENTS[name].namespace, getattr(AGENTS[name], kind))]
-        if tools:
-            added.append({**fields, "tool": {"op": "in", "value": list(dict.fromkeys(tools))}})
+        agents = [AGENTS[name] for name in names if getattr(AGENTS[name], kind)]
+        agents = [agent for agent in agents if not covering(rules, agent.namespace, getattr(agent, kind))]
+        if agents:
+            tools = list(dict.fromkeys(getattr(agent, kind) for agent in agents))
+            spaces = list(dict.fromkeys(agent.namespace for agent in agents))
+            added.append({**fields, "tool": {"op": "in", "value": tools}, "namespace": {"op": "in", "value": spaces}})
     return added
 
 
@@ -1051,7 +1054,7 @@ def policy_show(records: list, policies: list, fixed: Optional[dict]) -> int:
             print(f"cover   {name}: {why}", flush=True)
         for policy in found:
             parts = []
-            for kind in STARTER:
+            for kind in [kind for kind in STARTER if getattr(agent, kind)]:
                 tool = getattr(agent, kind)
                 rule = covering(as_list(policy.get("rules")), agent.namespace, tool)
                 parts.append(f"{kind} {tool} " + (f"covered ({rule.get('recourse')}, rule_id {rule.get('rule_id')})" if rule else "not covered"))
