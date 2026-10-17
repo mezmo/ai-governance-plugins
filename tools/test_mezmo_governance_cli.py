@@ -260,6 +260,44 @@ class InstallTests(CliTestCase):
                     self.assertEqual(after[copies[0]], original[name])
                     self.assertRegex(first.stdout, rf"backup: \S*{Path(copies[0]).name}\n")
 
+    def test_install_over_an_older_install_replaces_each_stale_copied_file(self) -> None:
+        # A user reinstalls to get a fix, such as a new deny in the hook; a stale copy keeps the old hook running.
+        copied = {
+            "codex": ("codex/hooks/mezmo_governance_hook.py",),
+            "cursor": ("home/.cursor/hooks/mezmo_governance_hook.py",),
+            "copilot": ("copilot/hooks/mezmo_governance_hook.py", "copilot/hooks/mezmo-governance.json"),
+            "goose": tuple(
+                f"goose/.agents/plugins/mezmo-governance/{name}" for name in ("plugin.json", "mezmo_governance_hook.py", "hooks/hooks.json")
+            ),
+            "opencode": ("xdg/opencode/mezmo-governance/index.ts", "xdg/opencode/mezmo-governance/mezmo-governance/client.ts"),
+        }
+        for agent, names in copied.items():
+            with self.subTest(agent=agent):
+                first = self.cli("install", agent)
+                self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+                fresh = self.files()
+                for name in names:
+                    path = self.tmp / name
+                    if path.suffix == ".json":
+                        path.write_text(json.dumps({**json.loads(path.read_text()), "older": True}))
+                    else:
+                        path.write_bytes(path.read_bytes() + b"\n// an older release\n")
+
+                result = self.cli("install", agent)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("nothing to change", result.stdout)
+                for name in names:
+                    now = (self.tmp / name).read_bytes()
+                    if name.endswith(".json"):
+                        # A rewritten config keeps the layout it had.
+                        now, fresh[name] = json.loads(now), json.loads(fresh[name])
+                    self.assertEqual(now, fresh[name], f"{name}:\n{result.stdout}")
+                    self.assertRegex(result.stdout, rf"update \S*{re.escape(name.split('/', 1)[1])}")
+                again = self.cli("install", agent)
+                self.assertIn(f"{agent}: already installed, nothing to change", again.stdout)
+                self.assertFalse(list(self.tmp.rglob("*.mezmo-partial")))
+
     def test_install_and_uninstall_keep_the_users_json_formatting(self) -> None:
         # Each user writes a different indent and line ending, non-ASCII text and no final newline.
         texts = {}

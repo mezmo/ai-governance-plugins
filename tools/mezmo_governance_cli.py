@@ -159,8 +159,20 @@ def load_object(path: Path) -> dict:
 
 
 def copy_file(source: Path, target: Path) -> None:
+    # Swap the file in whole: an agent may run the hook while it is being replaced.
+    target = target.resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
+    partial = target.with_name(target.name + ".mezmo-partial")
+    shutil.copy2(source, partial)
+    os.replace(partial, target)
+
+
+def differs(target: Path, content: bytes) -> bool:
+    """Whether target is there but holds other content, as an install from an older release does."""
+    try:
+        return target.is_file() and target.read_bytes() != content
+    except OSError as error:
+        raise doctor.Unknown(f"could not read {shown(target)}: {error}") from error
 
 
 def remove_file(path: Path, root: Path) -> None:
@@ -295,6 +307,13 @@ def hook_copy(source: Path, target: Path) -> Step:
     return Step(f"copy {source.relative_to(REPO)} to {shown(target)}", (), lambda: copy_file(source, target))
 
 
+def hook_refresh(source: Path, target: Path) -> list:
+    """A step to replace an installed copy that differs from this repository's file."""
+    if not differs(target, source.read_bytes()):
+        return []
+    return [Step(f"update {shown(target)} from {source.relative_to(REPO)}", (), lambda: copy_file(source, target))]
+
+
 def hook_removal(target: Path, root: Path) -> list:
     return [Step(f"delete {shown(target)}", (), lambda: remove_file(target, root))] if target.is_file() else []
 
@@ -324,8 +343,8 @@ def file_hook_agent(
         return shown(path) if found else None
 
     def install() -> list:
-        target = folder() / "hooks" / HOOK_FILE
-        steps = [] if installed() else [hook_copy(REPO / adapter / HOOK_FILE, target)]
+        source, target = REPO / adapter / HOOK_FILE, folder() / "hooks" / HOOK_FILE
+        steps = hook_refresh(source, target) if installed() else [hook_copy(source, target)]
         data = example(adapter, "hooks.example.json", folder(), doctor.home() / f".{adapter}")
         return steps + merge_steps(folder() / "hooks.json", data, event)
 
@@ -354,11 +373,14 @@ def copilot() -> Installer:
         return shown(config) if script.is_file() and config.is_file() else None
 
     def install() -> list:
-        if installed():
-            return []
         script, config = files()
         default = doctor.home() / ".copilot"
         data = example("copilot", "hooks.example.json", doctor.copilot_dir(), default)
+        if installed():
+            steps = hook_refresh(REPO / "copilot" / HOOK_FILE, script)
+            if load_object(config) != data:
+                steps.append(Step(f"update {shown(config)} from copilot/hooks.example.json", (config,), lambda: write_json(config, data)))
+            return steps
         return [
             hook_copy(REPO / "copilot" / HOOK_FILE, script),
             Step(f"write {shown(config)}", (), lambda: write_json(config, data)),
@@ -382,7 +404,7 @@ def goose() -> Installer:
 
     def install() -> list:
         if installed():
-            return []
+            return [step for name in files for step in hook_refresh(REPO / "goose" / name, doctor.goose_dir() / name)]
         # hooks.json goes last: until it is there, the plugin counts as not installed.
         return [hook_copy(REPO / "goose" / name, doctor.goose_dir() / name) for name in files]
 
@@ -412,7 +434,13 @@ def opencode() -> Installer:
 
     def install() -> list:
         if installed():
-            return []
+            source, folder = REPO / "opencode", paths()[1]
+            steps = []
+            for path in sorted(source.rglob("*")):
+                target = folder / path.relative_to(source)
+                if path.is_file() and not {"test", "node_modules", "README.md"} & set(path.relative_to(source).parts):
+                    steps += hook_refresh(path, target) if target.is_file() else [hook_copy(path, target)]
+            return steps
         version = doctor.binary_version(shutil.which("opencode") or "opencode")
         if version is not None and version[0] < 2:
             raise Failure("install does not handle OpenCode 1.x; follow 'Install on 1.x' in opencode/README.md")

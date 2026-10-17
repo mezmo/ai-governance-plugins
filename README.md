@@ -250,7 +250,10 @@ own override: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`,
 `PI_CODING_AGENT_DIR`. Before it edits a JSON file, it saves a copy next to it
 as `<name>.mezmo-backup-<time>` and prints the path. It writes through a
 symlink and keeps the file's mode, such as `0600`. It never writes the
-token. Running it twice changes nothing. `uninstall` removes the entries and
+token. Running it twice changes nothing. Over an older install, it replaces
+each copied file that differs from this checkout and prints `update <file>`.
+Claude Code and Gemini CLI keep their own copy, so for them run `uninstall`,
+then `install`. `uninstall` removes the entries and
 files `install` added, then each key or file that leaves empty, such as an
 empty `hooks` object, a Cursor `hooks.json` with only `version`, or Claude
 Code's empty `enabledPlugins`, even one that was empty before the install. Codex keys hook trust by position, so where
