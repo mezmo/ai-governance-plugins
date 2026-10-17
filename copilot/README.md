@@ -6,8 +6,14 @@ prints a deny and Copilot skips the tool. After a tool finishes, the same
 script appends a local JSONL record.
 
 It works with Copilot CLI, Copilot cloud agent, and VS Code sessions that use
-the Copilot harness. The VS Code Local harness uses its own payloads, which
-this hook does not read.
+the Copilot harness.
+
+**The VS Code Local harness runs every tool ungoverned.** Local reads
+`~/.copilot/hooks/*.json` but matches only PascalCase events (`PreToolUse`),
+and this file uses Copilot's `preToolUse`, so Local skips it without a warning.
+Seen live in VS Code 1.142.0 on 2026-10-17: a Local session ran `touch marker`,
+and the hook got no call. Use the Copilot harness (the **Session Target** control
+in a new chat) for governed sessions.
 
 Official docs: https://docs.github.com/en/copilot/reference/hooks-configuration
 
@@ -88,8 +94,13 @@ command at it from the repository root:
 ```
 
 The agent's firewall blocks hosts other than GitHub and Copilot by default.
-An admin must allow the Mezmo host, or every call is denied. The docs do not
-say how a hook gets a secret such as the token; this is not verified.
+An admin must allow the Mezmo host, or every call is denied.
+
+Tested 2026-10-17: the cloud agent ran this hook and blocked each tool call.
+A variable and a secret set in the repository's `copilot` environment did not
+reach the hook, which denied with `MEZMO_GOVERNANCE_URL must be a non-empty
+string`, and with the URL set inline in the `bash` command, `MEZMO_GOVERNANCE_TOKEN
+must be a non-empty string`. How to give the hook the token is not verified.
 The audit log is lost when the job ends.
 
 ## MCP tools
