@@ -37,7 +37,8 @@ same. Official docs: https://docs.devin.ai/desktop/cascade/hooks
 
 The script needs Python 3.9 or later and uses only the standard library.
 
-Not run in Windsurf. The hook fields, exit codes and file locations below come
+Run live in Windsurf 1.126.0 on 2026-10-17 against `tools/mock_governance.py`: Cascade's
+`touch marker` was denied (no file written) and a file read was approved. The hook fields, exit codes and file locations below come
 from those docs and from the Devin Desktop 3.10.67 build for macOS on Apple
 silicon (`devin-desktop --version` prints 1.126.0, commit
 `0b186d6e13a1a48a46430c51fe414dd0747d46f6`; zip SHA-256
@@ -135,9 +136,11 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 
 The hook reads these variables from the environment Windsurf gives it.
 VS Code-based editors read your login shell's environment at start, so set
-them in your shell profile, then quit and start Windsurf; this is not verified
-for Windsurf. Without them the hook denies every call and names the missing
-variable.
+them in your shell profile, then quit and start Windsurf. Started from the Dock on
+2026-10-17, Windsurf did not pass them to the hook, which blocked the command with
+`MEZMO_GOVERNANCE_URL environment variable is not set`. Started from a shell that
+exports them (`devin-desktop <folder>`), the hook got them. Without them the hook
+denies every call and names the missing variable.
 
 ### Windows is not supported
 
