@@ -487,6 +487,25 @@ class SessionStateTests(unittest.TestCase):
 
 
 
+@patch.dict(os.environ, environment(**ENV), clear=True)
+class DeadlineBoundsTests(unittest.TestCase):
+    def test_a_timeout_that_is_not_finite_denies_without_asking(self) -> None:
+        for value in ("nan", "inf", "-inf"):
+            with self.subTest(value=value), patch.dict(os.environ, {"MEZMO_GOVERNANCE_TIMEOUT_SECONDS": value}):
+                http = FakeHttp([(200, {"approved": True})])
+                output = hook.handle_event(hook_event("PreToolUse"), http=http)
+                self.assertEqual(decision_of(output), "deny")
+                self.assertIn("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", reason_of(output))
+                self.assertEqual(http.calls, [])
+
+    def test_a_large_timeout_still_ends_before_the_hook_timeout(self) -> None:
+        # hooks.json gives the hook 600 seconds; the deny must come first.
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "3600"}):
+            http = FakeHttp([(200, {"approved": True})])
+            hook.handle_event(hook_event("PreToolUse"), http=http, clock=FakeClock())
+        self.assertLessEqual(http.calls[0][3], 590)
+
+
 class HookConfigTests(unittest.TestCase):
     def test_a_pre_tool_hook_that_fails_blocks_the_tool(self) -> None:
         # Without onFailure, Claude Code runs the tool when the hook crashes, times out

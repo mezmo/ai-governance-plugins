@@ -22,6 +22,7 @@ repo, with these changes:
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import socket
@@ -39,6 +40,8 @@ from urllib.request import Request, urlopen
 AGENT = "claude_code"
 DEFAULT_URL = "https://api.mezmo.com/governance/workflow/authorize"
 DEFAULT_TIMEOUT_SECONDS = 590.0
+# hooks.json gives the hook 600 seconds; deny before Claude Code stops it.
+MAX_TIMEOUT_SECONDS = 590.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_AUDIT_LOG = Path.home() / ".mezmo" / "governance-audit.jsonl"
 # One status file per session, which the plugin's status mod reads. The mod finds it by
@@ -192,13 +195,13 @@ def positive_seconds(environment_name: str, default: float) -> float:
         value = float(configured)
     except ValueError as error:
         raise HookContractError(f"{environment_name} must be a number") from error
-    if value <= 0:
-        raise HookContractError(f"{environment_name} must be greater than zero")
+    if not math.isfinite(value) or value <= 0:
+        raise HookContractError(f"{environment_name} must be a finite number greater than zero")
     return value
 
 
 def timeout_seconds() -> float:
-    return positive_seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)
+    return min(positive_seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS), MAX_TIMEOUT_SECONDS)
 
 
 def poll_interval_seconds() -> float:
