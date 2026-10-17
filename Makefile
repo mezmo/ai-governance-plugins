@@ -1,4 +1,4 @@
-.PHONY: test test-codex test-claude-code test-cursor test-gemini-cli test-copilot test-goose test-pi test-opencode test-langchain test-openai-agents test-mastra test-claude-agent-sdk test-tools
+.PHONY: test test-codex test-claude-code test-claude-code-mod test-cursor test-gemini-cli test-copilot test-goose test-pi test-opencode test-langchain test-openai-agents test-mastra test-claude-agent-sdk test-tools
 
 PYTHON ?= python3
 NODE ?= node
@@ -9,7 +9,11 @@ test-codex:
 	cd codex && $(PYTHON) -m unittest test_hook.py -v
 
 test-claude-code:
-	cd claude-code && $(PYTHON) -m unittest test_hook.py -v
+	cd claude-code && $(PYTHON) -m unittest discover -s tests -v
+
+# The status display's tests need the claude CLI, so they aren't part of `make test`.
+test-claude-code-mod:
+	cd claude-code && claude plugin test
 
 test-cursor:
 	cd cursor && $(PYTHON) -m unittest test_hook.py -v

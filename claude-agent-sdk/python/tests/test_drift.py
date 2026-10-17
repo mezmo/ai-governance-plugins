@@ -10,9 +10,9 @@ from pathlib import Path
 PACKAGE = Path(__file__).resolve().parents[1] / "mezmo_governance_claude_agent_sdk"
 REPO = Path(__file__).resolve().parents[3]
 LANGCHAIN_CLIENT = REPO / "langchain" / "mezmo_governance" / "client.py"
-CLAUDE_CODE_HOOK = REPO / "claude-code" / "mezmo_governance_hook.py"
-# The audit and deny helpers in hooks.py match the Claude Code hook's, whose
-# SDK shares Claude Code's hook wire format.
+CODEX_HOOK = REPO / "codex" / "mezmo_governance_hook.py"
+# The audit and deny helpers in hooks.py match the Codex hook's, whose deny
+# output has the same hookSpecificOutput shape as the SDK's.
 HOOK_DEFINITIONS = (
     "DEFAULT_AUDIT_LOG",
     "MAX_RESULT_PREVIEW_CHARACTERS",
@@ -54,11 +54,11 @@ class DriftTests(unittest.TestCase):
             self.assertIn(placeholder, ours)
         self.assertEqual(ours, normalized_client(LANGCHAIN_CLIENT))
 
-    def test_audit_helpers_match_the_claude_code_hook(self) -> None:
-        if not CLAUDE_CODE_HOOK.is_file():
-            self.skipTest("the Claude Code adapter is not checked out next to this one")
+    def test_audit_helpers_match_the_codex_hook(self) -> None:
+        if not CODEX_HOOK.is_file():
+            self.skipTest("the Codex adapter is not checked out next to this one")
         ours = top_level_definitions(PACKAGE / "hooks.py")
-        theirs = top_level_definitions(CLAUDE_CODE_HOOK)
+        theirs = top_level_definitions(CODEX_HOOK)
         for name in HOOK_DEFINITIONS:
             with self.subTest(definition=name):
                 self.assertIn(name, ours)

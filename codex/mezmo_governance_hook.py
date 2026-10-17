@@ -310,12 +310,13 @@ def decision_from_post_body(body: Mapping[str, Any]) -> Decision:
 
 
 def decision_from_status_body(body: Mapping[str, Any]) -> Decision | None:
-    status = body.get("status")
     reason = body.get("reason")
     detail = reason if isinstance(reason, str) else None
-    # Live Mezmo answers a decided poll with HTTP 200 and the POST body shape.
-    if status is None and isinstance(body.get("approved"), bool):
-        status = "approved" if body["approved"] else "denied"
+    # Mezmo answers the poll with {approved, reason}. A status field is the older shape.
+    approved = body.get("approved")
+    if isinstance(approved, bool):
+        return Decision(True, detail) if approved else Decision(False, detail or "Policy denied the call.")
+    status = body.get("status")
     if status == "approved":
         return Decision(True, detail)
     if status == "denied":

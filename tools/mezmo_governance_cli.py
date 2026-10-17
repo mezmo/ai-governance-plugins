@@ -85,7 +85,7 @@ Examples:
 
 Settings:
   MEZMO_GOVERNANCE_URL and MEZMO_GOVERNANCE_TOKEN come from the shell that starts the agent.
-  The Claude Code plugin can keep its own copy (/plugin configure); OpenCode 2.x reads plugin
+  The Claude Code plugin can keep its own copy (/mezmo:setup); OpenCode 2.x reads plugin
   options in opencode.json, with the key in a file. Install never writes the key.
   Config folders follow each agent's override: CLAUDE_CONFIG_DIR, CODEX_HOME, GEMINI_CLI_HOME,
   COPILOT_HOME, GOOSE_PATH_ROOT, XDG_CONFIG_HOME (OpenCode), PI_CODING_AGENT_DIR, else HOME.
@@ -468,30 +468,35 @@ def claude_code() -> Installer:
         return [
             key
             for key, installs in registry.items()
-            if key.startswith("mezmo-governance@") and any(as_dict(item).get("scope") == "user" for item in as_list(installs))
+            if key.startswith(doctor.CLAUDE_PLUGINS) and any(as_dict(item).get("scope") == "user" for item in as_list(installs))
         ]
 
     def installed() -> Optional[str]:
-        keys = plugin_keys()
+        keys = [key for key in plugin_keys() if key.startswith("mezmo@")]
         settings = load_object(files()[0])
         if keys:
             return f"plugin {keys[0]}"
         return shown(files()[0]) if doctor.mezmo_handlers(as_dict(settings.get("hooks")).get("PreToolUse")) else None
 
+    def uninstall_steps(keys: list) -> list:
+        return [
+            Step(f"claude plugin uninstall {key} -s user", files(), lambda key=key: run_cli(need("claude"), "plugin", "uninstall", key, "-s", "user"))
+            for key in keys
+        ]
+
     def install() -> list:
         if installed():
             return []
+        # The older mezmo-governance plugin would check every call a second time.
+        steps = uninstall_steps([key for key in plugin_keys() if key.startswith("mezmo-governance@")])
         if "mezmo" in load_object(files()[2]):
-            args = ("plugin", "install", "mezmo-governance@mezmo", "-s", "user")
+            args = ("plugin", "install", "mezmo@mezmo", "-s", "user")
         else:
-            args = ("plugin", "install", "mezmo-governance", "--marketplace", str(REPO), "-s", "user")
-        return [Step(f"claude {' '.join(args)}", files(), lambda: run_cli(need("claude"), *args))]
+            args = ("plugin", "install", "mezmo", "--marketplace", str(REPO), "-s", "user")
+        return steps + [Step(f"claude {' '.join(args)}", files(), lambda: run_cli(need("claude"), *args))]
 
     def uninstall() -> list:
-        steps = [
-            Step(f"claude plugin uninstall {key} -s user", files(), lambda key=key: run_cli(need("claude"), "plugin", "uninstall", key, "-s", "user"))
-            for key in plugin_keys()
-        ]
+        steps = uninstall_steps(plugin_keys())
         source = as_dict(as_dict(load_object(files()[2]).get("mezmo")).get("source"))
         if source.get("path") == str(REPO):
             steps.append(Step("claude plugin marketplace remove mezmo", files(), lambda: run_cli(need("claude"), "plugin", "marketplace", "remove", "mezmo")))
@@ -511,8 +516,8 @@ def claude_code() -> Installer:
         installed,
         install,
         uninstall,
-        "In Claude Code run /plugin configure mezmo-governance@mezmo to keep the URL and key in the system credential store,"
-        " or export them in the shell that starts claude.",
+        "In Claude Code run /mezmo:setup governance to keep the key in the system credential store,"
+        " or export MEZMO_GOVERNANCE_URL and MEZMO_GOVERNANCE_TOKEN in the shell that starts claude.",
     )
 
 
@@ -728,6 +733,7 @@ def live_env(scratch: Path) -> dict:
         # A call held for approval then reports pending after 15 s, not 590.
         env["MEZMO_GOVERNANCE_TIMEOUT_SECONDS"] = "15"
     env["MEZMO_GOVERNANCE_AUDIT_LOG"] = str(scratch / "audit.jsonl")
+    env["MEZMO_GOVERNANCE_STATE_DIR"] = str(scratch / "state")
     return env
 
 
@@ -787,8 +793,9 @@ def smoke(names: list, live: bool = False) -> int:
                     "MEZMO_GOVERNANCE_URL": url,
                     "MEZMO_GOVERNANCE_TOKEN": SMOKE_KEY,
                     "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "10",
-                    # Keep the smoke calls out of the user's audit log.
+                    # Keep the smoke calls out of the user's audit log and the plugin's status display.
                     "MEZMO_GOVERNANCE_AUDIT_LOG": str(scratch / "audit.jsonl"),
+                    "MEZMO_GOVERNANCE_STATE_DIR": str(scratch / "state"),
                 }
             )
             print(f"mock  Mezmo stand-in on {url}, denies {', '.join(SHELL_TOOLS)}", flush=True)

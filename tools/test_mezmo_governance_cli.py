@@ -77,10 +77,15 @@ if name == "claude":
             source = args[args.index("--marketplace") + 1]
             markets["mezmo"] = {"source": {"source": "directory", "path": source}}
             data.setdefault("extraKnownMarketplaces", {})["mezmo"] = markets["mezmo"]
-        folder = root / "plugins" / "cache" / "mezmo" / "mezmo-governance" / "0.2.0"
-        shutil.copytree(Path(markets["mezmo"]["source"]["path"]) / "claude-code", folder, dirs_exist_ok=True)
-        plugins["plugins"]["mezmo-governance@mezmo"] = [{"scope": "user", "installPath": str(folder)}]
-        data.setdefault("enabledPlugins", {})["mezmo-governance@mezmo"] = True
+        plugin = args[2].split("@")[0]
+        market = Path(markets["mezmo"]["source"]["path"])
+        listed = json.loads((market / ".claude-plugin" / "marketplace.json").read_text())["plugins"]
+        if plugin not in [entry["name"] for entry in listed]:
+            sys.exit(f"fake claude: plugin {plugin} not found in marketplace mezmo")
+        folder = root / "plugins" / "cache" / "mezmo" / plugin / "0.2.0"
+        shutil.copytree(market / "claude-code", folder, dirs_exist_ok=True)
+        plugins["plugins"][f"{plugin}@mezmo"] = [{"scope": "user", "installPath": str(folder)}]
+        data.setdefault("enabledPlugins", {})[f"{plugin}@mezmo"] = True
     elif args[:2] == ["plugin", "uninstall"]:
         plugins["plugins"].pop(args[2])
         data.setdefault("enabledPlugins", {}).pop(args[2], None)
@@ -310,6 +315,23 @@ class InstallTests(CliTestCase):
         # A refused agent does not stop the others in the same run.
         self.assertIn("installed: no", self.status("cursor"))
 
+    def test_the_older_mezmo_governance_plugin_is_replaced_not_doubled(self) -> None:
+        folder = self.tmp / "claude/plugins/cache/mezmo/mezmo-governance/0.2.0"
+        self.write(
+            {
+                "claude/plugins/installed_plugins.json": {"version": 2, "plugins": {"mezmo-governance@mezmo": [{"scope": "user", "installPath": str(folder)}]}},
+                "claude/plugins/known_marketplaces.json": {"mezmo": {"source": {"source": "directory", "path": str(REPO)}}},
+                "claude/settings.json": {"enabledPlugins": {"mezmo-governance@mezmo": True}},
+            }
+        )
+
+        result = self.cli("install", "claude-code")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        registry = json.loads((self.tmp / "claude/plugins/installed_plugins.json").read_text())
+        self.assertEqual(list(registry["plugins"]), ["mezmo@mezmo"])
+        self.assertIn("installed: yes", self.status("claude-code"))
+
     def test_the_installed_files_are_what_each_readme_installs(self) -> None:
         result = self.cli("install", "--all")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -330,7 +352,7 @@ class InstallTests(CliTestCase):
         self.assertFalse((self.tmp / "xdg/opencode/mezmo-governance/test").exists())
         self.assertFalse((self.tmp / "xdg/mezmo/governance-key").exists())
         calls = [json.loads(line) for line in self.log.read_text().splitlines()]
-        self.assertIn(["claude", "plugin", "install", "mezmo-governance", "--marketplace", str(REPO), "-s", "user"], calls)
+        self.assertIn(["claude", "plugin", "install", "mezmo", "--marketplace", str(REPO), "-s", "user"], calls)
         self.assertIn(["gemini", "extensions", "install", str(REPO / "gemini-cli"), "--consent", "--skip-settings"], calls)
         self.assertIn(["pi", "install", str(REPO / "pi")], calls)
         self.assertIn("LangChain: langchain/README.md", result.stdout)
@@ -935,7 +957,11 @@ class ManifestTests(unittest.TestCase):
 
         for agent in doctor.AGENTS:
             with self.subTest(agent=agent.readme):
-                sources = [*(REPO / agent.readme).glob("mezmo_governance_hook.py"), *(REPO / agent.readme).glob("**/client.ts")]
+                sources = [
+                    *(REPO / agent.readme).glob("mezmo_governance_hook.py"),
+                    *(REPO / agent.readme).glob("scripts/governance_hook.py"),
+                    *(REPO / agent.readme).glob("**/client.ts"),
+                ]
                 found = {
                     match.group(1)
                     for path in sources if "node_modules" not in path.parts

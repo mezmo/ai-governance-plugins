@@ -1,12 +1,13 @@
 {
-  "description": "Mezmo Governance: authorize each tool call, then log the result locally",
+  "description": "Mezmo status mod (footer indicator, one connection check per session, /mezmo) and the Mezmo Governance tool-call check, which stays off until an access key is configured",
+  "modules": ["./register.ts"],
   "hooks": {
     "PreToolUse": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/mezmo_governance_hook.py\"",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/governance_hook.py\"",
             "timeout": 600,
             "onFailure": "block",
             "statusMessage": "Checking Mezmo Governance"
@@ -19,9 +20,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/mezmo_governance_hook.py\"",
-            "timeout": 15,
-            "statusMessage": "Recording the governed result"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/governance_hook.py\"",
+            "timeout": 15
           }
         ]
       }
@@ -31,9 +31,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/mezmo_governance_hook.py\"",
-            "timeout": 15,
-            "statusMessage": "Recording the governed result"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/governance_hook.py\"",
+            "timeout": 15
           }
         ]
       }

@@ -322,12 +322,14 @@ function decisionFromPost(body: Record<string, unknown>): Decision {
 }
 
 function decisionFromStatus(body: Record<string, unknown>): Decision | null {
-  let status = body.status;
   const reason = typeof body.reason === "string" ? body.reason : null;
-  // Live Mezmo answers a decided poll with HTTP 200 and the POST body shape.
-  if (status === undefined && typeof body.approved === "boolean") {
-    status = body.approved ? "approved" : "denied";
+  // Mezmo answers the poll with {approved, reason}. A status field is the older shape.
+  if (typeof body.approved === "boolean") {
+    return body.approved
+      ? { approved: true, reason }
+      : { approved: false, reason: reason ?? "Policy denied the call." };
   }
+  const status = body.status;
   if (status === "approved") {
     return { approved: true, reason };
   }

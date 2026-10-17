@@ -31,6 +31,10 @@ from urllib.request import Request, build_opener
 
 REPO = Path(__file__).resolve().parent.parent
 HOOK_FILE = "mezmo_governance_hook.py"
+# The Claude Code plugin runs scripts/governance_hook.py; this also matches an older
+# mezmo-governance plugin, which ran mezmo_governance_hook.py.
+CLAUDE_HOOK_FILE = "governance_hook.py"
+CLAUDE_PLUGINS = ("mezmo@", "mezmo-governance@")
 DEFAULT_URL = "https://api.mezmo.com/governance/workflow/authorize"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 REQUEST_SECONDS = 15.0
@@ -41,14 +45,22 @@ LIBRARIES = "LangChain, OpenAI Agents SDK, Claude Agent SDK and Mastra"
 
 
 def load_hook() -> Any:
-    """The Claude Code hook: its settings rules and HTTP client are the hooks' own."""
-    spec = importlib.util.spec_from_file_location("mezmo_governance_hook", REPO / "claude-code" / HOOK_FILE)
+    """The Codex hook: its settings rules and HTTP client are every Python hook's own."""
+    spec = importlib.util.spec_from_file_location("mezmo_governance_hook", REPO / "codex" / HOOK_FILE)
     module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
     spec.loader.exec_module(module)  # type: ignore[union-attr]
     return module
 
 
 hook = load_hook()
+
+
+def configured(name: str) -> str:
+    """A setting from the shell that runs the check, as the hooks read it."""
+    value = (os.environ.get(name) or "").strip()
+    if not value:
+        raise hook.HookContractError(f"set {name}")
+    return value
 
 
 class Unknown(Exception):
@@ -67,7 +79,7 @@ class Report:
         self.failed = False
         self.secrets: list = []
         try:
-            key = hook.configured("MEZMO_GOVERNANCE_TOKEN")
+            key = configured("MEZMO_GOVERNANCE_TOKEN")
         except hook.HookContractError:
             return
         # Redact the key with and without its Token or Bearer prefix.
@@ -177,7 +189,7 @@ def toml_table(text: str, header: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-def mezmo_handlers(groups: Any, field: str = "command") -> list:
+def mezmo_handlers(groups: Any, field: str = "command", script: str = HOOK_FILE) -> list:
     """(group index, handler index, group, handler) for each entry that runs the hook."""
     found = []
     for g, group in enumerate(as_list(groups)):
@@ -185,15 +197,15 @@ def mezmo_handlers(groups: Any, field: str = "command") -> list:
         nested = "hooks" in group
         for h, handler in enumerate(as_list(group["hooks"]) if nested else [group]):
             handler = as_dict(handler)
-            if HOOK_FILE in str(handler.get(field, "")):
+            if script in str(handler.get(field, "")):
                 found.append((g, h, group, handler))
     return found
 
 
-def hook_path(command: str) -> Path:
+def hook_path(command: str, script: str = HOOK_FILE) -> Path:
     """The script a hook command runs, expanded as the shell would."""
-    match = re.search(r"[^\s\"']*" + re.escape(HOOK_FILE), command)
-    token = match.group(0) if match else HOOK_FILE
+    match = re.search(r"[^\s\"']*" + re.escape(script), command)
+    token = match.group(0) if match else script
     fallback = "${MEZMO_GOVERNANCE_HOOK:-"
     if token.startswith(fallback):
         token = os.environ.get("MEZMO_GOVERNANCE_HOOK") or token[len(fallback):]
@@ -257,7 +269,7 @@ def check_settings(report: Report) -> bool:
         ),
     ):
         try:
-            value = hook.configured(name)
+            value = configured(name)
         except hook.HookContractError:
             report.line(
                 "FAIL",
@@ -268,7 +280,6 @@ def check_settings(report: Report) -> bool:
             )
             ready = False
             continue
-        source = name if (os.environ.get(name) or "").strip() else hook.PLUGIN_OPTIONS[name]
         if name == "MEZMO_GOVERNANCE_URL":
             problem = url_problem(value)
             if problem:
@@ -276,9 +287,9 @@ def check_settings(report: Report) -> bool:
                 ready = False
             else:
                 local = " (local mock)" if urlparse(value).scheme == "http" else ""
-                report.line("ok", name, f"{shown_url(value)}{local}, from {source}")
+                report.line("ok", name, f"{shown_url(value)}{local}")
         else:
-            report.line("ok", name, f"set, from {source} (not shown)")
+            report.line("ok", name, "set (not shown)")
     for name, read in (
         ("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", hook.timeout_seconds),
         ("MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS", hook.poll_interval_seconds),
@@ -419,7 +430,7 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
     settings = as_dict(read_json(root / "settings.json"))
     registry = as_dict(read_json(root / "plugins" / "installed_plugins.json"))
     smokes = []
-    plugins = [key for key in as_dict(registry.get("plugins")) if key.startswith("mezmo-governance@")]
+    plugins = [key for key in as_dict(registry.get("plugins")) if key.startswith(CLAUDE_PLUGINS)]
     for key in plugins:
         install = as_dict((as_list(registry["plugins"][key]) or [None])[0])
         folder = Path(str(install.get("installPath") or ""))
@@ -428,7 +439,7 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
         else:
             report.line("warn", "Claude Code plugin", f"{key} is installed but not enabled", "enable it in /plugin")
         hooks = as_dict(as_dict(read_json(folder / "hooks" / "hooks.json")).get("hooks"))
-        found = mezmo_handlers(hooks.get("PreToolUse"))
+        found = mezmo_handlers(hooks.get("PreToolUse"), script=CLAUDE_HOOK_FILE)
         if not found:
             report.line("FAIL", "Claude Code plugin", f"no PreToolUse hook in {shown(folder)}", "reinstall the plugin")
             continue
@@ -439,7 +450,9 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
             'onFailure: "block"',
             "claude-code/hooks/hooks.json",
         )
-        smokes.append(Smoke("Claude Code", folder / HOOK_FILE, CLAUDE_EVENT))
+        for *_, handler in found:
+            command = str(handler.get("command")).replace("${CLAUDE_PLUGIN_ROOT}", str(folder))
+            smokes.append(Smoke("Claude Code", hook_path(command, CLAUDE_HOOK_FILE), CLAUDE_EVENT))
     found = mezmo_handlers(as_dict(settings.get("hooks")).get("PreToolUse"))
     for *_, handler in found:
         report.line("ok", "Claude Code settings", f"PreToolUse hook in {shown(root / 'settings.json')}")
@@ -448,7 +461,7 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
             "Claude Code settings",
             handler.get("onFailure") == "block",
             'onFailure: "block"',
-            "claude-code/settings.example.json",
+            "claude-code/hooks/hooks.json",
         )
         smokes.append(Smoke("Claude Code", hook_path(str(handler["command"])), CLAUDE_EVENT))
     return smokes if plugins or found else None
@@ -891,6 +904,9 @@ def check_smokes(report: Report, smokes: list) -> None:
             "MEZMO_GOVERNANCE_URL": UNREACHABLE_URL,
             "MEZMO_GOVERNANCE_TOKEN": "doctor-smoke",
             "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "10",
+            # The Claude Code plugin keeps session state for its status display and
+            # skips it when it cannot write; no folder can exist under /dev/null.
+            "MEZMO_GOVERNANCE_STATE_DIR": os.devnull + "/mezmo-governance",
         }
     )
     seen = set()

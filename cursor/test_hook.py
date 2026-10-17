@@ -179,6 +179,80 @@ class CursorGovernanceHookTests(unittest.TestCase):
         self.assertEqual(http.calls[1][0], "GET")
 
     @patch.dict(os.environ, ENV)
+    def test_waits_for_a_person_after_207_then_allows(self) -> None:
+        http = FakeHttp(
+            [
+                (207, {"approved": False}),
+                (200, {"status": "pending", "reason": None}),
+                (200, {"status": "approved", "reason": "looked it over"}),
+            ]
+        )
+        clock = FakeClock()
+
+        output = hook.handle_event(
+            hook_event("preToolUse"),
+            http=http,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(output["permission"], "allow")
+        poll_url = f"{AUTHORIZE_URL}?decision_id={http.calls[0][2]['decision_id']}"
+        self.assertEqual(
+            [(method, url) for method, url, _, _ in http.calls],
+            [("POST", AUTHORIZE_URL), ("GET", poll_url), ("GET", poll_url)],
+        )
+        self.assertEqual(clock.now, 1.0)
+
+    @patch.dict(os.environ, ENV)
+    def test_polls_through_207_until_a_person_approves(self) -> None:
+        # What Mezmo answers while a person decides: 207 with "approved": false,
+        # on the POST and on each poll. Then 200 with the decision.
+        http = FakeHttp(
+            [
+                (207, {"approved": False, "reason": "No rule in this policy covers this request."}),
+                (207, {"approved": False, "reason": None}),
+                (200, {"approved": True, "reason": "looked it over"}),
+            ]
+        )
+        clock = FakeClock()
+
+        output = hook.handle_event(
+            hook_event("preToolUse"),
+            http=http,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(output["permission"], "allow")
+        poll_url = f"{AUTHORIZE_URL}?decision_id={http.calls[0][2]['decision_id']}"
+        self.assertEqual(
+            [(method, url) for method, url, _, _ in http.calls],
+            [("POST", AUTHORIZE_URL), ("GET", poll_url), ("GET", poll_url)],
+        )
+        self.assertEqual(clock.now, 1.0)
+
+    @patch.dict(os.environ, ENV)
+    def test_a_person_denies_through_the_poll(self) -> None:
+        http = FakeHttp(
+            [
+                (207, {"approved": False}),
+                (200, {"approved": False, "reason": "not today"}),
+            ]
+        )
+        clock = FakeClock()
+
+        output = hook.handle_event(
+            hook_event("preToolUse"),
+            http=http,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(output["permission"], "deny")
+        self.assertIn("not today", json.dumps(output))
+
+    @patch.dict(os.environ, ENV)
     def test_fails_closed_on_transport_error(self) -> None:
         http = FakeHttp([hook.HookContractError("connection refused")])
         output = hook.handle_event(hook_event("preToolUse"), http=http)

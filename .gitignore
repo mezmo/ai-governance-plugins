@@ -16,3 +16,7 @@ coverage/
 dist/
 build/
 *.tsbuildinfo
+# Claude Code writes these when it validates or tests the plugin
+claude-code/tsconfig.json
+claude-code/.claude-plugin/types/
+.claude/

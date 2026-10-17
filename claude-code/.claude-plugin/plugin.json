@@ -1,27 +1,42 @@
 {
-  "name": "mezmo-governance",
-  "description": "Gate Claude Code tool calls through Mezmo Governance before they run",
+  "name": "mezmo",
+  "displayName": "Mezmo",
   "version": "0.2.0",
+  "description": "Check Claude Code's tool calls with Mezmo Governance, send Claude Code telemetry to Mezmo, and connect Claude to Mezmo MCP.",
   "author": {
-    "name": "Mezmo"
+    "name": "Mezmo",
+    "url": "https://www.mezmo.com"
   },
-  "homepage": "https://github.com/mezmo/ai-governance-plugins/tree/main/claude-code",
-  "repository": "https://github.com/mezmo/ai-governance-plugins",
-  "license": "Apache-2.0",
+  "homepage": "https://docs.mezmo.com/telemetry-pipelines/open-telemetry-source",
+  "keywords": [
+    "mezmo",
+    "governance",
+    "policy",
+    "opentelemetry",
+    "otel",
+    "observability",
+    "telemetry",
+    "monitoring",
+    "mcp"
+  ],
+  "types": "./hooks/state.d.ts",
   "userConfig": {
+    "governance_access_key": {
+      "type": "string",
+      "title": "Mezmo Governance access key",
+      "description": "Access key of the agent registered for Claude Code in Mezmo Governance. Leave empty to keep governance off. With a key, every tool call is checked before it runs.",
+      "sensitive": true
+    },
     "governance_url": {
       "type": "string",
       "title": "Mezmo Governance URL",
-      "description": "Full authorize URL. MEZMO_GOVERNANCE_URL overrides it.",
-      "default": "https://api.mezmo.com/governance/workflow/authorize",
-      "required": true
+      "description": "Authorize endpoint. Leave empty for https://api.mezmo.com/governance/workflow/authorize."
     },
-    "access_key": {
-      "type": "string",
-      "title": "Service account token",
-      "description": "Token of the Mezmo service account the agent uses. MEZMO_GOVERNANCE_TOKEN overrides it.",
-      "sensitive": true,
-      "required": true
+    "governance_enabled": {
+      "type": "boolean",
+      "title": "Check tool calls with Mezmo Governance",
+      "description": "Turn off to let tool calls run without a governance check. Governance from managed settings still applies.",
+      "default": true
     }
   }
 }

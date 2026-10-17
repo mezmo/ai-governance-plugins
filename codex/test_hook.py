@@ -204,6 +204,80 @@ class CodexGovernanceHookTests(unittest.TestCase):
         self.assertIn("already decided", output["hookSpecificOutput"]["permissionDecisionReason"])
 
     @patch.dict(os.environ, ENV)
+    def test_waits_for_a_person_after_207_then_allows(self) -> None:
+        http = FakeHttp(
+            [
+                (207, {"approved": False}),
+                (200, {"status": "pending", "reason": None}),
+                (200, {"status": "approved", "reason": "looked it over"}),
+            ]
+        )
+        clock = FakeClock()
+
+        output = hook.handle_event(
+            hook_event("PreToolUse"),
+            http=http,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertIsNone(output)
+        poll_url = f"{AUTHORIZE_URL}?decision_id={http.calls[0][2]['decision_id']}"
+        self.assertEqual(
+            [(method, url) for method, url, _, _ in http.calls],
+            [("POST", AUTHORIZE_URL), ("GET", poll_url), ("GET", poll_url)],
+        )
+        self.assertEqual(clock.now, 1.0)
+
+    @patch.dict(os.environ, ENV)
+    def test_polls_through_207_until_a_person_approves(self) -> None:
+        # What Mezmo answers while a person decides: 207 with "approved": false,
+        # on the POST and on each poll. Then 200 with the decision.
+        http = FakeHttp(
+            [
+                (207, {"approved": False, "reason": "No rule in this policy covers this request."}),
+                (207, {"approved": False, "reason": None}),
+                (200, {"approved": True, "reason": "looked it over"}),
+            ]
+        )
+        clock = FakeClock()
+
+        output = hook.handle_event(
+            hook_event("PreToolUse"),
+            http=http,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertIsNone(output)
+        poll_url = f"{AUTHORIZE_URL}?decision_id={http.calls[0][2]['decision_id']}"
+        self.assertEqual(
+            [(method, url) for method, url, _, _ in http.calls],
+            [("POST", AUTHORIZE_URL), ("GET", poll_url), ("GET", poll_url)],
+        )
+        self.assertEqual(clock.now, 1.0)
+
+    @patch.dict(os.environ, ENV)
+    def test_a_person_denies_through_the_poll(self) -> None:
+        http = FakeHttp(
+            [
+                (207, {"approved": False}),
+                (200, {"approved": False, "reason": "not today"}),
+            ]
+        )
+        clock = FakeClock()
+
+        output = hook.handle_event(
+            hook_event("PreToolUse"),
+            http=http,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+        self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("not today", output["hookSpecificOutput"]["permissionDecisionReason"])
+
+    @patch.dict(os.environ, ENV)
     def test_fails_closed_when_the_governance_request_fails(self) -> None:
         http = FakeHttp([hook.HookContractError("connection refused")])
 
@@ -646,6 +720,82 @@ class PythonFloorTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+# The five Python hook adapters are standalone copies. These shared parts must stay
+# identical so a fix in one copy reaches the others.
+SHARED_DEFINITIONS = (
+    "DEFAULT_TIMEOUT_SECONDS",
+    "MAX_TIMEOUT_SECONDS",
+    "DEFAULT_POLL_INTERVAL_SECONDS",
+    "MIN_POLL_INTERVAL_SECONDS",
+    "DEFAULT_AUDIT_LOG",
+    "MAX_RESULT_PREVIEW_CHARACTERS",
+    "HttpJson",
+    "HookContractError",
+    "Decision",
+    "required_string",
+    "parse_object",
+    "call_digest",
+    "MAX_REQUEST_ID_CHARACTERS",
+    "bounded_request_id",
+    "status_url",
+    "positive_seconds",
+    "timeout_seconds",
+    "poll_interval_seconds",
+    "audit_log_path",
+    "RefuseRedirect",
+    "http_json",
+    "MAX_ERROR_DETAIL_CHARACTERS",
+    "error_detail",
+    "http_failure",
+    "remaining_seconds",
+    "decision_from_post_body",
+    "decision_from_status_body",
+    "poll_decision",
+    "deadline_watchdog",
+    "authorize",
+    "authorize_url",
+    "authorization_header",
+    "result_preview",
+    "result_has_known_error",
+    "append_audit",
+)
+SIBLING_ADAPTERS = ("cursor", "gemini-cli", "copilot", "goose")
+
+
+def top_level_definitions(path: Path) -> dict[str, str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            found[node.name] = ast.dump(node)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    found[target.id] = ast.dump(node.value)
+    return found
+
+
+class SharedCoreDriftTests(unittest.TestCase):
+    def test_shared_core_is_identical_across_python_adapters(self) -> None:
+        reference = top_level_definitions(HOOK_PATH)
+        missing = [name for name in SHARED_DEFINITIONS if name not in reference]
+        self.assertEqual(missing, [])
+        siblings = [
+            HOOK_PATH.parent.parent / adapter / HOOK_PATH.name
+            for adapter in SIBLING_ADAPTERS
+        ]
+        present = [path for path in siblings if path.is_file()]
+        if not present:
+            self.skipTest("sibling adapters are not checked out next to this one")
+        for path in present:
+            sibling = top_level_definitions(path)
+            for name in SHARED_DEFINITIONS:
+                with self.subTest(adapter=path.parent.name, definition=name):
+                    self.assertEqual(sibling.get(name), reference[name])
+            with self.subTest(adapter=path.parent.name, definition="call_identity"):
+                self.assertIn("bounded_request_id", sibling["call_identity"])
 
 
 PRE_EVENT = "PreToolUse"

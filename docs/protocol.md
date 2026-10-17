@@ -14,7 +14,7 @@ https://api.mezmo.com/governance/workflow/authorize
 | Method | URL | When |
 | --- | --- | --- |
 | `POST` | `$MEZMO_GOVERNANCE_URL` | Before the tool runs |
-| `GET` | `$MEZMO_GOVERNANCE_URL?decision_id=<id>` | After HTTP 207, HTTP 409 or a client timeout |
+| `GET` | `$MEZMO_GOVERNANCE_URL?decision_id=<id>` | After HTTP 207, HTTP 409, or a client timeout |
 
 Post-tool hooks only append a local JSONL file. They do not call Mezmo.
 
@@ -80,7 +80,7 @@ Rules:
 
 ## Authorize response
 
-`POST` body, at once or after a person decides:
+HTTP 200 `POST` body, the decision:
 
 ```json
 { "approved": true }
@@ -90,28 +90,22 @@ Rules:
 { "approved": false, "reason": "Deleting a pod in staging requires a human decision." }
 ```
 
-Status poll:
-
-```json
-{ "status": "pending", "reason": null }
-```
-
-```json
-{ "status": "approved", "reason": "looked it over, safe to run" }
-```
-
-```json
-{ "status": "denied", "reason": "shell is not allowed" }
-```
-
-If policy sends the call for approval, Mezmo answers the `POST` at once with
-HTTP 207 and `{"approved": false, "reason": "..."}`. That `approved: false` is
-not the decision: the call is waiting for a person. Polls answer HTTP 207 with
-`{"approved": false, "reason": null}` while it waits, then HTTP 200 with
-`{"approved": true|false, "reason": ...}` once someone decides (seen live on
-2026-10-16, both an approval and a denial by a person). Plugins also accept the
-`status` poll bodies above. A second `POST` with the same `decision_id` returns
+If policy needs a person, the `POST` answers HTTP 207. Its body still says
+`"approved": false`, but nothing has been decided yet. Poll the status URL until
+someone approves or denies. A second `POST` with the same `decision_id` returns
 HTTP 409.
+
+The status poll answers with the same body as the `POST`, and the HTTP status
+says whether it's final:
+
+| `GET` status | Body | Meaning |
+| --- | --- | --- |
+| 207 | `{ "approved": false, "reason": null }` | Still waiting for a person. Poll again |
+| 200 | `{ "approved": true, "reason": "looked it over, safe to run" }` | Approved |
+| 200 | `{ "approved": false, "reason": "shell is not allowed" }` | Denied |
+| 404 | `{ "code": "ENOENT" }` | The decision isn't visible yet. Poll again |
+
+Plugins also accept an older poll body, `{ "status": "pending" | "approved" | "denied", "reason": ... }`.
 
 The `POST` takes an optional `?response_type=poll|sync` query parameter.
 `poll`, the default, answers 207 at once as above. `sync` holds the `POST` open
@@ -122,28 +116,31 @@ still pending. Plugins send no `response_type`, so they get `poll`.
 
 1. `POST` the authorize URL with remaining time until the overall deadline.
 2. HTTP 200 with `approved: true` or `approved: false` is the decision.
-3. HTTP 207 or 409: poll `GET ?decision_id=` until a decision or the deadline.
-4. Client or transport timeout on the `POST`: same poll loop. Mezmo may still
+3. HTTP 207: a person must decide. Ignore the body's `approved` and poll
+   `GET ?decision_id=` until it answers HTTP 200 or the deadline passes.
+4. HTTP 409: same poll loop.
+5. Client or transport timeout on the `POST`: same poll loop. Mezmo may still
    be waiting for a person.
-5. `GET` HTTP 207, or `pending`: sleep `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` (default 5)
-   and retry.
-6. `GET` HTTP 404: Mezmo has no record of the decision yet, for example while
+6. `GET` HTTP 207, or `pending`: sleep `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS`
+   (default 5) and retry. HTTP 200 is the decision, read from `approved`.
+7. `GET` HTTP 404: Mezmo has no record of the decision yet, for example while
    the `POST` is still in flight. Treat it as `pending`. Every adapter does
-   this, and the deadline in rule 7 still ends the wait.
-7. Deadline reached while still pending: deny with reason
+   this, and the deadline in rule 8 still ends the wait.
+8. Deadline reached while still pending: deny with reason
    `Mezmo Governance: approval still pending`.
    Every plugin treats an answer that arrives after the deadline as a deny,
    and bounds the whole answer, not each read: the TypeScript clients abort
    the fetch, the LangChain, OpenAI Agents SDK and Claude Agent SDK Python
    clients wrap the request in `asyncio.wait_for`, and a watchdog thread in
-   the Python hooks prints the deny and exits 2.
-8. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
+   the Python hooks prints the deny and exits 2. The Claude Code plugin has no
+   watchdog: its `onFailure: "block"` blocks the tool at the 600 s hook timeout.
+9. Any other HTTP status, missing `approved` boolean, invalid JSON, missing
    env, or transport error: deny. The tool does not run. On a 4xx, the deny
    reason adds Mezmo's `code` and `message`, each on one line and cut at 200
    characters, such as `Mezmo Governance returned HTTP 403 ENOAGENT: no agent
    is registered for these credentials`. Nothing else from the reply is shown.
-9. No client follows a redirect, on the `POST` or the poll `GET`. A 3xx is
-   a deny, so the token never goes to a second URL.
+10. No client follows a redirect, on the `POST` or the poll `GET`. A 3xx is
+    a deny, so the token never goes to a second URL.
 
 ## Identity
 
@@ -246,4 +243,4 @@ characters; the middleware cuts a longer intent.
 | --- | --- | --- |
 | allow | `{ "approved": true }` | yes |
 | deny | `{ "approved": false, "reason": "..." }` | no |
-| needs a person | HTTP 207, then polls until HTTP 200 `{ "approved": true\|false, "reason": "..." }` | only after approve |
+| needs a person | HTTP 207, then `GET` answers 207 until someone decides, then 200 with `approved` | only after approve |

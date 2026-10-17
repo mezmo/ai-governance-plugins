@@ -55,7 +55,7 @@ can watch the plugin wait and then deny.
    | Field | Example for Claude Code |
    | --- | --- |
    | Agent Name | `Claude Code on my-laptop` |
-   | Description | `Claude Code with the mezmo-governance plugin` |
+   | Description | `Claude Code with the Mezmo plugin` |
    | Runtime Name | `claude-code`, the adapter folder name |
    | Version | `2.1.300`, from `claude --version` |
    | Instance ID | `claude-code-my-laptop`, unique per machine |
@@ -94,8 +94,8 @@ can watch the plugin wait and then deny.
    Name one or more agents, or pass `--all` for every agent on your `PATH`.
    `./mezmo-governance agents` lists them; [the table below](#the-mezmo-governance-command)
    says what `install` does for each.
-3. Give it the URL and key. Claude Code prompts for both when you enable the
-   plugin. OpenCode 2.x takes them as plugin options in `opencode.json`
+3. Give it the URL and key. In Claude Code, run `/mezmo:setup governance`,
+   which keeps the key in the system credential store. OpenCode 2.x takes them as plugin options in `opencode.json`
    (see [opencode/](opencode/)), because its tools run in a background
    service that does not see your shell. Every other agent reads environment
    variables:
@@ -247,7 +247,7 @@ exits 1.
 
 | Agent | `install` runs | Why this way |
 | --- | --- | --- |
-| Claude Code | `claude plugin install mezmo-governance --marketplace <this repo> -s user` | `claude plugin install --help`: the marketplace may be "a path" |
+| Claude Code | `claude plugin install mezmo --marketplace <this repo> -s user`, after it uninstalls an older `mezmo-governance` plugin | `claude plugin install --help`: the marketplace may be "a path" |
 | Codex CLI | copies the hook, merges `codex/hooks.example.json` into `hooks.json` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-and-copilot-cli) |
 | Cursor | copies the hook, merges `cursor/hooks.example.json` into `~/.cursor/hooks.json` | `cursor-agent plugin` only adds marketplaces from a git URL |
 | Gemini CLI | `gemini extensions install ./gemini-cli --consent --skip-settings` | `gemini extensions install --help`: "from a git repository URL or a local path" |
@@ -268,11 +268,13 @@ up in app code; `install` points to their READMEs.
 
 ```text
 /plugin marketplace add mezmo/ai-governance-plugins
-/plugin install mezmo-governance@mezmo
+/plugin install mezmo@mezmo
 ```
 
-Claude Code asks for the authorize URL and the token and keeps the key in
-the system credential store. Details: [claude-code/](claude-code/).
+Then run `/mezmo:setup governance`, which keeps the key in the system
+credential store. Until it has a key, from setup or `MEZMO_GOVERNANCE_TOKEN`,
+the plugin lets every call run; `MEZMO_GOVERNANCE_REQUIRED=1` makes it deny
+instead. Details: [claude-code/](claude-code/).
 
 ### Codex CLI and Copilot CLI
 
@@ -402,7 +404,7 @@ A local HTTP server stands in for Mezmo. The tests confirm that:
   is finished by the next one; `--dry-run` changes nothing; the key is in no
   file or output (`tools/test_mezmo_governance_cli.py`, with fake `claude`,
   `gemini` and `pi` binaries);
-- the shared code is identical across the six Python hooks, across the
+- the shared code is identical across the five Python hook adapters, across the
   four `client.ts` copies, and between the LangChain Python client and its
   OpenAI Agents SDK and Claude Agent SDK copies; the Python hooks import on
   Python 3.9.

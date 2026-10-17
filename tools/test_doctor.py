@@ -177,18 +177,6 @@ class SettingsTests(DoctorTestCase):
         self.assertStatus(result, "Mezmo", "skip")
         self.assertEqual(self.stub.requests, [])
 
-    def test_claude_code_plugin_options_count_as_settings(self) -> None:
-        result = self.doctor(
-            MEZMO_GOVERNANCE_URL=None,
-            MEZMO_GOVERNANCE_TOKEN=None,
-            CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL=self.stub.url,
-            CLAUDE_PLUGIN_OPTION_ACCESS_KEY=CANARY,
-        )
-
-        self.assertEqual(result.returncode, 0, result.stdout)
-        line = self.assertStatus(result, "MEZMO_GOVERNANCE_TOKEN", "ok")
-        self.assertIn("CLAUDE_PLUGIN_OPTION_ACCESS_KEY", line)
-
     def test_http_is_refused_except_for_a_local_mock(self) -> None:
         cases = [
             ("http://api.example.test/governance/workflow/authorize", "FAIL"),
@@ -345,16 +333,18 @@ CLAUDE_SETTINGS_HOOK = {
 class ClaudeCodeTests(DoctorTestCase):
     def install_settings(self, handler: dict | None = None) -> None:
         self.write(".claude/settings.json", {"hooks": {"PreToolUse": [{"hooks": [handler or CLAUDE_SETTINGS_HOOK]}]}})
-        self.copy_hook("claude-code", ".claude/hooks/mezmo_governance_hook.py")
+        # A settings install from before the plugin; the Python hooks share their core.
+        self.copy_hook("codex", ".claude/hooks/mezmo_governance_hook.py")
 
-    def install_plugin(self, enabled: bool = True) -> None:
-        folder = self.home / ".claude/plugins/cache/mezmo/mezmo-governance/0.2.0"
+    def install_plugin(self, enabled: bool = True, name: str = "mezmo") -> Path:
+        folder = self.home / f".claude/plugins/cache/mezmo/{name}/0.2.0"
         shutil.copytree(REPO / "claude-code", folder, dirs_exist_ok=True)
         self.write(
             ".claude/plugins/installed_plugins.json",
-            {"version": 2, "plugins": {"mezmo-governance@mezmo": [{"scope": "user", "installPath": str(folder)}]}},
+            {"version": 2, "plugins": {f"{name}@mezmo": [{"scope": "user", "installPath": str(folder)}]}},
         )
-        self.write(".claude/settings.json", {"enabledPlugins": {"mezmo-governance@mezmo": enabled}})
+        self.write(".claude/settings.json", {"enabledPlugins": {f"{name}@mezmo": enabled}})
+        return folder
 
     def test_an_agent_without_the_plugin_warns(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")
@@ -413,7 +403,7 @@ class ClaudeCodeTests(DoctorTestCase):
     def test_mezmo_governance_hook_variable_moves_the_script(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")
         self.install_settings()
-        moved = self.copy_hook("claude-code", "elsewhere/mezmo_governance_hook.py")
+        moved = self.copy_hook("codex", "elsewhere/mezmo_governance_hook.py")
 
         result = self.doctor(MEZMO_GOVERNANCE_HOOK=str(moved))
 
@@ -434,6 +424,19 @@ class ClaudeCodeTests(DoctorTestCase):
         self.install_plugin(enabled=False)
         result = self.doctor()
         self.assertTrue(self.lines(result, "Claude Code plugin")[0].startswith("warn"))
+
+    def test_the_older_mezmo_governance_plugin_is_still_checked(self) -> None:
+        self.agent("claude", "2.1.300 (Claude Code)")
+        folder = self.install_plugin(name="mezmo-governance")
+        # That plugin ran mezmo_governance_hook.py from its root.
+        shutil.copy(REPO / "codex" / "mezmo_governance_hook.py", folder / "mezmo_governance_hook.py")
+        hooks = (folder / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        (folder / "hooks" / "hooks.json").write_text(hooks.replace("scripts/governance_hook.py", "mezmo_governance_hook.py"))
+
+        result = self.doctor()
+
+        self.assertIn("mezmo-governance@mezmo is installed", self.lines(result, "Claude Code plugin")[0])
+        self.assertIn("/mezmo_governance_hook.py denies a call", self.assertStatus(result, "Claude Code smoke", "ok"))
 
     def test_a_config_it_cannot_parse_is_unknown_not_absent(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")
@@ -808,7 +811,7 @@ class ConfigFolderTests(DoctorTestCase):
                 folder = self.tmp / variable.lower()
                 hook = folder / "mezmo_governance_hook.py"
                 hook.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy(REPO / "claude-code" / "mezmo_governance_hook.py", hook)
+                shutil.copy(REPO / "codex" / "mezmo_governance_hook.py", hook)
                 (folder / relative).parent.mkdir(parents=True, exist_ok=True)
                 (folder / relative).write_text(json.dumps(config(hook)))
                 self.agent(binary, version)

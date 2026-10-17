@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 from http.server import ThreadingHTTPServer
@@ -14,7 +15,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import mock_governance  # noqa: E402
 
-HOOK = Path(__file__).parent.parent / "claude-code" / "mezmo_governance_hook.py"
+HOOK = Path(__file__).parent.parent / "claude-code" / "scripts" / "governance_hook.py"
+# The Claude Code plugin lets every call run while it has no key; the Codex hook denies.
+KEYED_HOOK = Path(__file__).parent.parent / "codex" / "mezmo_governance_hook.py"
 
 
 def event(tool: str, call: str) -> dict:
@@ -32,21 +35,24 @@ class MockGovernanceTests(unittest.TestCase):
         handler = mock_governance.make_handler(["Bash", "kubernetes:*"], ["Write"])
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
         self.env = {
             **os.environ,
             "MEZMO_GOVERNANCE_URL": f"http://127.0.0.1:{self.server.server_port}{mock_governance.PATH}",
             "MEZMO_GOVERNANCE_TOKEN": "local-test",
             "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "2",
             "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": "0.2",
+            "MEZMO_GOVERNANCE_STATE_DIR": state.name,
         }
 
     def tearDown(self) -> None:
         self.server.shutdown()
         self.server.server_close()
 
-    def run_hook(self, payload: dict) -> subprocess.CompletedProcess:
+    def run_hook(self, payload: dict, hook: Path = HOOK) -> subprocess.CompletedProcess:
         return subprocess.run(
-            [sys.executable, str(HOOK)],
+            [sys.executable, str(hook)],
             input=json.dumps(payload),
             capture_output=True,
             text=True,
@@ -142,8 +148,7 @@ class MockGovernanceTests(unittest.TestCase):
 
     def test_missing_key_is_rejected(self) -> None:
         self.env.pop("MEZMO_GOVERNANCE_TOKEN")
-        self.env.pop("CLAUDE_PLUGIN_OPTION_ACCESS_KEY", None)
-        result = self.run_hook(event("Read", "c5"))
+        result = self.run_hook(event("Read", "c5"), KEYED_HOOK)
         self.assertEqual(self.decision(result), "deny")
 
 
