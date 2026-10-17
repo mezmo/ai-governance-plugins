@@ -614,6 +614,20 @@ class InstallTests(CliTestCase):
         result = self.cli("install", "windsurf")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_windsurf_reinstall_adds_each_missing_mezmo_entry(self) -> None:
+        # Each pre_* event gates its own action; one Mezmo entry does not cover the others.
+        path = self.tmp / "home/.codeium/windsurf/hooks.json"
+        example = json.loads((REPO / "windsurf/hooks.example.json").read_text())
+        self.assertEqual(self.cli("install", "windsurf").returncode, 0)
+        for kept in ("pre_run_command", "pre_mcp_tool_use"):
+            with self.subTest(kept=kept):
+                path.write_text(json.dumps({"hooks": {kept: example["hooks"][kept]}}))
+                result = self.cli("install", "windsurf")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("nothing to change", result.stdout)
+                self.assertEqual(json.loads(path.read_text())["hooks"].keys(), example["hooks"].keys())
+                self.assertIn("installed: yes", self.status("windsurf"))
+
     def test_windsurf_install_and_uninstall_keep_the_users_own_entries(self) -> None:
         own = {"command": "other-hook", "show_output": True}
         original = {"hooks": {"pre_run_command": [own], "post_cascade_response": [{"command": "log-it"}]}}

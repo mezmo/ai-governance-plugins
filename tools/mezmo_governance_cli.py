@@ -282,9 +282,10 @@ def moved_handlers(config: dict, field: str) -> list:
     return moved
 
 
-def merge_steps(path: Path, example: dict, event: str, field: str = "command") -> list:
-    config = load_object(path)
-    if doctor.mezmo_handlers(as_dict(config.get("hooks")).get(event), field):
+def merge_steps(path: Path, example: dict, events: tuple, field: str = "command") -> list:
+    """A step to add the example's entries, unless every one of these events already runs the hook."""
+    hooks = as_dict(load_object(path).get("hooks"))
+    if all(doctor.mezmo_handlers(hooks.get(event), field) for event in events):
         return []
     return [Step(f"add the Mezmo hook entries to {shown(path)}", (path,), lambda: write_json(path, merged(load_object(path), example, field)))]
 
@@ -335,20 +336,24 @@ def example(adapter: str, name: str, folder: Path, default: Path) -> dict:
 
 def file_hook_agent(
     adapter: str, folder: Callable[[], Path], event: str, next_step: str, leftover: tuple = (), trust_by_position: bool = False,
-    default: str = "",
+    default: str = "", gates: tuple = (),
 ) -> Installer:
-    """Codex, Cursor and Windsurf: a hook script plus entries merged into hooks.json; default is the folder under HOME."""
+    """Codex, Cursor and Windsurf: a hook script plus entries merged into hooks.json; default is the folder under HOME.
+
+    gates names each event that gates its own tools, where one event does not cover the others.
+    """
+    events = gates or (event,)
 
     def installed() -> Optional[str]:
         path = folder() / "hooks.json"
-        found = doctor.mezmo_handlers(as_dict(load_object(path).get("hooks")).get(event))
-        return shown(path) if found else None
+        hooks = as_dict(load_object(path).get("hooks"))
+        return shown(path) if any(doctor.mezmo_handlers(hooks.get(name)) for name in events) else None
 
     def install() -> list:
         source, target = REPO / adapter / HOOK_FILE, folder() / "hooks" / HOOK_FILE
         steps = hook_refresh(source, target) if installed() else [hook_copy(source, target)]
         data = example(adapter, "hooks.example.json", folder(), doctor.home() / (default or f".{adapter}"))
-        return steps + merge_steps(folder() / "hooks.json", data, event)
+        return steps + merge_steps(folder() / "hooks.json", data, events)
 
     def uninstall() -> list:
         path = folder() / "hooks.json"
@@ -698,7 +703,7 @@ def windsurf() -> Installer:
     base = file_hook_agent(
         "windsurf", doctor.windsurf_dir, "pre_run_command",
         "Quit and start Windsurf, and trust each workspace: Windsurf loads no hooks in Restricted Mode.",
-        default=".codeium/windsurf",
+        default=".codeium/windsurf", gates=doctor.WINDSURF_GATES,
     )
 
     def install() -> list:

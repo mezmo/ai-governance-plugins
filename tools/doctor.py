@@ -972,7 +972,7 @@ def check_windsurf(report: Report, version: Optional[tuple]) -> Optional[list]:
     path = windsurf_dir() / "hooks.json"
     config = read_json(path)
     hooks = as_dict(as_dict(config).get("hooks"))
-    if not mezmo_handlers(hooks.get("pre_run_command")):
+    if not any(mezmo_handlers(hooks.get(gate)) for gate in WINDSURF_GATES):
         return None
     problem = windsurf_problem(config)
     if problem:

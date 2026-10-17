@@ -749,6 +749,16 @@ class OtherHookAgentTests(DoctorTestCase):
         self.assertIn("no Mezmo hook on pre_write_code", failed[0])
         self.assertIn("no Mezmo hook on pre_mcp_tool_use", failed[1])
 
+    def test_windsurf_without_a_command_hook_is_still_checked(self) -> None:
+        self.agent("devin-desktop", "1.126.0")
+        self.copy_hook("windsurf", ".codeium/windsurf/hooks/mezmo_governance_hook.py")
+        self.write(".codeium/windsurf/hooks.json", self.windsurf_config(" || exit 2", ("pre_read_code",)))
+        result = self.doctor()
+        failed = [line for line in self.lines(result, "Windsurf hook") if line.startswith("FAIL")]
+        self.assertEqual(len(failed), 3, result.stdout)
+        self.assertIn("no Mezmo hook on pre_run_command", failed[0])
+        self.assertStatus(result, "Windsurf smoke", "ok")
+
     def test_windsurf_fails_a_hooks_json_windsurf_would_drop(self) -> None:
         # Windsurf 1.126.0 drops the whole file when it fails its check, so no hook in it runs.
         self.agent("devin-desktop", "1.126.0")
