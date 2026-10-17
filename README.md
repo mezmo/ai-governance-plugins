@@ -417,7 +417,7 @@ one shell call (expected: denied) and one file read (expected: approved):
 
 | Agent | Version | Deny and allow | Hook crash |
 | --- | --- | --- | --- |
-| Claude Code | 2.1.296 | pass | blocked |
+| Claude Code | 2.1.301 with the Mezmo plugin (2.1.296 with the earlier hook) | pass | blocked |
 | Codex CLI | 0.162.1 | pass | blocked with the guard; runs without it |
 | Cursor CLI | 2026.10.14 | pass | blocked |
 | Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
