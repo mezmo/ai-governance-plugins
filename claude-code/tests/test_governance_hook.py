@@ -8,6 +8,7 @@ until configured, plugin options, and error messages.
 import json
 import os
 import pathlib
+import stat
 import sys
 import tempfile
 import threading
@@ -581,6 +582,29 @@ class HookConfigTests(unittest.TestCase):
         self.assertTrue(handlers)
         for handler in handlers:
             self.assertEqual(handler.get("onFailure"), "block", handler)
+
+
+@patch.dict(os.environ, environment(**ENV), clear=True)
+class AuditLogTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Windows has no POSIX file modes")
+    def test_the_audit_log_is_private_to_its_owner(self) -> None:
+        # The log keeps up to 2000 characters of each tool result.
+        with tempfile.TemporaryDirectory() as tmp:
+            fresh = pathlib.Path(tmp) / "fresh" / "audit.jsonl"
+            older = pathlib.Path(tmp) / "older.jsonl"
+            older.write_text("", encoding="utf-8")
+            older.chmod(0o644)
+            for path in (fresh, older):
+                with self.subTest(log=path.name), patch.dict(os.environ, {"MEZMO_GOVERNANCE_AUDIT_LOG": str(path)}):
+                    self.assertIsNone(hook.handle_event(hook_event("PostToolUse")))
+                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(fresh.parent.stat().st_mode), 0o700)
+
+    def test_a_log_sent_to_dev_null_writes_without_a_warning(self) -> None:
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_AUDIT_LOG": os.devnull}), \
+                patch.object(sys, "stderr", StringIO()) as stderr:
+            self.assertIsNone(hook.handle_event(hook_event("PostToolUse")))
+        self.assertEqual(stderr.getvalue(), "")
 
 
 if __name__ == "__main__":

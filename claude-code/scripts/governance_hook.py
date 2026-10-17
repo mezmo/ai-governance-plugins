@@ -27,6 +27,7 @@ import math
 import os
 import re
 import socket
+import stat
 import sys
 import time
 import uuid
@@ -467,9 +468,18 @@ def result_has_known_error(value: Any) -> bool:
 
 
 def append_audit(record: Mapping[str, Any]) -> None:
+    # The log keeps tool results, so only its owner may read it.
     path = audit_log_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    def private(name: str, flags: int) -> int:
+        return os.open(name, flags, 0o600)
+
+    with open(path, "a", encoding="utf-8", opener=private) as handle:
+        # A log an older version wrote keeps its mode until narrowed here.
+        mode = os.fstat(handle.fileno()).st_mode
+        if os.name != "nt" and stat.S_ISREG(mode) and mode & 0o077:
+            os.fchmod(handle.fileno(), 0o600)
         handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
