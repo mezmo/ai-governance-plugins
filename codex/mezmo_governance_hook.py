@@ -9,6 +9,7 @@ import json
 import math
 import os
 import socket
+import stat
 import sys
 import threading
 import time
@@ -510,7 +511,8 @@ def append_audit(record: Mapping[str, Any]) -> None:
 
     with open(path, "a", encoding="utf-8", opener=private) as handle:
         # A log an older version wrote keeps its mode until narrowed here.
-        if os.name != "nt" and os.fstat(handle.fileno()).st_mode & 0o077:
+        mode = os.fstat(handle.fileno()).st_mode
+        if os.name != "nt" and stat.S_ISREG(mode) and mode & 0o077:
             os.fchmod(handle.fileno(), 0o600)
         handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 

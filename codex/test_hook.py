@@ -1164,6 +1164,13 @@ class EndToEndTests(unittest.TestCase):
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(fresh.parent.stat().st_mode), 0o700)
 
+    def test_a_log_sent_to_dev_null_writes_without_a_warning(self) -> None:
+        with StubGovernance([]) as stub:
+            result = self.run_hook(hook_event(POST_EVENT), stub.url, extra={"MEZMO_GOVERNANCE_AUDIT_LOG": os.devnull})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+
     def test_post_event_logs_without_calling_governance(self) -> None:
         with StubGovernance([]) as stub:
             result = self.run_hook(hook_event(POST_EVENT), stub.url)
