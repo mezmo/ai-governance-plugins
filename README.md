@@ -450,8 +450,8 @@ one shell call (expected: denied) and one file read (expected: approved):
 | Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
 | Copilot CLI | 1.0.95, 1.0.98 | pass, with user-level hooks | blocked (1.0.95) |
 | Goose CLI | 1.54.0 | pass | blocked with `on_failure: block`, also on a timeout; runs without it |
-| Droid | 0.244.0, `droid exec` with a bring-your-own-key model (no Factory plan) | pass | blocked with the guard |
-| Windsurf | 1.126.0 (Devin Desktop 3.10.67) | pass, started from a shell or from the Dock after `launchctl setenv`; a plain Dock launch passes no settings, so every call is denied | blocked with the guard |
+| Droid | 0.244.0, `droid exec` with a bring-your-own-key model (no Factory plan); also against production Mezmo | pass | blocked with the guard |
+| Windsurf | 1.126.0 (Devin Desktop 3.10.67); also against production Mezmo | pass, started from a shell or from the Dock after `launchctl setenv`; a plain Dock launch passes no settings, so every call is denied | blocked with the guard |
 | OpenCode | 2.0.25 | pass, through the background service with plugin options | not checked |
 | Pi | 1.3.0 | pass | not checked |
 | Mastra | 1.77.0, `generate` and `stream` | pass | not checked |
