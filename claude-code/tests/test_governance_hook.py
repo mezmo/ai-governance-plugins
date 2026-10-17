@@ -607,5 +607,33 @@ class AuditLogTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
 
 
+@patch.dict(os.environ, environment(**ENV), clear=True)
+class ExposedTokenTests(unittest.TestCase):
+    def test_a_url_that_is_not_https_denies_without_a_request(self) -> None:
+        for url in ("http://api.example.test/authorize", "ftp://api.example.test/authorize"):
+            with self.subTest(url=url), patch.dict(os.environ, {"MEZMO_GOVERNANCE_URL": url}), \
+                    patch.object(hook, "build_opener") as opener:
+                output = hook.handle_event(hook_event("PreToolUse"))
+                self.assertEqual(decision_of(output), "deny")
+                self.assertIn("must use https://", reason_of(output))
+                opener.assert_not_called()
+
+    def test_a_url_with_credentials_denies_without_quoting_them(self) -> None:
+        url = "https://user:url-secret@api.example.test/authorize"
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_URL": url}):
+            output = hook.handle_event(hook_event("PreToolUse"))
+        self.assertEqual(decision_of(output), "deny")
+        self.assertIn("must not hold a user name or password", reason_of(output))
+        self.assertNotIn("url-secret", reason_of(output))
+
+    def test_a_token_a_header_cannot_carry_denies_without_quoting_it(self) -> None:
+        for token in ("sts_te\nst-secret", "sts_t\u00e9st-secret"):
+            with self.subTest(token=token), patch.dict(os.environ, {"MEZMO_GOVERNANCE_ACCESS_KEY": token}):
+                output = hook.handle_event(hook_event("PreToolUse"))
+                self.assertEqual(decision_of(output), "deny")
+                self.assertIn("an HTTP header cannot carry", reason_of(output))
+                self.assertNotIn("secret", reason_of(output))
+
+
 if __name__ == "__main__":
     unittest.main()

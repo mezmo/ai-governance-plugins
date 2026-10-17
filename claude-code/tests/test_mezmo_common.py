@@ -4,6 +4,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
@@ -132,6 +133,22 @@ class HttpRequestTest(unittest.TestCase):
 
         self.assertEqual(seen, [])
         self.assertEqual(status, 302)
+
+    def test_a_request_that_would_expose_the_key_is_refused_without_quoting_it(self):
+        cases = (
+            ("http://api.example.test/check", "Token secret"),
+            ("ftp://api.example.test/check", "Token secret"),
+            ("https://user:secret@api.example.test/check", "Token key"),
+            ("https://api.example.test/check", "Token sec\nret"),
+            ("https://api.example.test/check", "Token s\u00e9cret"),
+        )
+        for url, authorization in cases:
+            with self.subTest(url=url, authorization=authorization), \
+                    patch.object(mc.urllib.request, "build_opener") as opener:
+                with self.assertRaises(OSError) as raised:
+                    mc.http_request("GET", url, {"Authorization": authorization})
+                self.assertNotIn("ret", str(raised.exception))
+                opener.assert_not_called()
 
 
 if __name__ == "__main__":
