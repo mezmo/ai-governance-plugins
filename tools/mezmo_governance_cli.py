@@ -334,9 +334,10 @@ def example(adapter: str, name: str, folder: Path, default: Path) -> dict:
 
 
 def file_hook_agent(
-    adapter: str, folder: Callable[[], Path], event: str, next_step: str, leftover: tuple = (), trust_by_position: bool = False
+    adapter: str, folder: Callable[[], Path], event: str, next_step: str, leftover: tuple = (), trust_by_position: bool = False,
+    default: str = "",
 ) -> Installer:
-    """Codex and Cursor: a hook script plus entries merged into hooks.json."""
+    """Codex, Cursor and Windsurf: a hook script plus entries merged into hooks.json; default is the folder under HOME."""
 
     def installed() -> Optional[str]:
         path = folder() / "hooks.json"
@@ -346,7 +347,7 @@ def file_hook_agent(
     def install() -> list:
         source, target = REPO / adapter / HOOK_FILE, folder() / "hooks" / HOOK_FILE
         steps = hook_refresh(source, target) if installed() else [hook_copy(source, target)]
-        data = example(adapter, "hooks.example.json", folder(), doctor.home() / f".{adapter}")
+        data = example(adapter, "hooks.example.json", folder(), doctor.home() / (default or f".{adapter}"))
         return steps + merge_steps(folder() / "hooks.json", data, event)
 
     def uninstall() -> list:
@@ -692,6 +693,27 @@ def droid() -> Installer:
     return Installer(installed, install, uninstall, "Start droid and run /hooks to check that both Mezmo hooks are listed: Droid reads hooks at startup.")
 
 
+def windsurf() -> Installer:
+    """Like Cursor, but Windsurf drops a hooks.json that fails its check whole, so install leaves such a file alone."""
+    base = file_hook_agent(
+        "windsurf", doctor.windsurf_dir, "pre_run_command",
+        "Quit and start Windsurf, and trust each workspace: Windsurf loads no hooks in Restricted Mode.",
+        default=".codeium/windsurf",
+    )
+
+    def install() -> list:
+        path = doctor.windsurf_dir() / "hooks.json"
+        problem = doctor.windsurf_problem(doctor.read_json(path)) if path.exists() else None
+        if problem:
+            raise Failure(
+                f"Windsurf drops {shown(path)} whole, and runs none of its hooks, because {problem}."
+                " Nothing changed. Fix the file as in windsurf/README.md, then run this command again"
+            )
+        return base.install()
+
+    return base._replace(install=install)
+
+
 INSTALLERS = {
     "claude-code": claude_code(),
     "codex": file_hook_agent(
@@ -706,6 +728,7 @@ INSTALLERS = {
     "opencode": opencode(),
     "pi": pi(),
     "droid": droid(),
+    "windsurf": windsurf(),
 }
 AGENTS = {agent.readme: agent for agent in doctor.AGENTS}
 
@@ -824,7 +847,10 @@ def fresh(event: dict, name: Optional[str] = None) -> dict:
     for field in ("tool_use_id", "tool_call_id"):
         if field in result:
             result[field] = f"smoke-{uuid.uuid4()}"
-    if name:
+    if name and "agent_action_name" in result:
+        # A Windsurf event names its action, not a tool: any other tool is a file read.
+        result.update(agent_action_name="pre_read_code", tool_info={"file_path": "README.md"})
+    elif name:
         result["toolName" if "toolName" in result else "tool_name"] = name
     return result
 
@@ -964,7 +990,7 @@ def smoke_calls(names: list, env: dict, live: bool, seconds: float) -> int:
             continue
         calls = []
         for item in {(smoke.path, smoke.args): smoke for smoke in smokes}.values():
-            shell = item.event.get("tool_name") or item.event.get("toolName")
+            shell = item.event.get("tool_name") or item.event.get("toolName") or agent.shell
 
             def python_hook(tool: str, item: doctor.Smoke = item, shell: str = shell) -> subprocess.CompletedProcess:
                 event = fresh(item.event, None if tool == shell else tool)

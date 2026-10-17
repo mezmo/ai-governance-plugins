@@ -170,6 +170,7 @@ The table lists the pieces before `#<digest>`.
 | GitHub Copilot | `copilot`, `sessionId`, a fresh `run-<uuid>` (no call id) | `copilot_hook` | `copilot` |
 | Goose | `goose`, `session_id`, `tool_call_id` | `goose_hook` | `goose`, or `<extension>` from `<extension>__<tool>` |
 | Droid | `droid`, `session_id`, a fresh `run-<uuid>` (no call id) | `droid_hook` | `droid`, or MCP server from `mcp__<server>__<tool>` |
+| Windsurf | `windsurf`, `trajectory_id`, a fresh `run-<uuid>` (no call id) | `windsurf_hook` | `windsurf`, or `mcp_server_name` |
 | Pi | `pi`, session id, `toolCallId` | `pi_extension` | `pi` |
 | OpenCode | `opencode`, `sessionID`, `callID`; on 2.x `<callID>#<random UUID>`, because Code Mode reuses one call id for many inner calls | `opencode_plugin` | `opencode` |
 | LangChain | `langchain`, `thread_id`, turn id, or one random id per middleware instance; tool call id, or a random id when it is missing | `langchain_middleware` | `langchain` |
@@ -215,8 +216,8 @@ After an approved tool runs, observe hooks append one JSON object per line:
 ```
 
 `decision_id` and `request_id` are `null` when the event carries no tool call
-id, as with Cursor's shell and MCP events and every Gemini CLI, Copilot and
-Droid event.
+id, as with Cursor's shell and MCP events and every Gemini CLI, Copilot,
+Droid and Windsurf event.
 
 `status` is `failed` when the result looks like an error (`isError`, `is_error`,
 or non-zero `exit_code` or `exitCode`), otherwise `observed`. A result sent as

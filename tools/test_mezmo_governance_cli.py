@@ -28,7 +28,7 @@ CANARY = "canary-key-5d1c8e40"
 ADMIN = "admin-key-9b27f6d3"
 sys.path.insert(0, str(TOOLS))
 import mock_governance  # noqa: E402
-AGENTS = ("claude-code", "codex", "cursor", "gemini-cli", "copilot", "goose", "opencode", "pi", "droid")
+AGENTS = ("claude-code", "codex", "cursor", "gemini-cli", "copilot", "goose", "opencode", "pi", "droid", "windsurf")
 VERSIONS = {
     "claude": "2.1.300 (Claude Code)",
     "codex": "codex-cli 0.162.1",
@@ -39,6 +39,8 @@ VERSIONS = {
     "opencode": "2.0.25",
     "pi": "1.3.0",
     "droid": "0.244.0",
+    # What devin-desktop --version printed, as Windsurf 1.126.0 lays it out.
+    "devin-desktop": "1.126.0\n0b186d6e13a1a48a46430c51fe414dd0747d46f6\narm64",
 }
 
 FAKE_CLI = r'''
@@ -134,6 +136,7 @@ ORIGINALS = {
     "opencode": {"xdg/opencode/opencode.json": {"plugins": ["other-plugin"], "theme": "x"}},
     "pi": {"pi/settings.json": {"packages": ["npm:other"]}},
     "droid": {"factory/.factory/hooks.json": {"PreToolUse": [{"matcher": "Execute", "hooks": [{"type": "command", "command": "other-hook"}]}]}},
+    "windsurf": {"home/.codeium/windsurf/hooks.json": {"hooks": {"pre_run_command": [{"command": "other-hook", "show_output": True}]}}},
 }
 # What the real CLI leaves behind after uninstall, beyond the user's own files.
 LEFTOVERS = {
@@ -257,7 +260,7 @@ class InstallTests(CliTestCase):
                 # The install's backup of each user config equals the original, and its path was printed.
                 (name,) = original
                 copies = sorted(b for b in backups if b.startswith(name + ".mezmo-backup-"))
-                edited = {"claude-code", "codex", "cursor", "opencode", "pi", "droid"}
+                edited = {"claude-code", "codex", "cursor", "opencode", "pi", "droid", "windsurf"}
                 self.assertEqual(bool(copies), agent in edited, sorted(backups))
                 if copies:
                     self.assertEqual(after[copies[0]], original[name])
@@ -274,6 +277,7 @@ class InstallTests(CliTestCase):
             ),
             "opencode": ("xdg/opencode/mezmo-governance/index.ts", "xdg/opencode/mezmo-governance/mezmo-governance/client.ts"),
             "droid": ("factory/.factory/hooks/mezmo_governance_hook.py",),
+            "windsurf": ("home/.codeium/windsurf/hooks/mezmo_governance_hook.py",),
         }
         for agent, names in copied.items():
             with self.subTest(agent=agent):
@@ -408,6 +412,9 @@ class InstallTests(CliTestCase):
         self.assertTrue(command.endswith("exit 2; }"), command)
         self.assertNotIn("hooks", droid)
         self.assertTrue((self.tmp / "factory/.factory/hooks/mezmo_governance_hook.py").is_file())
+        windsurf = json.loads((self.tmp / "home/.codeium/windsurf/hooks.json").read_text())
+        self.assertEqual(windsurf, json.loads((REPO / "windsurf/hooks.example.json").read_text()))
+        self.assertTrue((self.tmp / "home/.codeium/windsurf/hooks/mezmo_governance_hook.py").is_file())
         copilot = (self.tmp / "copilot/hooks/mezmo-governance.json").read_text()
         self.assertIn(f"{self.tmp}/copilot/hooks/mezmo_governance_hook.py", copilot)
         self.assertNotIn("$HOME", copilot)
@@ -461,7 +468,7 @@ class InstallTests(CliTestCase):
         self.assertEqual(self.files(), installed)
 
     def test_install_all_picks_agents_whose_binary_is_found(self) -> None:
-        for binary in ("claude", "gemini", "pi", "copilot", "goose", "opencode", "droid"):
+        for binary in ("claude", "gemini", "pi", "copilot", "goose", "opencode", "droid", "devin-desktop"):
             (self.bin / binary).unlink()
         result = self.cli("install", "--all", "--dry-run")
         planned = [line.split()[1].rstrip(":") for line in result.stdout.splitlines() if line.startswith("plan")]
@@ -498,12 +505,14 @@ class InstallTests(CliTestCase):
         gemini = json.loads((REPO / "gemini-cli/settings.example.json").read_text())
         codex = json.loads((REPO / "codex/hooks.example.json").read_text())
         droid = json.loads((REPO / "droid/hooks.example.json").read_text())
-        self.write({"gemini/.gemini/settings.json": gemini, "codex/hooks.json": codex, "factory/.factory/hooks.json": droid})
+        windsurf = json.loads((REPO / "windsurf/hooks.example.json").read_text())
+        self.write({"gemini/.gemini/settings.json": gemini, "codex/hooks.json": codex, "factory/.factory/hooks.json": droid,
+                    "home/.codeium/windsurf/hooks.json": windsurf})
         shutil.copytree(REPO / "pi", self.tmp / "pi/extensions/mezmo-governance")
         before = self.files()
-        result = self.cli("install", "gemini-cli", "codex", "pi", "droid")
+        result = self.cli("install", "gemini-cli", "codex", "pi", "droid", "windsurf")
         self.assertEqual(result.returncode, 0, result.stdout)
-        for agent in ("gemini-cli", "codex", "pi", "droid"):
+        for agent in ("gemini-cli", "codex", "pi", "droid", "windsurf"):
             self.assertIn(f"ok    {agent}: already installed, nothing to change", result.stdout)
         self.assertEqual(self.files(), before)
         self.assertFalse(self.log.exists())
@@ -575,6 +584,49 @@ class InstallTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads((self.tmp / "factory/.factory/hooks.json").read_text()), original)
         self.assertFalse((self.tmp / "factory/.factory/hooks").exists())
+
+    def test_windsurf_install_refuses_a_file_windsurf_would_drop(self) -> None:
+        # Windsurf 1.126.0 drops the whole hooks.json when it fails its check, so every hook in it stops.
+        own = [{"command": "other-hook"}]
+        cases = [
+            ([own], "is not a JSON object"),
+            ({"hooks": {"pre_run_command": own}, "version": 1}, "top-level key version"),
+            ({"hooks": own}, '"hooks" is not an object'),
+            ({"hooks": {"pre_tool_use": own}}, "event pre_tool_use"),
+            ({"hooks": {"pre_run_command": {"command": "other-hook"}}}, "pre_run_command is not a list"),
+            ({"hooks": {"pre_run_command": [{"show_output": True}]}}, "pre_run_command entry 0"),
+            ({"hooks": {"pre_run_command": [{"command": ""}]}}, "pre_run_command entry 0"),
+            ({"hooks": {"pre_run_command": ["other-hook"]}}, "pre_run_command entry 0"),
+        ]
+        for config, words in cases:
+            with self.subTest(config=config):
+                shutil.rmtree(self.tmp / "home/.codeium", ignore_errors=True)
+                self.write({"home/.codeium/windsurf/hooks.json": config})
+                before = self.files()
+                result = self.cli("install", "windsurf")
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(words, result.stdout)
+                self.assertIn("Nothing changed.", result.stdout)
+                self.assertEqual(self.files(), before)
+        # An entry with only a powershell command, and an event install does not touch, pass the check.
+        shutil.rmtree(self.tmp / "home/.codeium")
+        self.write({"home/.codeium/windsurf/hooks.json": {"hooks": {"pre_user_prompt": [{"powershell": "other-hook"}]}}})
+        result = self.cli("install", "windsurf")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_windsurf_install_and_uninstall_keep_the_users_own_entries(self) -> None:
+        own = {"command": "other-hook", "show_output": True}
+        original = {"hooks": {"pre_run_command": [own], "post_cascade_response": [{"command": "log-it"}]}}
+        self.write({"home/.codeium/windsurf/hooks.json": original})
+        self.assertEqual(self.cli("install", "windsurf").returncode, 0)
+        installed = json.loads((self.tmp / "home/.codeium/windsurf/hooks.json").read_text())["hooks"]
+        self.assertEqual(installed["pre_run_command"][0], own)
+        self.assertIn("mezmo_governance_hook.py", installed["pre_run_command"][1]["command"])
+        self.assertEqual(installed["post_cascade_response"], [{"command": "log-it"}])
+        result = self.cli("uninstall", "windsurf")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads((self.tmp / "home/.codeium/windsurf/hooks.json").read_text()), original)
+        self.assertFalse((self.tmp / "home/.codeium/windsurf/hooks").exists())
 
 
 class CommandTests(CliTestCase):
@@ -707,6 +759,14 @@ class LiveSmokeTests(CliTestCase):
         self.assertNotIn("FAIL", result.stdout)
         # The smoke calls stay out of the user's audit log.
         self.assertFalse((self.tmp / "home/.mezmo").exists())
+
+    def test_windsurf_sends_a_command_and_a_file_read(self) -> None:
+        # A Windsurf event names its action, so the read call is a pre_read_code event, not a renamed tool.
+        self.cli("install", "windsurf")
+        result = self.cli("smoke", "--live", "windsurf")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("live  windsurf: run_command allowed (", result.stdout)
+        self.assertIn("live  windsurf: read_code allowed (", result.stdout)
 
     def test_opencode_gets_its_opencode_json_options(self) -> None:
         # OpenCode passes the plugin its options, with {file:...} read; the shell's variables lose to them.
