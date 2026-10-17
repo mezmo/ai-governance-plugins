@@ -139,7 +139,15 @@ VS Code-based editors read your login shell's environment at start, so set
 them in your shell profile, then quit and start Windsurf. Started from the Dock on
 2026-10-17, Windsurf did not pass them to the hook, which blocked the command with
 `MEZMO_GOVERNANCE_URL environment variable is not set`. Started from a shell that
-exports them (`devin-desktop <folder>`), the hook got them. Without them the hook
+exports them (`devin-desktop <folder>`), the hook got them. For a Dock launch, set them
+for the login session and restart Windsurf; verified 2026-10-17:
+
+```bash
+launchctl setenv MEZMO_GOVERNANCE_URL "$MEZMO_GOVERNANCE_URL"
+launchctl setenv MEZMO_GOVERNANCE_TOKEN "$MEZMO_GOVERNANCE_TOKEN"
+```
+
+`launchctl setenv` lasts until logout, and any app you start can read the token. Without them the hook
 denies every call and names the missing variable.
 
 ### Windows is not supported
