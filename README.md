@@ -469,10 +469,13 @@ one shell call (expected: denied) and one file read (expected: approved):
 The TypeScript plugins also pass `tsc --strict` against the real Pi, OpenCode
 (1.19.0 and 2.0.25) and Mastra types. That check is not part of `make test`.
 
-Not checked at all: a real Mezmo Governance endpoint, a decision a person
-approves while the hook waits, Windows, the Copilot cloud agent and VS Code,
-and how each runtime behaves when the hook times out. To repeat a live check,
-start the mock and follow the smoke test in the adapter's README. For Mastra,
+To repeat any of these checks, follow [docs/live-testing.md](docs/live-testing.md):
+the setup, the two prompts, and the crash, timeout and production runs.
+
+Not checked at all: a decision a person approves while the hook waits,
+Windows, VS Code, and how most runtimes behave when the hook times out. The
+Copilot cloud agent ran the hook from `.github/hooks/` and blocked every call,
+because the hook got neither the URL nor the token (see [copilot/](copilot/README.md#cloud-agent)). For Mastra,
 LangChain, the OpenAI Agents SDK and the Python Claude Agent SDK,
 [examples/check.sh](examples/) runs a real agent and fails if the gate lets
 the wrong tool run.

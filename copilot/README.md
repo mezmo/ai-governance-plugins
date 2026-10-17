@@ -88,8 +88,13 @@ command at it from the repository root:
 ```
 
 The agent's firewall blocks hosts other than GitHub and Copilot by default.
-An admin must allow the Mezmo host, or every call is denied. The docs do not
-say how a hook gets a secret such as the token; this is not verified.
+An admin must allow the Mezmo host, or every call is denied.
+
+Tested 2026-10-17: the cloud agent ran this hook and blocked each tool call.
+A variable and a secret set in the repository's `copilot` environment did not
+reach the hook, which denied with `MEZMO_GOVERNANCE_URL must be a non-empty
+string`, and with the URL set inline in the `bash` command, `MEZMO_GOVERNANCE_TOKEN
+must be a non-empty string`. How to give the hook the token is not verified.
 The audit log is lost when the job ends.
 
 ## MCP tools
