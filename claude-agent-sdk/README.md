@@ -57,6 +57,8 @@ async for message in query(prompt="Clean up the build folder", options=options):
 `ClaudeSDKClient(options=options)` takes the same options.
 `mezmo_governance_hooks(endpoint, access_key=...)` takes the URL and key as
 arguments, and they win over the variables.
+The URL must use `https://`; plain `http://` works only to a loopback
+address such as `127.0.0.1`, for a local mock. A URL with a password is refused.
 
 ### TypeScript
 
@@ -88,9 +90,10 @@ hooks = mezmo_governance_hooks()
 hooks["PreToolUse"].append(HookMatcher(matcher="Bash", hooks=[my_check]))
 ```
 
-No other hook, and no `canUseTool` (`can_use_tool` in Python), may rewrite the
-tool input after approval. Mezmo approved the input it saw: a later
-`updatedInput` runs a call Mezmo never saw, and nothing denies it.
+Mezmo approves the input it saw. No other `PreToolUse` hook may return
+`updatedInput`, and no `can_use_tool` (`canUseTool` in TypeScript) may allow
+with updated input: the tool would then run with input Mezmo never saw. The
+callbacks do not check for such a rewrite.
 
 ## How it fails closed
 
@@ -119,6 +122,8 @@ asyncio loop. Under trio every call is denied.
 
 The same variables as the other plugins: see the [root README](../README.md#settings).
 The audit log defaults to `~/.mezmo/governance-audit.jsonl`.
+Each line keeps up to 2,000 characters of the tool's result, so the Python
+hooks keep the log readable by its owner only: mode 0600, in a 0700 folder.
 
 ## What the hooks send
 

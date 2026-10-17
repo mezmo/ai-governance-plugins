@@ -9,16 +9,17 @@ from typing import Any
 
 from agents import (
     Agent,
-    ApplyPatchTool,
-    ComputerTool,
-    CustomTool,
+    CodeInterpreterTool,
+    FileSearchTool,
     FunctionTool,
     HostedMCPTool,
-    LocalShellTool,
-    ShellTool,
+    ImageGenerationTool,
+    ProgrammaticToolCallingTool,
     ToolGuardrailFunctionOutput,
     ToolInputGuardrail,
     ToolInputGuardrailData,
+    ToolSearchTool,
+    WebSearchTool,
 )
 from agents.tracing import get_current_trace
 
@@ -31,8 +32,16 @@ from mezmo_governance_openai_agents.client import (
 )
 
 GUARDRAIL_NAME = "mezmo_governance"
-# These run on this machine, but the SDK runs no tool input guardrail for them.
-UNGATED_LOCAL_TOOLS = (ComputerTool, ShellTool, LocalShellTool, ApplyPatchTool, CustomTool)
+# These run on OpenAI's servers, with no side effect on this machine. Any other
+# kind but FunctionTool raises: the SDK runs no tool input guardrail for it.
+HOSTED_TOOLS = (
+    WebSearchTool,
+    FileSearchTool,
+    CodeInterpreterTool,
+    ImageGenerationTool,
+    ToolSearchTool,
+    ProgrammaticToolCallingTool,
+)
 # A hosted MCP server runs its tools, side effects included, on OpenAI's side
 # with no guardrail; the agent's mcp_servers run them here, where one applies.
 UNGATED_REMOTE_TOOLS = (HostedMCPTool,)
@@ -132,22 +141,23 @@ class MezmoGovernance:
             return
         seen.add(id(agent))
         for tool in agent.tools:
-            if isinstance(tool, UNGATED_LOCAL_TOOLS):
-                raise GovernanceError(
-                    f"{type(tool).__name__} {tool.name!r} on agent {agent.name!r} cannot be "
-                    "gated by a tool input guardrail; remove it or gate it with needs_approval"
-                )
-            if isinstance(tool, UNGATED_REMOTE_TOOLS):
-                raise GovernanceError(
-                    f"{type(tool).__name__} {tool.name!r} on agent {agent.name!r} cannot be "
-                    "gated by a tool input guardrail; connect the server through "
-                    "Agent(mcp_servers=[...]) instead"
-                )
             if isinstance(tool, FunctionTool):
                 attach(tool, self.guardrail)
                 nested = agent_behind_tool(tool)
                 if nested is not None:
                     self._govern(nested, seen)
+                continue
+            if isinstance(tool, HOSTED_TOOLS):
+                continue
+            ungated = (
+                f"{type(tool).__name__} {getattr(tool, 'name', None)!r} on agent "
+                f"{agent.name!r} cannot be gated by a tool input guardrail"
+            )
+            if isinstance(tool, UNGATED_REMOTE_TOOLS):
+                raise GovernanceError(
+                    f"{ungated}; connect the server through Agent(mcp_servers=[...]) instead"
+                )
+            raise GovernanceError(f"{ungated}; remove it or gate it with needs_approval")
         for server in agent.mcp_servers:
             attach(server, lambda: self.guardrail(namespace=server.name))
         for handoff in agent.handoffs:

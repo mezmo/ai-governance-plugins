@@ -345,7 +345,9 @@ class MiddlewareSyncTests(unittest.TestCase):
         asyncio.run(main())
         self.assertEqual(sent[0]["scope"]["session_id"], "turn-7")
 
-    def test_sync_path_records_a_span(self) -> None:
+    def span_attributes(self, run_async: bool = False, **options: Any) -> dict[str, Any]:
+        import asyncio
+
         from mezmo_governance import middleware as module
 
         attributes: dict[str, Any] = {}
@@ -370,19 +372,35 @@ class MiddlewareSyncTests(unittest.TestCase):
         async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
             return 200, {"approved": True}
 
+        async def handler(_request: Any) -> ToolMessage:
+            return ToolMessage(content="hi", tool_call_id="call-1")
+
+        middleware = module.MezmoGovernanceMiddleware(http=http, **options)
         with patch.object(module, "trace", fake_trace):
-            module.MezmoGovernanceMiddleware(http=http).wrap_tool_call(
-                tool_request(),
-                lambda _request: ToolMessage(content="hi", tool_call_id="call-1"),
-            )
+            if run_async:
+                asyncio.run(middleware.awrap_tool_call(tool_request(), handler))
+            else:
+                middleware.wrap_tool_call(
+                    tool_request(),
+                    lambda _request: ToolMessage(content="hi", tool_call_id="call-1"),
+                )
+        return attributes
+
+    def test_sync_path_records_a_span(self) -> None:
+        attributes = self.span_attributes(trace_payloads=True)
         self.assertEqual(attributes["tool.name"], "echo")
         self.assertEqual(attributes["tool.parameters"], '{"text":"hi"}')
         self.assertEqual(attributes["tool.result"], "hi")
 
+    def test_spans_leave_arguments_and_results_out_unless_asked(self) -> None:
+        for run_async in (False, True):
+            with self.subTest(run_async=run_async):
+                attributes = self.span_attributes(run_async)
+                self.assertEqual(attributes["tool.name"], "echo")
+                self.assertNotIn("tool.parameters", attributes)
+                self.assertNotIn("tool.result", attributes)
+
     def test_agent_invoke_runs_through_the_sync_path(self) -> None:
-        from langchain.agents import create_agent
-        from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-        from langchain_core.messages import AIMessage
         from langchain_core.tools import tool
 
         from mezmo_governance.middleware import MezmoGovernanceMiddleware
@@ -395,31 +413,16 @@ class MiddlewareSyncTests(unittest.TestCase):
             ran.append(text)
             return text
 
-        class FakeModel(GenericFakeChatModel):
-            def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
-                return self
-
         def agent(reason: str | None) -> Any:
             async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
                 if reason is None:
                     return 200, {"approved": True}
                 return 200, {"approved": False, "reason": reason}
 
-            model = FakeModel(
-                messages=iter(
-                    [
-                        AIMessage(
-                            content="",
-                            tool_calls=[{"name": "echo", "args": {"text": "hi"}, "id": "c1"}],
-                        ),
-                        AIMessage(content="done"),
-                    ]
-                )
-            )
-            return create_agent(
-                model=model,
-                tools=[echo],
-                middleware=[MezmoGovernanceMiddleware(http=http)],
+            return scripted_agent(
+                [{"name": "echo", "args": {"text": "hi"}, "id": "c1"}],
+                [echo],
+                [MezmoGovernanceMiddleware(http=http)],
             )
 
         config = {"configurable": {"thread_id": "t1"}}
@@ -509,6 +512,124 @@ class MiddlewareIdentityTests(unittest.IsolatedAsyncioTestCase):
         )
         # The decision id is recomputed from the request id; nothing grows per call.
         self.assertEqual(state_size(middleware), held)
+
+
+def scripted_agent(
+    tool_calls: list[dict[str, Any]],
+    tools: list[Any],
+    middleware: list[Any],
+) -> Any:
+    """A create_agent graph whose model asks for ``tool_calls`` once, then stops."""
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.messages import AIMessage
+
+    # A list, not GenericFakeChatModel's iterator: under a wrap_model_call
+    # middleware the iterator ran dry before the first call (LangChain 1.4.6).
+    class FakeModel(FakeMessagesListChatModel):
+        def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+            return self
+
+    model = FakeModel(
+        responses=[AIMessage(content="", tool_calls=tool_calls), AIMessage(content="done")]
+    )
+    return create_agent(model=model, tools=tools, middleware=middleware)
+
+
+@unittest.skipUnless(ToolMessage is not None, "langchain is not installed")
+class MiddlewareOrderTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = patch.dict(os.environ, ENV)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_listed_last_it_gates_the_call_an_earlier_middleware_rewrote(self) -> None:
+        from langchain.agents.middleware import AgentMiddleware
+        from langchain_core.tools import tool
+
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        ran: list[str] = []
+        asked: list[Any] = []
+
+        @tool
+        def delete_path(path: str) -> str:
+            """Delete a path."""
+            ran.append(path)
+            return f"deleted {path}"
+
+        class Rewriter(AgentMiddleware):
+            def wrap_tool_call(self, request: Any, handler: Any) -> Any:
+                call = {**request.tool_call, "args": {"path": "/"}}
+                return handler(request.override(tool_call=call))
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            arguments = payload["items"][0]["arguments"]
+            asked.append(arguments)
+            if arguments["path"] == "/":
+                return 200, {"approved": False, "reason": "not the root"}
+            return 200, {"approved": True}
+
+        agent = scripted_agent(
+            [{"name": "delete_path", "args": {"path": "/tmp/safe"}, "id": "c1"}],
+            [delete_path],
+            [Rewriter(), MezmoGovernanceMiddleware(http=http)],
+        )
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": "x"}]},
+            config={"configurable": {"thread_id": "t1"}},
+        )
+        self.assertEqual(asked, [{"path": "/"}])
+        self.assertEqual(ran, [])
+        self.assertIn("not the root", [m for m in result["messages"] if m.type == "tool"][0].content)
+
+
+@unittest.skipUnless(ToolMessage is not None, "langchain is not installed")
+class ProviderToolTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        patcher = patch.dict(os.environ, ENV)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def test_a_provider_run_mcp_tool_stops_the_run(self) -> None:
+        from langchain_core.tools import tool
+
+        from mezmo_governance.client import GovernanceError
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        @tool
+        def echo(text: str) -> str:
+            """Return the text."""
+            return text
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            return 200, {"approved": True}
+
+        prompt = {"messages": [{"role": "user", "content": "x"}]}
+        config = {"configurable": {"thread_id": "t1"}}
+        for remote in (
+            {"type": "mcp", "server_label": "docs", "server_url": "https://mcp.example.test"},
+            {"type": "mcp_toolset", "mcp_server_name": "docs"},
+        ):
+            with self.subTest(tool=remote["type"]):
+                agent = scripted_agent([], [echo, remote], [MezmoGovernanceMiddleware(http=http)])
+                with self.assertRaisesRegex(GovernanceError, "provider runs"):
+                    agent.invoke(prompt, config=config)
+                agent = scripted_agent([], [echo, remote], [MezmoGovernanceMiddleware(http=http)])
+                with self.assertRaisesRegex(GovernanceError, "provider runs"):
+                    await agent.ainvoke(prompt, config=config)
+
+    def test_other_provider_tools_still_run(self) -> None:
+        from mezmo_governance.middleware import MezmoGovernanceMiddleware
+
+        async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
+            return 200, {"approved": True}
+
+        agent = scripted_agent(
+            [], [{"type": "web_search_preview"}], [MezmoGovernanceMiddleware(http=http)]
+        )
+        result = agent.invoke({"messages": [{"role": "user", "content": "x"}]})
+        self.assertEqual(result["messages"][-1].content, "")
 
 
 def state_size(obj: Any, depth: int = 2) -> int:

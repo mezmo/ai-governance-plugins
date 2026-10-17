@@ -56,6 +56,8 @@ The endpoint and token you pass win over `MEZMO_GOVERNANCE_URL` and
 `MEZMO_GOVERNANCE_TOKEN`; pass `None` to read those per call. Pass a
 LangGraph `thread_id` so `session_id` is stable across a conversation.
 `ainvoke` takes the same arguments.
+The URL must use `https://`; plain `http://` works only to a loopback
+address such as `127.0.0.1`, for a local mock. A URL with a password is refused.
 
 Without a `thread_id`, the middleware uses `set_current_turn_id(...)` when you
 set one around the call (see [example_agent.py](example_agent.py)). Otherwise
@@ -69,6 +71,28 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 export OPENAI_API_KEY="…"
 python3 example_agent.py
 ```
+
+## Middleware order
+
+List `MezmoGovernanceMiddleware` last in `middleware=[...]`. LangChain runs
+the first middleware outermost, so the last one sees the tool call just
+before the tool runs. A middleware listed after Mezmo could rewrite the
+arguments of a call Mezmo already approved; listed before it, Mezmo gates the
+rewritten call. A test runs a rewriting middleware ahead of Mezmo and checks
+that Mezmo decides on the rewritten arguments.
+
+## What is not gated
+
+The middleware gates the tool calls LangChain runs. Tools the model provider
+runs itself never reach it:
+
+| Tool kind | Where it runs | What the middleware does |
+| --- | --- | --- |
+| A dict tool of type `mcp` or `mcp_toolset` (a remote MCP server) | on the provider's servers, which call the MCP server's tools, side effects included | raises `GovernanceError` before the model call; connect the server with `langchain-mcp-adapters` instead, whose tools are gated |
+| Other dict tools, such as web search or code execution | on the provider's servers | leaves them in place, not gated |
+
+A model you bind to provider tools yourself, before `create_agent`, is not
+inspected.
 
 ## Verify it works
 
@@ -108,13 +132,12 @@ value goes in `items[0].tool_call_intent`, cut at Mezmo's limit of 2048
 characters. See [docs/protocol.md](../docs/protocol.md).
 
 OpenTelemetry is optional. If `opentelemetry` is installed, approved calls are
-traced as `mcp.tool_call` spans. Each span carries `tool.name`,
-`tool.parameters` (the full arguments as JSON) and `tool.result` (up to 8,000
-characters of the result). With only `opentelemetry-api` installed the spans
-are no-ops. Once the app sets up an OpenTelemetry SDK with an exporter, that
-exporter sends them, results included, wherever it points. The middleware traces
-whenever `opentelemetry` can be imported and has no switch to leave these
-attributes out, so treat the trace backend as seeing every argument and result.
+traced as `mcp.tool_call` spans that carry `tool.name`. Arguments and results
+can hold secrets, so they stay out of spans unless you pass
+`trace_payloads=True`. Then each span also carries `tool.parameters` (the full
+arguments as JSON) and `tool.result` (up to 8,000 characters of the result),
+and the app's exporter sends them wherever it points. With only
+`opentelemetry-api` installed the spans are no-ops.
 
 ## Tests
 

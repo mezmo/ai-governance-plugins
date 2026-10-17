@@ -592,6 +592,86 @@ class RedirectTests(unittest.IsolatedAsyncioTestCase):
                         server.server_close()
 
 
+APPROVED = (200, {"approved": True})
+SECRET = "hunter2"
+
+
+class TransportSafetyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_plain_http_to_a_remote_host_is_refused_before_any_request(self) -> None:
+        for url in (
+            "http://api.example.test/governance/workflow/authorize",
+            "http://192.0.2.10:8080/authorize",
+            "ftp://api.example.test/authorize",
+            "api.example.test/authorize",
+            "https:///authorize",
+        ):
+            with self.subTest(url=url):
+                http = FakeHttp([APPROVED])
+                with patch.dict(os.environ, {**ENV, "MEZMO_GOVERNANCE_URL": url}):
+                    with self.assertRaisesRegex(GovernanceError, "https://"):
+                        await authorize(PAYLOAD, http=http)
+                self.assertEqual(http.calls, [])
+
+    async def test_plain_http_to_loopback_still_works(self) -> None:
+        for url in (
+            "http://127.0.0.1:8799/governance/workflow/authorize",
+            "http://127.0.0.2/authorize",
+            "http://localhost:8799/authorize",
+            "http://[::1]:8799/authorize",
+            "HTTP://LOCALHOST/authorize",
+        ):
+            with self.subTest(url=url):
+                http = FakeHttp([APPROVED])
+                with patch.dict(os.environ, {**ENV, "MEZMO_GOVERNANCE_URL": url}):
+                    self.assertTrue((await authorize(PAYLOAD, http=http)).approved)
+
+    async def test_a_url_with_a_password_is_refused_without_echoing_it(self) -> None:
+        for url in (
+            f"https://user:{SECRET}@api.example.test/authorize",
+            f"http://user:{SECRET}@127.0.0.1:8799/authorize",
+            f"https://user:{SECRET}@[::1/authorize",
+        ):
+            with self.subTest(url=url):
+                http = FakeHttp([APPROVED])
+                with patch.dict(os.environ, {**ENV, "MEZMO_GOVERNANCE_URL": url}):
+                    with self.assertRaises(GovernanceError) as raised:
+                        await authorize(PAYLOAD, http=http)
+                self.assertNotIn(SECRET, str(raised.exception))
+                self.assertEqual(http.calls, [])
+
+
+@unittest.skipUnless(httpx is not None, "httpx is not installed")
+class SecretInErrorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_no_failure_text_carries_the_token_or_the_url_secret(self) -> None:
+        server = redirect_server([(200, b'{"approved": true}', None)] * 4)
+        live = f"http://127.0.0.1:{server.server_port}/governance/workflow/authorize"
+        cases = [
+            (live, f"sts_{SECRET}\n# second line"),
+            (live, f"sts_{SECRET}\r\nX-Injected: 1"),
+            (f"http://127.0.0.1:{closed_port()}/a?token={SECRET}", "sts_test"),
+        ]
+        try:
+            for url, token in cases:
+                with self.subTest(url=url, token=token):
+                    env = {**ENV, "MEZMO_GOVERNANCE_URL": url, "MEZMO_GOVERNANCE_TOKEN": token}
+                    with patch.dict(os.environ, env):
+                        with self.assertRaises(GovernanceError) as raised:
+                            await authorize(PAYLOAD)
+                    self.assertNotIn(SECRET, str(raised.exception))
+            self.assertEqual(server.seen, [])  # type: ignore[attr-defined]
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+def closed_port() -> int:
+    import socket
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
 # Same bounds as the Python hooks: finish before a 600 s runtime kill, and
 # never poll more than once a second.
 MAX_TIMEOUT_SECONDS = 590.0
