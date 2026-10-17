@@ -33,6 +33,7 @@ CONFIG_OVERRIDES = {
     "GOOSE_PATH_ROOT",
     "XDG_CONFIG_HOME",
     "PI_CODING_AGENT_DIR",
+    "FACTORY_HOME_OVERRIDE",
 }
 
 
@@ -685,6 +686,44 @@ class OtherHookAgentTests(DoctorTestCase):
                 self.assertTrue(self.lines(result, "Cursor hook")[1].startswith(status), result.stdout)
                 self.assertStatus(result, "Cursor smoke", "ok")
 
+    def test_droid_needs_the_guard(self) -> None:
+        self.agent("droid", "0.244.0")
+        self.copy_hook("droid", ".factory/hooks/mezmo_governance_hook.py")
+        command = 'python3 "${MEZMO_GOVERNANCE_HOOK:-$HOME/.factory/hooks/mezmo_governance_hook.py}"'
+        for suffix, status in ((" || { echo 'failed' >&2; exit 2; }", "ok"), ("", "FAIL")):
+            with self.subTest(guard=bool(suffix)):
+                self.write(".factory/hooks.json", {"PreToolUse": [{"hooks": [{"type": "command", "command": command + suffix}]}]})
+                result = self.doctor()
+                self.assertTrue(self.lines(result, "Droid hook")[1].startswith(status), result.stdout)
+                self.assertStatus(result, "Droid smoke", "ok")
+
+    def test_droid_reads_hooks_json_over_settings_json_and_obeys_hooks_disabled(self) -> None:
+        # Droid 0.244.0 lays hooks.json over the settings.json hooks, one event at a time.
+        self.agent("droid", "0.244.0")
+        self.copy_hook("droid", ".factory/hooks/mezmo_governance_hook.py")
+        mezmo = [{"hooks": [{"type": "command", "command": 'python3 "$HOME/.factory/hooks/mezmo_governance_hook.py" || exit 2'}]}]
+        other = [{"hooks": [{"type": "command", "command": "other-hook"}]}]
+        cases = [
+            ({"settings.json": {"hooks": {"PreToolUse": mezmo}}}, "ok", "in ~/.factory/settings.json"),
+            ({"settings.json": {"hooks": {"PreToolUse": mezmo}}, "hooks.json": {"PreToolUse": other}}, None, ""),
+            ({"hooks.json": {"PreToolUse": mezmo, "hooksDisabled": True}}, "FAIL", "hooksDisabled turns every hook off"),
+            ({"settings.json": {"hooks": {"hooksDisabled": True}}, "hooks.json": {"PreToolUse": mezmo}}, "FAIL", "hooksDisabled"),
+            ({"settings.json": {"hooks": {"hooksDisabled": True}}, "hooks.json": {"PreToolUse": mezmo, "hooksDisabled": False}}, "ok", ""),
+        ]
+        for files, status, words in cases:
+            with self.subTest(files=files):
+                for name in ("settings.json", "hooks.json"):
+                    (self.home / ".factory" / name).unlink(missing_ok=True)
+                for name, content in files.items():
+                    self.write(f".factory/{name}", content)
+                result = self.doctor()
+                if status is None:
+                    self.assertIn("not installed", self.lines(result, "Droid")[-1])
+                    continue
+                shown = self.lines(result, "Droid hooks") or self.lines(result, "Droid hook")
+                self.assertTrue(shown[0].startswith(status), result.stdout)
+                self.assertIn(words, shown[0])
+
     def test_gemini_needs_the_guard(self) -> None:
         self.agent("gemini", "0.64.0")
         self.copy_hook("gemini-cli", ".gemini/hooks/mezmo_governance_hook.py")
@@ -938,6 +977,8 @@ class ConfigFolderTests(DoctorTestCase):
              lambda hook: {"hooks": {"PreToolUse": [{"hooks": [{"command": guarded.format(hook)}]}]}}),
             ("gemini", "0.64.0", "GEMINI_CLI_HOME", ".gemini/settings.json", "Gemini CLI hook",
              lambda hook: {"hooks": {"BeforeTool": [{"hooks": [{"command": guarded.format(hook)}]}]}}),
+            ("droid", "0.244.0", "FACTORY_HOME_OVERRIDE", ".factory/hooks.json", "Droid hook",
+             lambda hook: {"PreToolUse": [{"hooks": [{"command": guarded.format(hook)}]}]}),
         ]
         for binary, version, variable, relative, subject, config in cases:
             with self.subTest(variable=variable):

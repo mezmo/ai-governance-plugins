@@ -731,7 +731,7 @@ class PythonFloorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
-# The five Python hook adapters are standalone copies. These shared parts must stay
+# The six Python hook adapters are standalone copies. These shared parts must stay
 # identical so a fix in one copy reaches the others.
 SHARED_DEFINITIONS = (
     "DEFAULT_TIMEOUT_SECONDS",
@@ -770,7 +770,7 @@ SHARED_DEFINITIONS = (
     "result_has_known_error",
     "append_audit",
 )
-SIBLING_ADAPTERS = ("cursor", "gemini-cli", "copilot", "goose")
+SIBLING_ADAPTERS = ("cursor", "gemini-cli", "copilot", "goose", "droid")
 
 
 def top_level_definitions(path: Path) -> dict[str, str]:

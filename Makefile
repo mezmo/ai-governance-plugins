@@ -1,9 +1,9 @@
-.PHONY: test test-codex test-claude-code test-claude-code-mod test-cursor test-gemini-cli test-copilot test-goose test-pi test-opencode test-langchain test-openai-agents test-mastra test-claude-agent-sdk test-tools
+.PHONY: test test-codex test-claude-code test-claude-code-mod test-cursor test-gemini-cli test-copilot test-goose test-droid test-pi test-opencode test-langchain test-openai-agents test-mastra test-claude-agent-sdk test-tools
 
 PYTHON ?= python3
 NODE ?= node
 
-test: test-codex test-claude-code test-cursor test-gemini-cli test-copilot test-goose test-pi test-opencode test-langchain test-openai-agents test-mastra test-claude-agent-sdk test-tools
+test: test-codex test-claude-code test-cursor test-gemini-cli test-copilot test-goose test-droid test-pi test-opencode test-langchain test-openai-agents test-mastra test-claude-agent-sdk test-tools
 
 test-codex:
 	cd codex && $(PYTHON) -m unittest test_hook.py -v
@@ -26,6 +26,9 @@ test-copilot:
 
 test-goose:
 	cd goose && $(PYTHON) -m unittest test_hook.py -v
+
+test-droid:
+	cd droid && $(PYTHON) -m unittest test_hook.py -v
 
 test-pi:
 	cd pi && $(NODE) --test test/*.test.ts
