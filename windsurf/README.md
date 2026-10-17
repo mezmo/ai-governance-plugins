@@ -1,5 +1,27 @@
 # Windsurf + Mezmo Governance
 
+## Partial coverage
+
+Cascade has hooks only for terminal commands, file reads, file edits and MCP
+calls. These actions get no hook, so Mezmo never sees them and they run
+ungoverned:
+
+- grep and find searches;
+- new files written whole (`write_to_file`);
+- web search and URL reads;
+- git commits;
+- web app deploys;
+- subagent tasks.
+
+Terminal reads, browser DOM reads, clipboard use and custom tools get no hook
+either. If your policy must cover any of these, Cascade cannot enforce it
+today.
+
+Windsurf loads no hooks at all while a workspace is open in Restricted Mode,
+the user-level hook included. Trust each workspace you use with Cascade.
+
+## About this hook
+
 A Windsurf Cascade hook that asks Mezmo Governance before Cascade runs a
 command, reads or writes a file, or calls an MCP tool. If Mezmo denies the
 call, or the hook cannot get an answer, the hook exits 2 and Cascade skips the
@@ -24,9 +46,9 @@ matches the Windsurf update server). Its language server was read, never
 started. The hook script itself passes its tests and
 `./mezmo-governance smoke`.
 
-## What Cascade does not hook
+## What the hook covers
 
-Cascade has hooks for four kinds of action only. The hook governs these:
+The hook gates these four Cascade hooks, one for each kind of action:
 
 | Hook | Cascade steps it covers |
 |---|---|
@@ -35,18 +57,11 @@ Cascade has hooks for four kinds of action only. The hook governs these:
 | `pre_write_code` | code edits, proposed code, notebook edits |
 | `pre_mcp_tool_use` | MCP tool calls, MCP resource lists and reads |
 
-No hook runs for any other Cascade step, so Mezmo never sees them and they run
-ungoverned. In the 1.126.0 language server these include grep and find
-searches, new files written whole (`write_to_file`), web search and URL reads,
-terminal reads, git commits, web app deploys, browser DOM reads, clipboard
-use, subagent tasks and custom tools. If your policy must cover those, Cascade
-cannot enforce it today.
-
-Hooks do not load at all while a workspace is open in Restricted Mode: the
-user-level hook is skipped with the rest (docs, and the language server logs
-`[HOOKS] Skipping all hook files: workspace is untrusted`). Whether Cascade
-can still run tools in such a workspace is not verified. Trust each workspace
-you use with Cascade.
+The step lists, and the steps with no hook in [Partial coverage](#partial-coverage),
+come from the 1.126.0 language server. The Restricted Mode rule is in the docs,
+and the language server logs
+`[HOOKS] Skipping all hook files: workspace is untrusted`. Whether Cascade can
+still run tools in such a workspace is not verified.
 
 ## Fail behavior
 
