@@ -24,7 +24,9 @@ start, or exits non-zero: the tool does not run. A crash was verified live
 ("hook errored"). It fails open on a timeout:
 the call goes on to the normal permission flow. The example sets
 `timeoutSec` to `600`, so the script's own 590 second deadline ends first and
-returns a clear deny. Do not lower it below the deadline.
+returns a clear deny. Keep `timeoutSec` at least 10 seconds above
+`MEZMO_GOVERNANCE_TIMEOUT_SECONDS`: if you lower one, lower the other too, or
+a call still pending runs the tool.
 
 `disableAllHooks: true` in a hooks file or in repository `settings.json` turns
 the hook off.

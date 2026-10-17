@@ -88,7 +88,9 @@ not running in a trusted directory". For CI, set
 whole workspace for that run, including its project hooks and settings.
 
 The `BeforeTool` timeout is in milliseconds. The example sets `600000`, so the
-script's own 590 second deadline ends first and returns a clear deny.
+script's own 590 second deadline ends first and returns a clear deny. Keep the
+timeout at least 10 seconds above `MEZMO_GOVERNANCE_TIMEOUT_SECONDS`: if you
+lower one, lower the other too, or a call still pending runs the tool.
 
 If you turn on `security.environmentVariableRedaction`, Gemini CLI removes
 variables whose names contain `KEY` or `TOKEN` from the hook. Add
