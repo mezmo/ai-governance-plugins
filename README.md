@@ -117,7 +117,9 @@ can watch the plugin wait and then deny.
    version, the user-level install and its fail-closed setting. An install the
    agent has turned off or does not trust fails: a disabled Claude Code plugin,
    Gemini CLI extension or hook, or Goose plugin, and a Codex hook whose
-   trust Codex does not list as current. It also runs
+   trust Codex does not list as current. A Codex or Gemini CLI hook installed
+   before the guard learned to keep a deliberate block quiet gets a warning
+   with the reinstall step. It also runs
    each installed Python hook against a closed port and checks that the hook
    denies. It reads the agent configs and changes nothing. Each check prints
    one `ok`, `warn`, `FAIL` or `skip` line with a fix, and the exit code is 1

@@ -477,6 +477,10 @@ CODEX_COMMAND = (
 )
 
 
+# The guard before ec18454: it printed "hook failed" on every block, a deliberate one too.
+OLD_GUARD = " || { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
+
+
 class CodexTests(DoctorTestCase):
     def install(self, command: str = CODEX_COMMAND, trusted: bool = True, extra: str = "") -> None:
         hooks = self.write(
@@ -531,6 +535,20 @@ class CodexTests(DoctorTestCase):
         line = self.assertStatus(result, "Codex trust", "info")
         self.assertIn("not checked", line)
         self.assertIn("codex app-server gave no answer", line)
+
+    def test_the_old_guard_warns_with_the_reinstall_step(self) -> None:
+        self.install(CODEX_COMMAND.split(" ||")[0] + OLD_GUARD)
+
+        result = self.doctor()
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        line = self.assertStatus(result, "Codex guard", "warn")
+        self.assertIn('also prints "hook failed"', line)
+        self.assertIn("./mezmo-governance uninstall codex", line)
+        self.assertIn("/hooks", line)
+        self.assertIn("fails closed", self.lines(result, "Codex hook")[1])
+        self.install()
+        self.assertEqual(self.lines(self.doctor(), "Codex guard"), [])
 
     def test_failures_in_codex_config(self) -> None:
         cases = [
@@ -674,6 +692,17 @@ class OtherHookAgentTests(DoctorTestCase):
                 result = self.doctor()
                 self.assertTrue(self.lines(result, "Gemini CLI hook")[1].startswith(status), result.stdout)
                 self.assertStatus(result, "Gemini CLI smoke", "ok")
+
+    def test_gemini_with_the_old_guard_warns(self) -> None:
+        self.agent("gemini", "0.64.0")
+        self.copy_hook("gemini-cli", ".gemini/hooks/mezmo_governance_hook.py")
+        command = 'python3 "${MEZMO_GOVERNANCE_HOOK:-$HOME/.gemini/hooks/mezmo_governance_hook.py}"'
+        self.write(".gemini/settings.json", {"hooks": {"BeforeTool": [{"matcher": "*", "hooks": [{"type": "command", "command": command + OLD_GUARD}]}]}})
+
+        result = self.doctor()
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("gemini-cli/settings.example.json", self.assertStatus(result, "Gemini CLI guard", "warn"))
 
     def test_a_disabled_gemini_extension_or_hook_fails(self) -> None:
         self.agent("gemini", "0.64.0")

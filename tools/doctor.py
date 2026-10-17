@@ -422,6 +422,12 @@ def fail_closed(report: Report, subject: str, ok: bool, setting: str, example: s
         )
 
 
+def old_guard(report: Report, subject: str, command: str, fix: str) -> None:
+    """Warn about the guard before ec18454: install skips a config that has a Mezmo hook, so it stays until replaced."""
+    if "hook failed; blocking" in command and "[ $s -eq 2 ]" not in command:
+        report.line("warn", subject, 'the || exit 2 guard is the old one: a deliberate block also prints "hook failed"', fix)
+
+
 def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list]:
     root = claude_dir()
     settings = as_dict(read_json(root / "settings.json"))
@@ -568,6 +574,10 @@ def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
         command = str(handler.get("command"))
         report.line("ok", "Codex hook", f"PreToolUse hook in {shown(path)}")
         fail_closed(report, "Codex hook", "exit 2" in command, "|| exit 2 guard", "codex/hooks.example.json")
+        old_guard(
+            report, "Codex guard", command,
+            "run ./mezmo-governance uninstall codex, then install codex, then trust the new hook in /hooks",
+        )
         key = f":pre_tool_use:{g}:{h}"
         state = toml_table(config, f'hooks.state."{path}{key}"')
         listed = [
@@ -644,6 +654,11 @@ def check_gemini(report: Report, version: Optional[tuple]) -> Optional[list]:
         command = str(handler.get("command"))
         report.line("ok", "Gemini CLI hook", f"BeforeTool hook in {shown(where)}")
         fail_closed(report, "Gemini CLI hook", "exit 2" in command, "|| exit 2 guard", "gemini-cli/hooks/hooks.json")
+        if where == extension:
+            fix = "run ./mezmo-governance uninstall gemini-cli, then install gemini-cli"
+        else:
+            fix = f"copy the BeforeTool command from gemini-cli/settings.example.json into {shown(path)}"
+        old_guard(report, "Gemini CLI guard", command, fix)
         # Gemini names a hook by its name, else its command.
         if (handler.get("name") or command) in disabled:
             report.line(
