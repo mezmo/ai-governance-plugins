@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -288,6 +289,37 @@ class RefuseRedirect(HTTPRedirectHandler):
         return None
 
 
+def is_loopback(host: str | None) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host or "").is_loopback
+    except ValueError:
+        return False
+
+
+def refuse_exposed_token(url: str, authorization: str) -> None:
+    """Refuse a request that would expose the token. The errors quote neither."""
+    parsed = urlparse(url)
+    if parsed.username is not None or parsed.password is not None:
+        raise HookContractError(
+            "the Mezmo Governance URL must not hold a user name or password"
+        )
+    if not (
+        parsed.scheme == "https"
+        or (parsed.scheme == "http" and is_loopback(parsed.hostname))
+    ):
+        raise HookContractError(
+            "the Mezmo Governance URL must use https://; "
+            "http:// is allowed only to this machine"
+        )
+    # http.client quotes a header value it refuses, which would show the token.
+    if not (authorization.isascii() and authorization.isprintable()):
+        raise HookContractError(
+            "the Mezmo Governance token holds a character an HTTP header cannot carry"
+        )
+
+
 def http_json(
     method: str,
     url: str,
@@ -299,8 +331,10 @@ def http_json(
         if payload is None
         else json.dumps(payload, separators=(",", ":")).encode()
     )
+    authorization = authorization_header()
+    refuse_exposed_token(url, authorization)
     headers = {
-        "Authorization": authorization_header(),
+        "Authorization": authorization,
         "Accept": "application/json",
     }
     if body is not None:

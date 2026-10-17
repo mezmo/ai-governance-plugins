@@ -767,6 +767,53 @@ class EndToEndTests(unittest.TestCase):
                 self.assertNotIn("x" * 201, shown)
                 self.assertNotIn("secret-arg", shown)
 
+    def test_a_url_that_would_expose_the_token_is_refused_before_any_request(self) -> None:
+        urls = [
+            "http://192.0.2.1/governance/workflow/authorize",
+            "http://api.example.test/governance/workflow/authorize",
+            "ftp://192.0.2.1/governance",
+            "file:///etc/hosts",
+            "https://user:pw_secret@api.example.test/governance/workflow/authorize",
+        ]
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_TOKEN": "sts_test"}), patch.object(
+            hook, "build_opener"
+        ) as opener:
+            for url in urls:
+                with self.subTest(url=url):
+                    with self.assertRaises(hook.HookContractError) as caught:
+                        hook.http_json("POST", url, {}, 1.0)
+                    self.assertNotIn("pw_secret", str(caught.exception))
+        opener.assert_not_called()
+
+    def test_http_to_this_machine_still_works(self) -> None:
+        hosts = ["127.0.0.1", "127.0.0.2", "localhost", "[::1]"]
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_TOKEN": "sts_test"}), patch.object(
+            hook, "build_opener"
+        ) as opener:
+            response = opener.return_value.open.return_value.__enter__.return_value
+            response.status = 200
+            response.read.return_value = b'{"approved": true}'
+            for host in hosts:
+                with self.subTest(host=host):
+                    url = f"http://{host}:8787/governance/workflow/authorize"
+                    self.assertEqual(
+                        hook.http_json("POST", url, {}, 1.0), (200, {"approved": True})
+                    )
+
+    def test_no_deny_reason_shows_the_token(self) -> None:
+        with StubGovernance([]) as stub:
+            cases = [
+                (stub.url, {"MEZMO_GOVERNANCE_TOKEN": "sts_secret\nX-Injected: 1"}),
+                (stub.url.replace("http://", "http://user:sts_secret@"), {}),
+            ]
+            for url, extra in cases:
+                with self.subTest(url=url, extra=extra):
+                    result = self.run_hook(hook_event(PRE_EVENT), url, extra=extra)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(set(stdout_json(result)), set(deny_schema("x")))
+                    self.assertNotIn("sts_secret", result.stdout + result.stderr)
+            self.assertEqual(stub.requests, [])
+
     def test_unreachable_governance_denies(self) -> None:
         with StubGovernance([]) as stub:
             url = stub.url
