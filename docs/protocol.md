@@ -63,7 +63,8 @@ unchanged.
 Rules:
 
 - Top-level fields are `version`, `decision_id`, `request_id`, `scope`,
-  `origin`, `items`. Send no other fields: Mezmo's schema does not allow them.
+  `origin`, `items`. Send no other fields: Mezmo accepts unknown fields today
+  but does not document them.
 - `scope.kind` is `single` for these plugins. Optional `session_id` is the
   runtime's session, conversation, or thread id.
 - `origin.kind` names the plugin. `origin.reason` is the event name. Optional
