@@ -101,12 +101,15 @@ def append_audit(record: Mapping[str, Any]) -> None:
     # The log keeps tool results, so only its owner may read it.
     path = audit_log_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-    with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
+
+    def private(name: str, flags: int) -> int:
+        return os.open(name, flags, 0o600)
+
+    with open(path, "a", encoding="utf-8", opener=private) as handle:
         # A log an older version wrote keeps its mode until narrowed here.
-        mode = os.fstat(descriptor).st_mode
+        mode = os.fstat(handle.fileno()).st_mode
         if os.name != "nt" and stat.S_ISREG(mode) and mode & 0o077:
-            os.fchmod(descriptor, 0o600)
+            os.fchmod(handle.fileno(), 0o600)
         handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
