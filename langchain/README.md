@@ -132,13 +132,12 @@ value goes in `items[0].tool_call_intent`, cut at Mezmo's limit of 2048
 characters. See [docs/protocol.md](../docs/protocol.md).
 
 OpenTelemetry is optional. If `opentelemetry` is installed, approved calls are
-traced as `mcp.tool_call` spans. Each span carries `tool.name`,
-`tool.parameters` (the full arguments as JSON) and `tool.result` (up to 8,000
-characters of the result). With only `opentelemetry-api` installed the spans
-are no-ops. Once the app sets up an OpenTelemetry SDK with an exporter, that
-exporter sends them, results included, wherever it points. The middleware traces
-whenever `opentelemetry` can be imported and has no switch to leave these
-attributes out, so treat the trace backend as seeing every argument and result.
+traced as `mcp.tool_call` spans that carry `tool.name`. Arguments and results
+can hold secrets, so they stay out of spans unless you pass
+`trace_payloads=True`. Then each span also carries `tool.parameters` (the full
+arguments as JSON) and `tool.result` (up to 8,000 characters of the result),
+and the app's exporter sends them wherever it points. With only
+`opentelemetry-api` installed the spans are no-ops.
 
 ## Tests
 

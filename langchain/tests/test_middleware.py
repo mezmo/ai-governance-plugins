@@ -345,7 +345,9 @@ class MiddlewareSyncTests(unittest.TestCase):
         asyncio.run(main())
         self.assertEqual(sent[0]["scope"]["session_id"], "turn-7")
 
-    def test_sync_path_records_a_span(self) -> None:
+    def span_attributes(self, run_async: bool = False, **options: Any) -> dict[str, Any]:
+        import asyncio
+
         from mezmo_governance import middleware as module
 
         attributes: dict[str, Any] = {}
@@ -370,14 +372,33 @@ class MiddlewareSyncTests(unittest.TestCase):
         async def http(method: str, url: str, payload: Any, timeout: float) -> Any:
             return 200, {"approved": True}
 
+        async def handler(_request: Any) -> ToolMessage:
+            return ToolMessage(content="hi", tool_call_id="call-1")
+
+        middleware = module.MezmoGovernanceMiddleware(http=http, **options)
         with patch.object(module, "trace", fake_trace):
-            module.MezmoGovernanceMiddleware(http=http).wrap_tool_call(
-                tool_request(),
-                lambda _request: ToolMessage(content="hi", tool_call_id="call-1"),
-            )
+            if run_async:
+                asyncio.run(middleware.awrap_tool_call(tool_request(), handler))
+            else:
+                middleware.wrap_tool_call(
+                    tool_request(),
+                    lambda _request: ToolMessage(content="hi", tool_call_id="call-1"),
+                )
+        return attributes
+
+    def test_sync_path_records_a_span(self) -> None:
+        attributes = self.span_attributes(trace_payloads=True)
         self.assertEqual(attributes["tool.name"], "echo")
         self.assertEqual(attributes["tool.parameters"], '{"text":"hi"}')
         self.assertEqual(attributes["tool.result"], "hi")
+
+    def test_spans_leave_arguments_and_results_out_unless_asked(self) -> None:
+        for run_async in (False, True):
+            with self.subTest(run_async=run_async):
+                attributes = self.span_attributes(run_async)
+                self.assertEqual(attributes["tool.name"], "echo")
+                self.assertNotIn("tool.parameters", attributes)
+                self.assertNotIn("tool.result", attributes)
 
     def test_agent_invoke_runs_through_the_sync_path(self) -> None:
         from langchain_core.tools import tool

@@ -98,6 +98,7 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
         access_key: str | None = None,
         matched_pattern: str = "*",
         intent_provider: Callable[[ToolCallRequest], str | None] | None = None,
+        trace_payloads: bool = False,
         http: Callable[
             [str, str, Mapping[str, Any] | None, float],
             Awaitable[tuple[int, dict[str, Any]]],
@@ -113,6 +114,8 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
         self.matched_pattern = matched_pattern
         self.access_key = access_key
         self.intent_provider = intent_provider
+        # Spans carry tool arguments and results only when asked: they may hold secrets.
+        self.trace_payloads = trace_payloads
         self.http = http
 
     async def __aenter__(self) -> MezmoGovernanceMiddleware:
@@ -217,8 +220,9 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
         if blocked is not None:
             return blocked
         call = request.tool_call
-        with traced(str(call["name"]), call["args"]) as span:
-            return finish(span, handler(request))
+        arguments = call["args"] if self.trace_payloads else None
+        with traced(str(call["name"]), arguments) as span:
+            return finish(span, handler(request), self.trace_payloads)
 
     async def awrap_tool_call(
         self,
@@ -232,8 +236,9 @@ class MezmoGovernanceMiddleware(AgentMiddleware):
         if blocked is not None:
             return blocked
         call = request.tool_call
-        with traced(str(call["name"]), call["args"]) as span:
-            return finish(span, await handler(request))
+        arguments = call["args"] if self.trace_payloads else None
+        with traced(str(call["name"]), arguments) as span:
+            return finish(span, await handler(request), self.trace_payloads)
 
 
 def run_sync(coroutine: Coroutine[Any, Any, T]) -> T:
@@ -248,23 +253,27 @@ def run_sync(coroutine: Coroutine[Any, Any, T]) -> T:
 
 
 @contextmanager
-def traced(tool_name: str, arguments: Mapping[str, Any]) -> Iterator[Any]:
-    """Wrap an approved call in an `mcp.tool_call` span when OpenTelemetry is installed."""
+def traced(tool_name: str, arguments: Mapping[str, Any] | None) -> Iterator[Any]:
+    """Wrap an approved call in an `mcp.tool_call` span when OpenTelemetry is installed.
+
+    ``arguments`` of None leaves `tool.parameters` out.
+    """
     if trace is None:
         yield None
         return
     tracer = trace.get_tracer("mezmo.governance.langchain")
     with tracer.start_as_current_span(TRACE_OPERATION) as span:
         span.set_attribute("tool.name", tool_name)
-        span.set_attribute(
-            "tool.parameters",
-            json.dumps(
-                dict(arguments),
-                sort_keys=True,
-                separators=(",", ":"),
-                default=str,
-            ),
-        )
+        if arguments is not None:
+            span.set_attribute(
+                "tool.parameters",
+                json.dumps(
+                    dict(arguments),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ),
+            )
         try:
             yield span
         except Exception as exc:
@@ -274,9 +283,12 @@ def traced(tool_name: str, arguments: Mapping[str, Any]) -> Iterator[Any]:
             raise
 
 
-def finish(span: Any, result: ToolMessage | Command) -> ToolMessage | Command:
+def finish(
+    span: Any, result: ToolMessage | Command, with_result: bool = False
+) -> ToolMessage | Command:
     if span is not None:
-        span.set_attribute("tool.result", tool_result_text(result)[:8000])
+        if with_result:
+            span.set_attribute("tool.result", tool_result_text(result)[:8000])
         if Status is not None and StatusCode is not None:
             span.set_status(Status(StatusCode.OK))
     return result
