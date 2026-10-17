@@ -1,0 +1,31 @@
+{
+  "description": "Mezmo Governance: authorize each tool call, then log the result locally",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/mezmo_governance_hook.py\" || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }",
+            "timeout": 600,
+            "statusMessage": "Checking Mezmo Governance"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/mezmo_governance_hook.py\"",
+            "timeout": 15,
+            "statusMessage": "Recording the governed result"
+          }
+        ]
+      }
+    ]
+  }
+}

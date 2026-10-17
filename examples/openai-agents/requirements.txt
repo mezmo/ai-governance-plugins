@@ -1,0 +1,2 @@
+../../openai-agents
+openai-agents==0.24.0

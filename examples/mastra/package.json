@@ -1,0 +1,12 @@
+{
+  "name": "mezmo-governance-mastra-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node check.ts"
+  },
+  "dependencies": {
+    "@mastra/core": "1.77.0",
+    "zod": "4.6.7"
+  }
+}

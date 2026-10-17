@@ -9,6 +9,7 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/governance_hook.py\"",
             "timeout": 600,
+            "onFailure": "block",
             "statusMessage": "Checking Mezmo Governance"
           }
         ]

@@ -15,6 +15,8 @@ working.
 ## Install
 
 You need Python 3.8 or later. The scripts only use the standard library.
+You need Claude Code v2.1.295 or later: older versions ignore the hook's `onFailure: "block"`,
+so a governance hook that crashes or times out lets the tool run.
 
 ```bash
 claude plugin marketplace add mezmo/ai-governance-plugins

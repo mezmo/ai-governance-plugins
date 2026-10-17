@@ -10,10 +10,11 @@ import {
   approvalPayload,
   authorizationHeader,
   authorize,
+  callDigest,
   callIdentity,
   GovernanceError,
   splitToolName,
-} from "../client.ts";
+} from "../mezmo-governance/client.ts";
 
 const URL = "https://api.example.test/governance/workflow/authorize";
 
@@ -36,7 +37,7 @@ function withEnv(values: Record<string, string>, fn: () => Promise<void>) {
 
 const ENV = {
   MEZMO_GOVERNANCE_URL: URL,
-  MEZMO_GOVERNANCE_ACCESS_KEY: "sts_test",
+  MEZMO_GOVERNANCE_TOKEN: "sts_test",
   MEZMO_GOVERNANCE_TIMEOUT_SECONDS: "30",
   MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS: "1",
 };
@@ -50,9 +51,9 @@ test("splits MCP tool names", () => {
 });
 
 test("builds a stable identity", () => {
-  const first = callIdentity("sess-1", "call-1");
-  const second = callIdentity("sess-1", "call-1");
-  assert.equal(first.requestId, "opencode:sess-1:call-1");
+  const first = callIdentity("sess-1", "call-1", "bash", { command: "ls" });
+  const second = callIdentity("sess-1", "call-1", "bash", { command: "ls" });
+  assert.equal(first.requestId, `opencode:sess-1:call-1#${callDigest("bash", { command: "ls" })}`);
   assert.equal(first.decisionId, second.decisionId);
 });
 
@@ -67,7 +68,7 @@ test("payload origin is opencode_plugin", () => {
 });
 
 test(
-  "prefixes Token on the access key",
+  "prefixes Token on the token",
   () =>
     withEnv(ENV, async () => {
       assert.equal(authorizationHeader(), "Token sts_test");
@@ -140,6 +141,36 @@ test(
         },
       });
       assert.equal(decision.approved, true);
+    }),
+);
+
+test(
+  "a call sent for approval polls until Mezmo decides",
+  () =>
+    withEnv(ENV, async () => {
+      // Live Mezmo, 2026-10-16: a call sent for approval answers 207 with
+      // approved false, polls 207 while pending, then 200 once decided.
+      for (const approved of [true, false]) {
+        const answers: Array<[number, unknown]> = [
+          [207, { approved: false, reason: "No rule in this policy covers this request." }],
+          [207, { approved: false, reason: null }],
+          [200, { approved, reason: null }],
+        ];
+        const methods: string[] = [];
+        const fetchImpl = async (_url: string, init: { method?: string }) => {
+          methods.push(init.method ?? "GET");
+          const [status, body] = answers.shift()!;
+          return {
+            status,
+            async text() {
+              return JSON.stringify(body);
+            },
+          };
+        };
+        const decision = await authorize({ decision_id: "d" }, { fetchImpl: fetchImpl as never, sleep: async () => {} });
+        assert.equal(decision.approved, approved);
+        assert.deepEqual(methods, ["POST", "GET", "GET"]);
+      }
     }),
 );
 
@@ -322,6 +353,41 @@ test(
     }),
 );
 
+test(
+  "fails closed on a reply it cannot read",
+  () =>
+    withEnv(ENV, async () => {
+      const cases: [[number, string][], string][] = [
+        [[[200, "<html>bad gateway</html>"]], "invalid JSON response"],
+        [[[200, "[]"]], "non-object response"],
+        [[[200, ""]], "did not return an approval decision"],
+        [[[200, '{"reason":"no field"}']], "did not return an approval decision"],
+        [[[200, '{"approved":"true"}']], "did not return an approval decision"],
+        [[[200, '{"approved":1}']], "did not return an approval decision"],
+        [[[409, "{}"], [200, '{"status":"maybe"}']], "unexpected status"],
+        [[[409, "{}"], [200, "not json"]], "invalid JSON response"],
+      ];
+      for (const [answers, message] of cases) {
+        const queue = [...answers];
+        const fetchImpl = async () => {
+          const [status, body] = queue.shift()!;
+          return { status, async text() { return body; } };
+        };
+        const payload = approvalPayload({
+          sessionId: "sess-1",
+          toolCallId: "call-1",
+          toolName: "bash",
+          arguments: { command: "ls" },
+        });
+        await assert.rejects(
+          () => authorize(payload, { fetchImpl }),
+          (error: unknown) => error instanceof GovernanceError && error.message.includes(message),
+          JSON.stringify(answers),
+        );
+      }
+    }),
+);
+
 test("appendAudit writes JSONL", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mezmo-gov-"));
   const path = join(dir, "audit.jsonl");
@@ -331,3 +397,60 @@ test("appendAudit writes JSONL", async () => {
     assert.equal(JSON.parse(line).agent, "opencode");
   });
 });
+
+test(
+  "a Mezmo error shows its code and message on one bounded line",
+  () =>
+    withEnv(ENV, async () => {
+      const enoagent = {
+        status: 403,
+        code: "ENOAGENT",
+        message: "no agent is registered for these credentials",
+      };
+      const noisy = {
+        code: "EINVAL",
+        message: `bad\nline\u001b[2J ${"x".repeat(500)}`,
+        errors: ["secret-arg"],
+      };
+      const cases: [[number, unknown][], string][] = [
+        [
+          [[403, enoagent]],
+          "Mezmo Governance returned HTTP 403 ENOAGENT: no agent is registered for these credentials",
+        ],
+        [
+          [[409, {}], [401, { code: "EAUTH", message: "Unauthorized" }]],
+          "Mezmo Governance returned HTTP 401 EAUTH while polling: Unauthorized",
+        ],
+        [[[400, noisy]], "Mezmo Governance returned HTTP 400 EINVAL: bad line [2J xxx"],
+      ];
+      for (const [answers, expected] of cases) {
+        const fetchImpl = async () => {
+          const [status, body] = answers.shift()!;
+          return {
+            status,
+            async text() {
+              return JSON.stringify(body);
+            },
+          };
+        };
+        const payload = approvalPayload({
+          sessionId: "sess-1",
+          toolCallId: "call-1",
+          toolName: "bash",
+          arguments: { command: "ls" },
+        });
+        await assert.rejects(
+          () => authorize(payload, { fetchImpl }),
+          (error: Error) => {
+            assert.ok(error instanceof GovernanceError);
+            assert.ok(error.message.includes(expected), error.message);
+            // One line, bounded, and nothing beyond code and message.
+            assert.ok(!/[\n\u001b]/.test(error.message), error.message);
+            assert.ok(!error.message.includes("x".repeat(201)));
+            assert.ok(!error.message.includes("secret-arg"));
+            return true;
+          },
+        );
+      }
+    }),
+);

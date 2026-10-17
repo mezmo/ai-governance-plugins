@@ -8,11 +8,15 @@ until configured, plugin options, and error messages.
 import json
 import os
 import pathlib
+import stat
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 from unittest.mock import patch
@@ -125,7 +129,7 @@ class AdapterContractTests(unittest.TestCase):
         before = hook.call_identity(hook_event("PreToolUse"))
         after = hook.call_identity(hook_event("PostToolUse"))
         self.assertEqual(before, after)
-        self.assertEqual(before.request_id, "claude_code:session-1:turn-1:tool-use-1")
+        self.assertRegex(before.request_id, r"^claude_code:session-1:turn-1:tool-use-1#[0-9a-f]{16}$")
 
     def test_approval_payload_identifies_claude_code_and_the_mcp_namespace(self) -> None:
         payload = hook.approval_payload(hook_event("PreToolUse"))
@@ -484,6 +488,179 @@ class SessionStateTests(unittest.TestCase):
     def test_defaults_to_the_home_directory(self) -> None:
         os.environ.pop("MEZMO_GOVERNANCE_STATE_DIR")
         self.assertEqual(hook.session_state_path("abc"), pathlib.Path.home() / ".mezmo" / "governance" / "sessions" / "abc.json")
+
+
+
+@patch.dict(os.environ, environment(**ENV), clear=True)
+class CallBindingTests(unittest.TestCase):
+    def test_changed_arguments_under_one_call_id_get_their_own_decision(self) -> None:
+        # A 409 hands back the decision of an earlier POST with the same id.
+        first = hook_event("PreToolUse")
+        edited = hook_event("PreToolUse")
+        edited["tool_input"] = {"namespace": "production", "name": "demo-pod"}
+        self.assertNotEqual(hook.call_identity(first).decision_id, hook.call_identity(edited).decision_id)
+        self.assertNotEqual(hook.call_identity(first).request_id, hook.call_identity(edited).request_id)
+
+    def test_a_long_request_id_fits_mezmo_and_keeps_its_digest(self) -> None:
+        # Mezmo answers HTTP 400 to a request_id over 128 characters.
+        event = hook_event("PreToolUse")
+        event["session_id"] = "s" * 300
+        other = dict(event, session_id="s" * 299 + "t")
+        identity = hook.call_identity(event)
+        self.assertLessEqual(len(identity.request_id), 128)
+        self.assertRegex(identity.request_id, r"#[0-9a-f]{16}$")
+        self.assertNotEqual(identity.request_id, hook.call_identity(other).request_id)
+        full = f"claude_code:{'s' * 300}:turn-1:tool-use-1#" + identity.request_id.rsplit("#", 1)[1]
+        self.assertEqual(identity.decision_id, str(uuid.uuid5(uuid.NAMESPACE_URL, full)))
+
+
+class RedirectTests(unittest.TestCase):
+    def test_a_redirect_denies_and_never_sends_the_key_elsewhere(self) -> None:
+        seen: List[Optional[str]] = []
+
+        class Elsewhere(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                seen.append(self.headers.get("Authorization"))
+                body = json.dumps({"approved": True}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_POST = do_GET
+
+            def log_message(self, *args: Any) -> None:
+                pass
+
+        class Redirect(Elsewhere):
+            def do_POST(self) -> None:
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        servers = [ThreadingHTTPServer(("127.0.0.1", 0), handler) for handler in (Elsewhere, Redirect)]
+        for server in servers:
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+        target = f"http://127.0.0.1:{servers[0].server_port}/elsewhere"
+        url = f"http://127.0.0.1:{servers[1].server_port}/governance/workflow/authorize"
+
+        with patch.dict(os.environ, environment(**dict(ENV, MEZMO_GOVERNANCE_URL=url)), clear=True):
+            output = hook.handle_event(hook_event("PreToolUse"))
+
+        self.assertEqual(seen, [])
+        self.assertEqual(decision_of(output), "deny")
+        self.assertIn("HTTP 302", reason_of(output))
+
+
+@patch.dict(os.environ, environment(**ENV), clear=True)
+class DeadlineBoundsTests(unittest.TestCase):
+    def test_a_timeout_that_is_not_finite_denies_without_asking(self) -> None:
+        for value in ("nan", "inf", "-inf"):
+            with self.subTest(value=value), patch.dict(os.environ, {"MEZMO_GOVERNANCE_TIMEOUT_SECONDS": value}):
+                http = FakeHttp([(200, {"approved": True})])
+                output = hook.handle_event(hook_event("PreToolUse"), http=http)
+                self.assertEqual(decision_of(output), "deny")
+                self.assertIn("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", reason_of(output))
+                self.assertEqual(http.calls, [])
+
+    def test_a_large_timeout_still_ends_before_the_hook_timeout(self) -> None:
+        # hooks.json gives the hook 600 seconds; the deny must come first.
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "3600"}):
+            http = FakeHttp([(200, {"approved": True})])
+            hook.handle_event(hook_event("PreToolUse"), http=http, clock=FakeClock())
+        self.assertLessEqual(http.calls[0][3], 590)
+
+
+class HookConfigTests(unittest.TestCase):
+    def test_a_pre_tool_hook_that_fails_blocks_the_tool(self) -> None:
+        # Without onFailure, Claude Code runs the tool when the hook crashes, times out
+        # or finds no python3.
+        config = json.loads((pathlib.Path(__file__).resolve().parents[1] / "hooks" / "hooks.json").read_text())
+        handlers = [handler for group in config["hooks"]["PreToolUse"] for handler in group["hooks"]]
+        self.assertTrue(handlers)
+        for handler in handlers:
+            self.assertEqual(handler.get("onFailure"), "block", handler)
+
+
+@patch.dict(os.environ, environment(**ENV), clear=True)
+class AuditLogTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Windows has no POSIX file modes")
+    def test_the_audit_log_is_private_to_its_owner(self) -> None:
+        # The log keeps up to 2000 characters of each tool result.
+        with tempfile.TemporaryDirectory() as tmp:
+            fresh = pathlib.Path(tmp) / "fresh" / "audit.jsonl"
+            older = pathlib.Path(tmp) / "older.jsonl"
+            older.write_text("", encoding="utf-8")
+            older.chmod(0o644)
+            for path in (fresh, older):
+                with self.subTest(log=path.name), patch.dict(os.environ, {"MEZMO_GOVERNANCE_AUDIT_LOG": str(path)}):
+                    self.assertIsNone(hook.handle_event(hook_event("PostToolUse")))
+                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertEqual(stat.S_IMODE(fresh.parent.stat().st_mode), 0o700)
+
+    def test_a_log_sent_to_dev_null_writes_without_a_warning(self) -> None:
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_AUDIT_LOG": os.devnull}), \
+                patch.object(sys, "stderr", StringIO()) as stderr:
+            self.assertIsNone(hook.handle_event(hook_event("PostToolUse")))
+        self.assertEqual(stderr.getvalue(), "")
+
+
+@patch.dict(os.environ, environment(**ENV), clear=True)
+class ExposedTokenTests(unittest.TestCase):
+    def test_a_url_that_is_not_https_denies_without_a_request(self) -> None:
+        for url in ("http://api.example.test/authorize", "ftp://api.example.test/authorize"):
+            with self.subTest(url=url), patch.dict(os.environ, {"MEZMO_GOVERNANCE_URL": url}), \
+                    patch.object(hook, "build_opener") as opener:
+                output = hook.handle_event(hook_event("PreToolUse"))
+                self.assertEqual(decision_of(output), "deny")
+                self.assertIn("must use https://", reason_of(output))
+                opener.assert_not_called()
+
+    def test_a_url_with_credentials_denies_without_quoting_them(self) -> None:
+        url = "https://user:url-secret@api.example.test/authorize"
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_URL": url}):
+            output = hook.handle_event(hook_event("PreToolUse"))
+        self.assertEqual(decision_of(output), "deny")
+        self.assertIn("must not hold a user name or password", reason_of(output))
+        self.assertNotIn("url-secret", reason_of(output))
+
+    def test_a_token_a_header_cannot_carry_denies_without_quoting_it(self) -> None:
+        for token in ("sts_te\nst-secret", "sts_t\u00e9st-secret"):
+            with self.subTest(token=token), patch.dict(os.environ, {"MEZMO_GOVERNANCE_ACCESS_KEY": token}):
+                output = hook.handle_event(hook_event("PreToolUse"))
+                self.assertEqual(decision_of(output), "deny")
+                self.assertIn("an HTTP header cannot carry", reason_of(output))
+                self.assertNotIn("secret", reason_of(output))
+
+
+@patch.dict(os.environ, environment(**ENV), clear=True)
+class HostileInputTests(unittest.TestCase):
+    def test_deeply_nested_input_denies_without_a_traceback(self) -> None:
+        depth = 200_000
+        event = json.dumps(hook_event("PreToolUse")).replace(
+            '"tool_input": {', '"tool_input": {"deep": ' + "[" * depth + "]" * depth + ", ", 1
+        )
+        script = pathlib.Path(hook.__file__).resolve()
+        result = subprocess.run(
+            [sys.executable, str(script)], input=event, capture_output=True, text=True,
+            env=dict(os.environ), timeout=60,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(decision_of(json.loads(result.stdout)), "deny")
+
+    def test_an_mcp_server_named_like_the_agent_denies_without_asking(self) -> None:
+        for name in ("mcp__claude_code__Bash", "mcp__Claude_Code__Bash"):
+            with self.subTest(name=name):
+                event = {**hook_event("PreToolUse"), "tool_name": name, "tool_input": {"command": "ls"}}
+                http = FakeHttp([(200, {"approved": True})])
+                output = hook.handle_event(event, http=http)
+                self.assertEqual(decision_of(output), "deny")
+                self.assertIn("would pass as a built-in tool", reason_of(output))
+                self.assertEqual(http.calls, [])
 
 
 if __name__ == "__main__":

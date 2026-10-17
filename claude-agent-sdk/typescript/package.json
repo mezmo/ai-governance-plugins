@@ -1,0 +1,7 @@
+{
+  "name": "mezmo-governance",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude Agent SDK hooks that gate tool calls through Mezmo Governance"
+}

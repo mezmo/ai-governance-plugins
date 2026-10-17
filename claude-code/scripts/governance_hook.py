@@ -21,10 +21,14 @@ repo, with these changes:
 
 from __future__ import annotations
 
+import hashlib
+import ipaddress
 import json
+import math
 import os
 import re
 import socket
+import stat
 import sys
 import time
 import uuid
@@ -34,11 +38,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 AGENT = "claude_code"
 DEFAULT_URL = "https://api.mezmo.com/governance/workflow/authorize"
 DEFAULT_TIMEOUT_SECONDS = 590.0
+# hooks.json gives the hook 600 seconds; deny before Claude Code stops it.
+MAX_TIMEOUT_SECONDS = 590.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_AUDIT_LOG = Path.home() / ".mezmo" / "governance-audit.jsonl"
 # One status file per session, which the plugin's status mod reads. The mod finds it by
@@ -192,13 +198,13 @@ def positive_seconds(environment_name: str, default: float) -> float:
         value = float(configured)
     except ValueError as error:
         raise HookContractError(f"{environment_name} must be a number") from error
-    if value <= 0:
-        raise HookContractError(f"{environment_name} must be greater than zero")
+    if not math.isfinite(value) or value <= 0:
+        raise HookContractError(f"{environment_name} must be a finite number greater than zero")
     return value
 
 
 def timeout_seconds() -> float:
-    return positive_seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS)
+    return min(positive_seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS), MAX_TIMEOUT_SECONDS)
 
 
 def poll_interval_seconds() -> float:
@@ -221,6 +227,13 @@ def session_state_path(session_id: str) -> Path:
     return state_dir() / (re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:128] + ".json")
 
 
+def server_namespace(name: str) -> str:
+    """Refuse a server or extension named like the agent: its tools would pass as built-ins."""
+    if name.lower() == AGENT:
+        raise HookContractError(f"a tool namespace named {name!r} would pass as a built-in tool")
+    return name
+
+
 def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
     canonical_name = required_string(event.get("tool_name"), "tool_name")
     raw_input = event.get("tool_input")
@@ -230,8 +243,28 @@ def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
         parts = canonical_name.split("__", 2)
         if len(parts) != 3 or not parts[1] or not parts[2]:
             raise HookContractError("MCP tool names must use mcp__<server>__<tool>")
-        return NormalizedToolCall(parts[1], parts[2], dict(raw_input))
+        return NormalizedToolCall(server_namespace(parts[1]), parts[2], dict(raw_input))
     return NormalizedToolCall(AGENT, canonical_name, dict(raw_input))
+
+
+def call_digest(namespace: str, name: str, arguments: Mapping[str, Any]) -> str:
+    """Hash the exact call, so an edited call never reuses an earlier decision."""
+    canonical = json.dumps([namespace, name, dict(arguments)], sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+# Mezmo answers HTTP 400 to a longer request_id. The decision_id hashes the full id,
+# so a cut id still gets its own decision.
+MAX_REQUEST_ID_CHARACTERS = 128
+
+
+def bounded_request_id(request_id: str) -> str:
+    if len(request_id) <= MAX_REQUEST_ID_CHARACTERS:
+        return request_id
+    # A hash of the whole head keeps two cut ids apart.
+    head, digest = request_id.rsplit("#", 1)
+    tail = "~" + hashlib.sha256(head.encode()).hexdigest()[:16] + "#" + digest
+    return head[: MAX_REQUEST_ID_CHARACTERS - len(tail)] + tail
 
 
 def call_identity(event: Mapping[str, Any]) -> CallIdentity:
@@ -242,8 +275,9 @@ def call_identity(event: Mapping[str, Any]) -> CallIdentity:
         request_id = f"{AGENT}:{session_id}:{turn_id.strip()}:{tool_use_id}"
     else:
         request_id = f"{AGENT}:{session_id}:{tool_use_id}"
+    request_id += "#" + call_digest(*normalize_tool_call(event))
     decision_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request_id))
-    return CallIdentity(decision_id, request_id, session_id)
+    return CallIdentity(decision_id, bounded_request_id(request_id), session_id)
 
 
 def origin(event: Mapping[str, Any]) -> Dict[str, Any]:
@@ -270,14 +304,44 @@ def approval_payload(event: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+class RefuseRedirect(HTTPRedirectHandler):
+    """Hand a 3xx back as an error, so the key never goes to another URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+def is_loopback(host: Optional[str]) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host or "").is_loopback
+    except ValueError:
+        return False
+
+
+def refuse_exposed_token(url: str, authorization: str) -> None:
+    """Refuse a request that would expose the token. The errors quote neither."""
+    parsed = urlparse(url)
+    if parsed.username is not None or parsed.password is not None:
+        raise HookContractError("the Mezmo Governance URL must not hold a user name or password")
+    if not (parsed.scheme == "https" or (parsed.scheme == "http" and is_loopback(parsed.hostname))):
+        raise HookContractError("the Mezmo Governance URL must use https://; http:// is allowed only to this machine")
+    # http.client quotes a header value it refuses, which would show the token.
+    if not (authorization.isascii() and authorization.isprintable()):
+        raise HookContractError("the Mezmo Governance token holds a character an HTTP header cannot carry")
+
+
 def http_json(method: str, url: str, payload: Optional[Mapping[str, Any]], timeout: float) -> Tuple[int, Dict[str, Any]]:
     body = None if payload is None else json.dumps(payload, separators=(",", ":")).encode()
-    headers = {"Authorization": authorization_header(), "Accept": "application/json"}
+    authorization = authorization_header()
+    refuse_exposed_token(url, authorization)
+    headers = {"Authorization": authorization, "Accept": "application/json"}
     if body is not None:
         headers["Content-Type"] = "application/json"
     request = Request(url, data=body, headers=headers, method=method)
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with build_opener(RefuseRedirect).open(request, timeout=timeout) as response:
             return response.status, parse_object(response.read())
     except HTTPError as error:
         try:
@@ -435,9 +499,18 @@ def result_has_known_error(value: Any) -> bool:
 
 
 def append_audit(record: Mapping[str, Any]) -> None:
+    # The log keeps tool results, so only its owner may read it.
     path = audit_log_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    def private(name: str, flags: int) -> int:
+        return os.open(name, flags, 0o600)
+
+    with open(path, "a", encoding="utf-8", opener=private) as handle:
+        # A log an older version wrote keeps its mode until narrowed here.
+        mode = os.fstat(handle.fileno()).st_mode
+        if os.name != "nt" and stat.S_ISREG(mode) and mode & 0o077:
+            os.fchmod(handle.fileno(), 0o600)
         handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
@@ -632,8 +705,14 @@ def main() -> int:
         if not isinstance(event, dict):
             raise HookContractError("hook input must be a JSON object")
         output = handle_event(event)
-    except (HookContractError, json.JSONDecodeError) as error:
-        print(str(error), file=sys.stderr)
+    except Exception as error:
+        # Any failure blocks, such as a RecursionError on deeply nested input.
+        reason = f"Mezmo Governance blocked this tool call: {str(error) or type(error).__name__}"
+        try:
+            print(json.dumps(deny_output(reason), separators=(",", ":")))
+            print(reason, file=sys.stderr)
+        except OSError:
+            pass
         return 2
     if output is not None:
         print(json.dumps(output, separators=(",", ":")))

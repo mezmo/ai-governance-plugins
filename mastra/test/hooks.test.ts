@@ -32,7 +32,7 @@ function withEnv(values: Record<string, string>, fn: () => Promise<void>) {
 
 const ENV = {
   MEZMO_GOVERNANCE_URL: URL,
-  MEZMO_GOVERNANCE_ACCESS_KEY: "sts_test",
+  MEZMO_GOVERNANCE_TOKEN: "sts_test",
   MEZMO_GOVERNANCE_TIMEOUT_SECONDS: "30",
   MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS: "1",
 };
@@ -55,23 +55,22 @@ test("session prefers threadId, then workflow runId, then agentId", () => {
     sessionFromHook({ workflow: { runId: "run-9" } }),
     "run-9",
   );
-  assert.equal(sessionFromHook({ agent: { agentId: "weather" } }), "weather");
-  assert.equal(sessionFromHook({}, { agentId: "from-meta" }), "from-meta");
-  assert.equal(sessionFromHook({}), "unknown");
+  // agentId names the agent, not the run: a per-process nonce keeps an
+  // approval from carrying over to the next run.
+  const fallback = sessionFromHook({ agent: { agentId: "weather" } });
+  assert.match(fallback, /^weather-[0-9a-f]{16}$/);
+  assert.equal(sessionFromHook({ agent: { agentId: "weather" } }), fallback);
+  const nonce = fallback.slice("weather-".length);
+  assert.equal(sessionFromHook({}, { agentId: "from-meta" }), `from-meta-${nonce}`);
+  assert.equal(sessionFromHook({}), `unknown-${nonce}`);
 });
 
 test("toolCallId prefers agent.toolCallId", () => {
   assert.equal(
-    toolCallIdFromHook(
-      { agent: { toolCallId: "call-1" } },
-      "weatherTool",
-      { location: "Austin" },
-    ),
+    toolCallIdFromHook({ agent: { toolCallId: "call-1" } }),
     "call-1",
   );
-  const derived = toolCallIdFromHook({}, "weatherTool", { location: "Austin" });
-  assert.equal(typeof derived, "string");
-  assert.notEqual(derived, "");
+  assert.equal(toolCallIdFromHook({}), "");
 });
 
 test(
@@ -147,11 +146,80 @@ test(
           output: { temperatureCelsius: 21 },
         });
         const line = JSON.parse((await readFile(path, "utf8")).trim());
-        const identity = callIdentity("thread-1", "call-1");
+        const identity = callIdentity("thread-1", "call-1", "weatherTool", { location: "Austin" });
         assert.equal(line.agent, AGENT);
         assert.equal(line.request_id, identity.requestId);
         assert.equal(line.tool_name, "weatherTool");
         assert.equal(line.status, "observed");
+      });
+    }),
+);
+
+test(
+  "afterToolCall previews a thrown Error by name and message",
+  () =>
+    withEnv(ENV, async () => {
+      const dir = await mkdtemp(join(tmpdir(), "mezmo-gov-"));
+      const path = join(dir, "audit.jsonl");
+      await withEnv({ MEZMO_GOVERNANCE_AUDIT_LOG: path }, async () => {
+        const hooks = createMezmoGovernanceHooks({
+          fetchImpl: async () => jsonResponse(200, { approved: true }),
+        });
+        await hooks.afterToolCall({
+          toolName: "weatherTool",
+          input: { location: "Austin" },
+          context: { agent: { threadId: "thread-1", toolCallId: "call-1" } },
+          error: new TypeError("station offline"),
+        });
+        const line = JSON.parse((await readFile(path, "utf8")).trim());
+        assert.equal(line.status, "failed");
+        assert.deepEqual(JSON.parse(line.result_preview), {
+          name: "TypeError",
+          message: "station offline",
+        });
+      });
+    }),
+);
+
+test(
+  "identical calls without toolCallId each get a fresh decision",
+  () =>
+    withEnv(ENV, async () => {
+      const decisionIds: string[] = [];
+      const hooks = createMezmoGovernanceHooks({
+        fetchImpl: async (_url, init) => {
+          decisionIds.push(JSON.parse(String(init?.body)).decision_id);
+          return jsonResponse(200, { approved: true });
+        },
+      });
+      const context = { workflow: { runId: "run-1" } };
+      for (let i = 0; i < 2; i += 1) {
+        await hooks.beforeToolCall({ toolName: "weatherTool", input: { location: "Austin" }, context });
+      }
+      assert.equal(decisionIds.length, 2);
+      assert.notEqual(decisionIds[0], decisionIds[1]);
+    }),
+);
+
+test(
+  "afterToolCall without toolCallId reuses the id its beforeToolCall sent",
+  () =>
+    withEnv(ENV, async () => {
+      const dir = await mkdtemp(join(tmpdir(), "mezmo-gov-"));
+      const path = join(dir, "audit.jsonl");
+      await withEnv({ MEZMO_GOVERNANCE_AUDIT_LOG: path }, async () => {
+        let requestId = "";
+        const hooks = createMezmoGovernanceHooks({
+          fetchImpl: async (_url, init) => {
+            requestId = JSON.parse(String(init?.body)).request_id;
+            return jsonResponse(200, { approved: true });
+          },
+        });
+        const hook = { toolName: "weatherTool", input: { location: "Austin" }, context: { workflow: { runId: "run-1" } } };
+        await hooks.beforeToolCall(hook);
+        await hooks.afterToolCall({ ...hook, output: { temperatureCelsius: 21 } });
+        const line = JSON.parse((await readFile(path, "utf8")).trim());
+        assert.equal(line.request_id, requestId);
       });
     }),
 );

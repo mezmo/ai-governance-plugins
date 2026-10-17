@@ -2,7 +2,10 @@ import json
 import pathlib
 import sys
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -95,6 +98,57 @@ class ResolveKeyTest(unittest.TestCase):
 
     def test_returns_none_when_nothing_given(self):
         self.assertIsNone(mc.resolve_key(None, {}))
+
+
+class HttpRequestTest(unittest.TestCase):
+    def test_a_redirect_is_returned_and_the_key_never_goes_elsewhere(self):
+        seen = []
+
+        class Elsewhere(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        class Redirect(Elsewhere):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        servers = [ThreadingHTTPServer(("127.0.0.1", 0), handler) for handler in (Elsewhere, Redirect)]
+        for server in servers:
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+        target = f"http://127.0.0.1:{servers[0].server_port}/elsewhere"
+        url = f"http://127.0.0.1:{servers[1].server_port}/check"
+
+        status, _ = mc.http_request("GET", url, {"Authorization": "Token secret"})
+
+        self.assertEqual(seen, [])
+        self.assertEqual(status, 302)
+
+    def test_a_request_that_would_expose_the_key_is_refused_without_quoting_it(self):
+        cases = (
+            ("http://api.example.test/check", "Token secret"),
+            ("ftp://api.example.test/check", "Token secret"),
+            ("https://user:secret@api.example.test/check", "Token key"),
+            ("https://api.example.test/check", "Token sec\nret"),
+            ("https://api.example.test/check", "Token s\u00e9cret"),
+        )
+        for url, authorization in cases:
+            with self.subTest(url=url, authorization=authorization), \
+                    patch.object(mc.urllib.request, "build_opener") as opener:
+                with self.assertRaises(OSError) as raised:
+                    mc.http_request("GET", url, {"Authorization": authorization})
+                self.assertNotIn("ret", str(raised.exception))
+                opener.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ def echo(text: str) -> str:
 async def interactive() -> int:
     middleware = MezmoGovernanceMiddleware(
         os.environ.get("MEZMO_GOVERNANCE_URL"),
-        access_key=os.environ.get("MEZMO_GOVERNANCE_ACCESS_KEY"),
+        access_key=os.environ.get("MEZMO_GOVERNANCE_TOKEN"),
         matched_pattern="*",
     )
     model = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")

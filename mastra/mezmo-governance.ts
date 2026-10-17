@@ -1,3 +1,5 @@
+import { randomBytes, randomUUID } from "node:crypto";
+
 import {
   AGENT,
   appendAudit,
@@ -8,7 +10,6 @@ import {
   resultFailed,
   resultPreview,
   splitToolName,
-  uuid5,
   type FetchLike,
 } from "./client.ts";
 
@@ -38,6 +39,10 @@ function stringField(record: Record<string, unknown> | undefined, key: string): 
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
+// agentId names the agent, not the run: a per-process nonce keeps an
+// approval from carrying over to the next run.
+const PROCESS_NONCE = randomBytes(8).toString("hex");
+
 export function sessionFromHook(
   context: unknown,
   metadata?: Record<string, unknown>,
@@ -45,26 +50,49 @@ export function sessionFromHook(
   const ctx = asRecord(context);
   const agent = asRecord(ctx?.agent);
   const workflow = asRecord(ctx?.workflow);
-  return (
-    stringField(agent, "threadId") ||
-    stringField(workflow, "runId") ||
-    stringField(agent, "agentId") ||
-    stringField(metadata, "agentId") ||
-    "unknown"
-  );
+  const run = stringField(agent, "threadId") || stringField(workflow, "runId");
+  if (run) {
+    return run;
+  }
+  const name = stringField(agent, "agentId") || stringField(metadata, "agentId") || "unknown";
+  return `${name}-${PROCESS_NONCE}`;
 }
 
-export function toolCallIdFromHook(
-  context: unknown,
-  toolName: string,
-  input: unknown,
-): string {
-  const agent = asRecord(asRecord(context)?.agent);
-  const fromAgent = stringField(agent, "toolCallId");
-  if (fromAgent) {
-    return fromAgent;
-  }
-  return uuid5(`${sessionFromHook(context)}:${toolName}:${JSON.stringify(input ?? {})}`);
+export function toolCallIdFromHook(context: unknown): string {
+  return stringField(asRecord(asRecord(context)?.agent), "toolCallId");
+}
+
+// Without a runtime toolCallId, every call gets a fresh random id, so two
+// identical calls never share one decision. afterToolCall receives the same
+// context object as beforeToolCall, which lets it find that id for the audit.
+function fallbackIds() {
+  const pending = new WeakMap<object, string>();
+  return {
+    before(hook: HookContext): string {
+      const fromAgent = toolCallIdFromHook(hook.context);
+      if (fromAgent) {
+        return fromAgent;
+      }
+      const id = randomUUID();
+      const key = asRecord(hook.context);
+      if (key) {
+        pending.set(key, id);
+      }
+      return id;
+    },
+    after(hook: HookContext): string {
+      const fromAgent = toolCallIdFromHook(hook.context);
+      if (fromAgent) {
+        return fromAgent;
+      }
+      const key = asRecord(hook.context);
+      const id = key && pending.get(key);
+      if (key) {
+        pending.delete(key);
+      }
+      return id || randomUUID();
+    },
+  };
 }
 
 function deny(message: string): BeforeHookResult {
@@ -72,12 +100,13 @@ function deny(message: string): BeforeHookResult {
 }
 
 export function createMezmoGovernanceHooks(options: { fetchImpl?: FetchLike } = {}) {
+  const ids = fallbackIds();
   return {
     async beforeToolCall(hook: HookContext): Promise<BeforeHookResult | undefined> {
       try {
         const payload = approvalPayload({
           sessionId: sessionFromHook(hook.context, hook.metadata),
-          toolCallId: toolCallIdFromHook(hook.context, hook.toolName, hook.input),
+          toolCallId: ids.before(hook),
           toolName: hook.toolName,
           arguments: argumentsObject(hook.input ?? {}),
           eventName: "beforeToolCall",
@@ -99,8 +128,8 @@ export function createMezmoGovernanceHooks(options: { fetchImpl?: FetchLike } = 
     async afterToolCall(hook: HookContext): Promise<void> {
       try {
         const sessionId = sessionFromHook(hook.context, hook.metadata);
-        const toolCallId = toolCallIdFromHook(hook.context, hook.toolName, hook.input);
-        const identity = callIdentity(sessionId, toolCallId);
+        const toolCallId = ids.after(hook);
+        const identity = callIdentity(sessionId, toolCallId, hook.toolName, hook.input ?? {});
         const tool = splitToolName(hook.toolName);
         await appendAudit({
           ts: new Date().toISOString(),

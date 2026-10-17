@@ -1,12 +1,17 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 export const AGENT = "opencode";
 const DEFAULT_TIMEOUT_SECONDS = 590;
+// Finish before a runtime's 600 second hook timeout, whatever is configured.
+export const MAX_TIMEOUT_SECONDS = 590;
 const DEFAULT_POLL_INTERVAL_SECONDS = 5;
+export const MIN_POLL_INTERVAL_SECONDS = 1;
 const MAX_RESULT_PREVIEW = 2000;
+const MAX_REQUEST_ID = 128;
 const NAMESPACE_URL = Buffer.from("6ba7b8119dad11d180b400c04fd430c8", "hex");
 
 export type Decision = { approved: boolean; reason: string | null };
@@ -18,6 +23,7 @@ export type FetchLike = (
     headers?: Record<string, string>;
     body?: string;
     signal?: AbortSignal;
+    redirect?: "manual";
   },
 ) => Promise<{
   status: number;
@@ -44,52 +50,91 @@ export function uuid5(name: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
+// Settings handed to the plugin directly (OpenCode plugin options), keyed by
+// the variable names. They win over the environment, which a background
+// service does not share with the shell that started the agent. Scoped to one
+// call, so two plugin instances with different options never mix.
+const scoped = new AsyncLocalStorage<Record<string, string>>();
+
+export function withSettings<T>(values: Record<string, unknown> | undefined, fn: () => T): T {
+  const settings: Record<string, string> = {};
+  for (const [name, value] of Object.entries(values ?? {})) {
+    if (name.startsWith("MEZMO_GOVERNANCE_") && (typeof value === "string" || typeof value === "number")) {
+      settings[name] = String(value);
+    }
+  }
+  return scoped.run(settings, fn);
+}
+
+function setting(name: string): string | undefined {
+  return scoped.getStore()?.[name] ?? process.env[name];
+}
+
 function requiredEnv(name: string): string {
-  const value = process.env[name]?.trim();
+  const value = setting(name)?.trim();
   if (!value) {
     throw new GovernanceError(`${name} is required`);
   }
   return value;
 }
 
+// The token travels in a header: plain http only to this machine, such as
+// tools/mock_governance.py.
+const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
+
 export function authorizeUrl(): string {
-  return requiredEnv("MEZMO_GOVERNANCE_URL");
+  const value = requiredEnv("MEZMO_GOVERNANCE_URL");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new GovernanceError("MEZMO_GOVERNANCE_URL is not a valid URL");
+  }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && LOOPBACK.has(url.hostname))) {
+    throw new GovernanceError("MEZMO_GOVERNANCE_URL must use https, or http to this machine");
+  }
+  return value;
 }
 
 export function authorizationHeader(): string {
-  const key = requiredEnv("MEZMO_GOVERNANCE_ACCESS_KEY");
-  if (/^(token|bearer) /i.test(key)) {
-    return key;
+  const key = requiredEnv("MEZMO_GOVERNANCE_TOKEN");
+  const scheme = /^(token|bearer) /i.exec(key)?.[0] ?? "";
+  // fetch quotes a header value it refuses, so no error may reach it.
+  if (!/^[\x21-\x7e]+$/.test(key.slice(scheme.length))) {
+    throw new GovernanceError("MEZMO_GOVERNANCE_TOKEN must be printable ASCII without spaces");
   }
-  return `Token ${key}`;
+  return scheme ? key : `Token ${key}`;
 }
 
 function positiveSeconds(name: string, fallback: number): number {
-  const configured = process.env[name];
+  const configured = setting(name);
   if (configured === undefined) {
     return fallback;
   }
   const parsed = Number(configured);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new GovernanceError(`${name} must be greater than zero`);
+    throw new GovernanceError(`${name} must be a finite number greater than zero`);
   }
   return parsed;
 }
 
 export function timeoutSeconds(): number {
-  return positiveSeconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS);
+  return Math.min(
+    positiveSeconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
+    MAX_TIMEOUT_SECONDS,
+  );
 }
 
 export function pollIntervalSeconds(): number {
-  return positiveSeconds(
-    "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
-    DEFAULT_POLL_INTERVAL_SECONDS,
+  return Math.max(
+    positiveSeconds("MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS),
+    MIN_POLL_INTERVAL_SECONDS,
   );
 }
 
 export function auditLogPath(): string {
   return (
-    process.env.MEZMO_GOVERNANCE_AUDIT_LOG?.trim() ||
+    setting("MEZMO_GOVERNANCE_AUDIT_LOG")?.trim() ||
     join(homedir(), ".mezmo", "governance-audit.jsonl")
   );
 }
@@ -118,12 +163,37 @@ export function argumentsObject(input: unknown): Record<string, unknown> {
   throw new GovernanceError("tool arguments must be a JSON object");
 }
 
-export function callIdentity(sessionId: string, toolCallId: string) {
-  const requestId = `${AGENT}:${sessionId}:${toolCallId}`;
+// JSON with sorted keys, so one call always hashes the same.
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) =>
+    item && typeof item === "object" && !Array.isArray(item)
+      ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]]))
+      : item,
+  );
+}
+
+// Hash the exact call, so an edited call never reuses an earlier decision.
+export function callDigest(toolName: string, args: unknown): string {
+  const tool = splitToolName(toolName);
+  return createHash("sha256")
+    .update(canonicalJson([tool.namespace, tool.name, args]))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+export function callIdentity(sessionId: string, toolCallId: string, toolName: string, args: unknown) {
+  const digest = callDigest(toolName, args);
+  const fullId = `${AGENT}:${sessionId}:${toolCallId}#${digest}`;
+  // Mezmo answers HTTP 400 to a longer request_id. The decision id hashes the full id,
+  // so a cut id still gets its own decision.
+  // A hash of the whole head keeps two cut ids apart.
+  const head = fullId.slice(0, -digest.length - 1);
+  const tail = `~${createHash("sha256").update(head).digest("hex").slice(0, 16)}#${digest}`;
+  const requestId = fullId.length <= MAX_REQUEST_ID ? fullId : head.slice(0, MAX_REQUEST_ID - tail.length) + tail;
   return {
     sessionId,
     requestId,
-    decisionId: uuid5(requestId),
+    decisionId: uuid5(fullId),
   };
 }
 
@@ -134,7 +204,7 @@ export function approvalPayload(params: {
   arguments: Record<string, unknown>;
   eventName?: string;
 }) {
-  const identity = callIdentity(params.sessionId, params.toolCallId);
+  const identity = callIdentity(params.sessionId, params.toolCallId, params.toolName, params.arguments);
   const tool = splitToolName(params.toolName);
   return {
     version: 1,
@@ -194,15 +264,20 @@ export async function httpJson(
       headers,
       body: payload === null ? undefined : JSON.stringify(payload),
       signal: controller.signal,
+      // A 3xx comes back as itself and denies, so the token never goes
+      // to another URL.
+      redirect: "manual",
     });
     return { status: response.status, body: await parseObject(response) };
   } catch (error) {
     if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
       throw new TimeoutError("Mezmo Governance request timed out");
     }
-    throw new GovernanceError(
-      `Mezmo Governance is unavailable: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    if (error instanceof GovernanceError) {
+      throw error;
+    }
+    // A fetch error can quote the token or a user:pass URL: say nothing of it.
+    throw new GovernanceError("Mezmo Governance is unavailable");
   } finally {
     clearTimeout(timer);
   }
@@ -215,12 +290,43 @@ export class TimeoutError extends Error {
   }
 }
 
+const MAX_ERROR_DETAIL = 200;
+
+// Mezmo's own error text on one bounded line, or "" when there is none.
+function errorDetail(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.replace(/[\p{C}\p{Z}]+/gu, " ").trim().slice(0, MAX_ERROR_DETAIL);
+}
+
+// Name the status and, on a 4xx, Mezmo's code and message; nothing else.
+function httpFailure(status: number, body: Record<string, unknown>, when = ""): string {
+  const detailed = status >= 400 && status < 500;
+  const code = detailed ? errorDetail(body.code) : "";
+  const message = detailed ? errorDetail(body.message) : "";
+  return (
+    `Mezmo Governance returned HTTP ${status}` +
+    (code ? ` ${code}` : "") +
+    when +
+    (message ? `: ${message}` : "")
+  );
+}
+
 function remainingMs(deadline: number, now: Clock): number {
   const leftover = deadline - now();
   if (leftover <= 0) {
     throw new GovernanceError("Mezmo Governance: approval still pending");
   }
   return leftover;
+}
+
+// A response that lands after the deadline does not count, even an approval:
+// the caller may already have given up on this call.
+function inTime(deadline: number, now: Clock) {
+  if (now() >= deadline) {
+    throw new GovernanceError("Mezmo Governance answered after the deadline");
+  }
 }
 
 function decisionFromPost(body: Record<string, unknown>): Decision {
@@ -275,13 +381,14 @@ async function pollDecision(
       }
       throw error;
     }
-    // 207: a person hasn't decided yet. 404: the decision isn't visible yet.
-    if (status === 207 || status === 404) {
+    inTime(deadline, now);
+    // 404: not recorded yet. 207: Mezmo still waits for a person.
+    if (status === 404 || status === 207) {
       await sleep(Math.min(intervalMs, leftover));
       continue;
     }
     if (status !== 200) {
-      throw new GovernanceError(`Mezmo Governance returned HTTP ${status} while polling`);
+      throw new GovernanceError(httpFailure(status, body, " while polling"));
     }
     const decided = decisionFromStatus(body);
     if (decided) {
@@ -321,19 +428,22 @@ export async function authorize(
     }
     throw error;
   }
-  // 207 means a person must decide; its "approved": false is not a decision yet.
+  inTime(deadline, now);
+  // 207: sent for approval; its approved: false is not the decision.
   if (status === 207 || status === 409) {
     return pollDecision(String(payload.decision_id), deadline, fetchImpl, now, sleep);
   }
   if (status !== 200) {
-    throw new GovernanceError(`Mezmo Governance returned HTTP ${status}`);
+    throw new GovernanceError(httpFailure(status, body));
   }
   return decisionFromPost(body);
 }
 
 export function resultPreview(value: unknown): string {
+  // JSON.stringify gives "{}" for an Error: its fields are not enumerable.
+  const shown = value instanceof Error ? { name: value.name, message: value.message } : value;
   try {
-    return JSON.stringify(value).slice(0, MAX_RESULT_PREVIEW);
+    return JSON.stringify(shown).slice(0, MAX_RESULT_PREVIEW);
   } catch {
     return String(value).slice(0, MAX_RESULT_PREVIEW);
   }
@@ -347,11 +457,22 @@ export function resultFailed(value: unknown): boolean {
   if (record.isError === true || record.is_error === true) {
     return true;
   }
-  return typeof record.exit_code === "number" && record.exit_code !== 0;
+  const exitCode = record.exit_code ?? record.exitCode;
+  return typeof exitCode === "number" && exitCode !== 0;
 }
 
+// The log holds tool output: only its owner may read it.
 export async function appendAudit(record: Record<string, unknown>): Promise<void> {
   const path = auditLogPath();
-  await mkdir(dirname(path), { recursive: true });
-  await appendFile(path, `${JSON.stringify(record)}\n`, "utf8");
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const handle = await open(path, "a", 0o600);
+  try {
+    // An older version created the log 0644.
+    if ((await handle.stat()).mode & 0o077) {
+      await handle.chmod(0o600);
+    }
+    await handle.appendFile(`${JSON.stringify(record)}\n`, "utf8");
+  } finally {
+    await handle.close();
+  }
 }

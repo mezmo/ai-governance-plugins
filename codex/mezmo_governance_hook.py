@@ -3,28 +3,35 @@
 
 from __future__ import annotations
 
+import hashlib
+import ipaddress
 import json
+import math
 import os
 import socket
+import stat
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 AGENT = "codex"
 DEFAULT_TIMEOUT_SECONDS = 590.0
+MAX_TIMEOUT_SECONDS = 590.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+MIN_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_AUDIT_LOG = Path.home() / ".mezmo" / "governance-audit.jsonl"
 MAX_RESULT_PREVIEW_CHARACTERS = 2_000
 MCP_TOOL_PREFIX = "mcp__"
 
-HttpJson = Callable[[str, str, Mapping[str, Any] | None, float], tuple[int, dict[str, Any]]]
+HttpJson = Callable[[str, str, Optional[Mapping[str, Any]], float], tuple[int, dict[str, Any]]]
 Sleeper = Callable[[float], None]
 Clock = Callable[[], float]
 
@@ -54,12 +61,6 @@ def required_string(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise HookContractError(f"{field} must be a non-empty string")
     return value.strip()
-
-
-def as_object(value: Any, field: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise HookContractError(f"{field} must be a JSON object")
-    return dict(value)
 
 
 def parse_object(raw: bytes) -> dict[str, Any]:
@@ -92,8 +93,8 @@ def status_url(decision_id: str, base: str | None = None) -> str:
 
 def authorization_header() -> str:
     key = required_string(
-        os.environ.get("MEZMO_GOVERNANCE_ACCESS_KEY"),
-        "MEZMO_GOVERNANCE_ACCESS_KEY",
+        os.environ.get("MEZMO_GOVERNANCE_TOKEN"),
+        "MEZMO_GOVERNANCE_TOKEN",
     )
     if key.lower().startswith("token ") or key.lower().startswith("bearer "):
         return key
@@ -105,25 +106,31 @@ def positive_seconds(environment_name: str, default: float) -> float:
     if configured is None:
         return default
     try:
-        timeout = float(configured)
+        seconds = float(configured)
     except ValueError as error:
         raise HookContractError(f"{environment_name} must be a number") from error
-    if timeout <= 0:
-        raise HookContractError(f"{environment_name} must be greater than zero")
-    return timeout
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise HookContractError(
+            f"{environment_name} must be a finite number greater than zero"
+        )
+    return seconds
 
 
 def timeout_seconds() -> float:
-    return positive_seconds(
-        "MEZMO_GOVERNANCE_TIMEOUT_SECONDS",
-        DEFAULT_TIMEOUT_SECONDS,
+    # The runtime kills the hook at its 600 second timeout; finish first.
+    return min(
+        positive_seconds("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", DEFAULT_TIMEOUT_SECONDS),
+        MAX_TIMEOUT_SECONDS,
     )
 
 
 def poll_interval_seconds() -> float:
-    return positive_seconds(
-        "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
-        DEFAULT_POLL_INTERVAL_SECONDS,
+    return max(
+        positive_seconds(
+            "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
+            DEFAULT_POLL_INTERVAL_SECONDS,
+        ),
+        MIN_POLL_INTERVAL_SECONDS,
     )
 
 
@@ -132,6 +139,15 @@ def audit_log_path() -> Path:
     if configured:
         return Path(configured).expanduser()
     return DEFAULT_AUDIT_LOG
+
+
+def server_namespace(name: str) -> str:
+    """Refuse a server or extension named like the agent: its tools would pass as built-ins."""
+    if name.lower() == AGENT:
+        raise HookContractError(
+            f"a tool namespace named {name!r} would pass as a built-in tool"
+        )
+    return name
 
 
 def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
@@ -144,12 +160,38 @@ def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
         parts = canonical_name.split("__", 2)
         if len(parts) != 3 or not parts[1] or not parts[2]:
             raise HookContractError("MCP tool names must use mcp__<server>__<tool>")
-        return NormalizedToolCall(parts[1], parts[2], dict(raw_input))
+        return NormalizedToolCall(
+            server_namespace(parts[1]), parts[2], dict(raw_input)
+        )
 
     return NormalizedToolCall(AGENT, canonical_name, dict(raw_input))
 
 
-def call_identity(event: Mapping[str, Any]) -> CallIdentity:
+def call_digest(namespace: str, name: str, arguments: Mapping[str, Any]) -> str:
+    """Hash the exact call, so an edited call never reuses an earlier decision."""
+    canonical = json.dumps(
+        [namespace, name, dict(arguments)], sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+# Mezmo answers HTTP 400 to a longer request_id. The decision_id hashes the full id,
+# so a cut id still gets its own decision.
+MAX_REQUEST_ID_CHARACTERS = 128
+
+
+def bounded_request_id(request_id: str) -> str:
+    if len(request_id) <= MAX_REQUEST_ID_CHARACTERS:
+        return request_id
+    # A hash of the whole head keeps two cut ids apart.
+    head, digest = request_id.rsplit("#", 1)
+    tail = "~" + hashlib.sha256(head.encode()).hexdigest()[:16] + "#" + digest
+    return head[: MAX_REQUEST_ID_CHARACTERS - len(tail)] + tail
+
+
+def call_identity(
+    event: Mapping[str, Any], tool_call: NormalizedToolCall
+) -> CallIdentity:
     session_id = required_string(event.get("session_id"), "session_id")
     tool_use_id = required_string(event.get("tool_use_id"), "tool_use_id")
     turn_id = event.get("turn_id")
@@ -157,8 +199,9 @@ def call_identity(event: Mapping[str, Any]) -> CallIdentity:
         request_id = f"{AGENT}:{session_id}:{turn_id.strip()}:{tool_use_id}"
     else:
         request_id = f"{AGENT}:{session_id}:{tool_use_id}"
+    request_id += "#" + call_digest(*tool_call)
     decision_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request_id))
-    return CallIdentity(decision_id, request_id, session_id)
+    return CallIdentity(decision_id, bounded_request_id(request_id), session_id)
 
 
 def origin(event: Mapping[str, Any]) -> dict[str, Any]:
@@ -170,7 +213,7 @@ def origin(event: Mapping[str, Any]) -> dict[str, Any]:
 
 def approval_payload(event: Mapping[str, Any]) -> dict[str, Any]:
     tool_call = normalize_tool_call(event)
-    identity = call_identity(event)
+    identity = call_identity(event, tool_call)
     return {
         "version": 1,
         "decision_id": identity.decision_id,
@@ -191,6 +234,44 @@ def approval_payload(event: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+class RefuseRedirect(HTTPRedirectHandler):
+    """Hand a 3xx back as an error, so the token never goes to another URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+def is_loopback(host: str | None) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host or "").is_loopback
+    except ValueError:
+        return False
+
+
+def refuse_exposed_token(url: str, authorization: str) -> None:
+    """Refuse a request that would expose the token. The errors quote neither."""
+    parsed = urlparse(url)
+    if parsed.username is not None or parsed.password is not None:
+        raise HookContractError(
+            "the Mezmo Governance URL must not hold a user name or password"
+        )
+    if not (
+        parsed.scheme == "https"
+        or (parsed.scheme == "http" and is_loopback(parsed.hostname))
+    ):
+        raise HookContractError(
+            "the Mezmo Governance URL must use https://; "
+            "http:// is allowed only to this machine"
+        )
+    # http.client quotes a header value it refuses, which would show the token.
+    if not (authorization.isascii() and authorization.isprintable()):
+        raise HookContractError(
+            "the Mezmo Governance token holds a character an HTTP header cannot carry"
+        )
+
+
 def http_json(
     method: str,
     url: str,
@@ -202,15 +283,17 @@ def http_json(
         if payload is None
         else json.dumps(payload, separators=(",", ":")).encode()
     )
+    authorization = authorization_header()
+    refuse_exposed_token(url, authorization)
     headers = {
-        "Authorization": authorization_header(),
+        "Authorization": authorization,
         "Accept": "application/json",
     }
     if body is not None:
         headers["Content-Type"] = "application/json"
     request = Request(url, data=body, headers=headers, method=method)
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with build_opener(RefuseRedirect).open(request, timeout=timeout) as response:
             return response.status, parse_object(response.read())
     except HTTPError as error:
         try:
@@ -229,6 +312,32 @@ def http_json(
         raise HookContractError(f"Mezmo Governance is unavailable: {error}") from error
     except socket.timeout as error:
         raise TimeoutError(str(error)) from error
+
+
+MAX_ERROR_DETAIL_CHARACTERS = 200
+
+
+def error_detail(value: Any) -> str:
+    """Mezmo's own error text on one bounded line, or "" when there is none."""
+    if not isinstance(value, str):
+        return ""
+    printable = "".join(ch if ch.isprintable() else " " for ch in value)
+    return " ".join(printable.split())[:MAX_ERROR_DETAIL_CHARACTERS]
+
+
+def http_failure(status: int, body: Mapping[str, Any], when: str = "") -> str:
+    """Name the status and, on a 4xx, Mezmo's code and message; nothing else."""
+    code = message = ""
+    if 400 <= status < 500:
+        code = error_detail(body.get("code"))
+        message = error_detail(body.get("message"))
+    text = f"Mezmo Governance returned HTTP {status}"
+    if code:
+        text += f" {code}"
+    text += when
+    if message:
+        text += f": {message}"
+    return text
 
 
 def remaining_seconds(deadline: float, clock: Clock) -> float:
@@ -282,19 +391,58 @@ def poll_decision(
             raise HookContractError(
                 f"Mezmo Governance is unavailable: {error}"
             ) from error
-        # 207: a person hasn't decided yet. 404: the decision isn't visible yet.
-        if status in (207, 404):
+        # An answer that arrives after the deadline is too late to act on.
+        leftover = remaining_seconds(deadline, clock)
+        # 404: not recorded yet. 207: Mezmo still waits for a person.
+        if status in (404, 207):
             sleep(min(interval, leftover))
             continue
         if status != 200:
-            raise HookContractError(
-                f"Mezmo Governance returned HTTP {status} while polling"
-            )
+            raise HookContractError(http_failure(status, body, " while polling"))
         decided = decision_from_status_body(body)
         if decided is not None:
             return decided
-        leftover = remaining_seconds(deadline, clock)
         sleep(min(interval, leftover))
+
+
+def deadline_watchdog(seconds: float) -> Callable[[], None]:
+    """Deny and exit at the deadline, even while a socket read is still alive.
+
+    The opener's timeout bounds each socket wait, not the whole answer, so a
+    server that sends one byte at a time could keep the hook past the
+    runtime's own hook timeout, and several runtimes then run the tool.
+    """
+    lock = threading.Lock()
+    finished = False
+
+    def fire() -> None:
+        with lock:
+            if finished:
+                return
+            reason = "Mezmo Governance: approval still pending"
+            try:
+                sys.stdout.write(
+                    json.dumps(deny_output(reason), separators=(",", ":")) + "\n"
+                )
+                sys.stdout.flush()
+                sys.stderr.write(reason + "\n")
+                sys.stderr.flush()
+            finally:
+                # Every supported runtime blocks the tool on exit code 2, so
+                # exit with it even when stdout is gone.
+                os._exit(2)
+
+    timer = threading.Timer(seconds, fire)
+    timer.daemon = True
+    timer.start()
+
+    def stop() -> None:
+        nonlocal finished
+        with lock:
+            finished = True
+        timer.cancel()
+
+    return stop
 
 
 def authorize(
@@ -303,20 +451,31 @@ def authorize(
     clock: Clock = time.monotonic,
     sleep: Sleeper = time.sleep,
 ) -> Decision:
-    deadline = clock() + timeout_seconds()
+    budget = timeout_seconds()
+    deadline = clock() + budget
     url = authorize_url()
-    leftover = remaining_seconds(deadline, clock)
+    stop_watchdog = deadline_watchdog(budget)
     try:
-        status, body = http("POST", url, payload, leftover)
-    except TimeoutError:
-        return poll_decision(str(payload["decision_id"]), deadline, http, clock, sleep)
+        leftover = remaining_seconds(deadline, clock)
+        try:
+            status, body = http("POST", url, payload, leftover)
+        except TimeoutError:
+            return poll_decision(
+                str(payload["decision_id"]), deadline, http, clock, sleep
+            )
 
-    # 207 means a person must decide; its "approved": false is not a decision yet.
-    if status in (207, 409):
-        return poll_decision(str(payload["decision_id"]), deadline, http, clock, sleep)
-    if status != 200:
-        raise HookContractError(f"Mezmo Governance returned HTTP {status}")
-    return decision_from_post_body(body)
+        # An answer that arrives after the deadline is too late to act on.
+        remaining_seconds(deadline, clock)
+        # 207: sent for approval; its approved: false is not the decision.
+        if status in (207, 409):
+            return poll_decision(
+                str(payload["decision_id"]), deadline, http, clock, sleep
+            )
+        if status != 200:
+            raise HookContractError(http_failure(status, body))
+        return decision_from_post_body(body)
+    finally:
+        stop_watchdog()
 
 
 def result_preview(value: Any) -> str:
@@ -328,20 +487,34 @@ def result_preview(value: Any) -> str:
 
 
 def result_has_known_error(value: Any) -> bool:
+    if isinstance(value, str):
+        # Some runtimes send the tool result as JSON text.
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return False
     if not isinstance(value, dict):
         return False
     if value.get("isError") is True or value.get("is_error") is True:
         return True
-    exit_code = value.get("exit_code")
+    exit_code = value.get("exit_code", value.get("exitCode"))
     return isinstance(exit_code, int) and exit_code != 0
 
 
 def append_audit(record: Mapping[str, Any]) -> None:
+    # The log keeps tool results, so only its owner may read it.
     path = audit_log_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, separators=(",", ":"))
-                     + "\n")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    def private(name: str, flags: int) -> int:
+        return os.open(name, flags, 0o600)
+
+    with open(path, "a", encoding="utf-8", opener=private) as handle:
+        # A log an older version wrote keeps its mode until narrowed here.
+        mode = os.fstat(handle.fileno()).st_mode
+        if os.name != "nt" and stat.S_ISREG(mode) and mode & 0o077:
+            os.fchmod(handle.fileno(), 0o600)
+        handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
 def handle_pre_tool_use(
@@ -359,7 +532,7 @@ def handle_pre_tool_use(
 
 def handle_post_tool_use(event: Mapping[str, Any]) -> None:
     tool_call = normalize_tool_call(event)
-    identity = call_identity(event)
+    identity = call_identity(event, tool_call)
     response = event.get("tool_response")
     append_audit(
         {
@@ -418,8 +591,14 @@ def main() -> int:
         if not isinstance(event, dict):
             raise HookContractError("hook input must be a JSON object")
         output = handle_event(event)
-    except (HookContractError, json.JSONDecodeError) as error:
-        print(str(error), file=sys.stderr)
+    except Exception as error:
+        # Any failure blocks, such as a RecursionError on deeply nested input.
+        reason = f"Mezmo Governance blocked this tool call: {str(error) or type(error).__name__}"
+        try:
+            print(json.dumps(deny_output(reason), separators=(",", ":")))
+            print(reason, file=sys.stderr)
+        except OSError:
+            pass
         return 2
 
     if output is not None:

@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import {
   AGENT,
   appendAudit,
@@ -5,7 +7,6 @@ import {
   argumentsObject,
   authorize,
   callIdentity,
-  resultFailed,
   resultPreview,
   splitToolName,
 } from "./client.ts";
@@ -15,7 +16,7 @@ type SessionManager = {
 };
 
 type Ui = {
-  setStatus?: (id: string, text: string) => void;
+  setStatus?: (id: string, text: string | undefined) => void;
 };
 
 type ToolCallEvent = {
@@ -28,13 +29,14 @@ type ToolResultEvent = {
   toolName: string;
   toolCallId: string;
   input?: unknown;
-  result?: unknown;
+  content?: unknown;
+  structuredContent?: unknown;
   isError?: boolean;
 };
 
 type ExtensionContext = {
   sessionManager: SessionManager;
-  ui: Ui;
+  ui?: Ui;
 };
 
 type ExtensionAPI = {
@@ -42,23 +44,35 @@ type ExtensionAPI = {
   on(event: "tool_result", handler: (event: ToolResultEvent, ctx: ExtensionContext) => Promise<unknown> | unknown): void;
 };
 
+// Without a Pi session id, one random id per process: an approval never
+// carries over to the next run.
+const EPHEMERAL = `ephemeral-${randomBytes(8).toString("hex")}`;
+
 function sessionId(ctx: ExtensionContext): string {
   const value = ctx.sessionManager.getSessionId?.();
   if (typeof value === "string" && value.trim()) {
     return value.trim();
   }
-  return "ephemeral";
+  return EPHEMERAL;
 }
 
+// Pi runs tool_call handlers in load order, and a handler may mutate
+// event.input in place. Remember what Mezmo approved so tool_result can flag a
+// call whose arguments a later extension changed.
+const MAX_PENDING = 1000;
+
 export default function mezmoGovernance(pi: ExtensionAPI) {
+  const approved = new Map<string, string>();
+
   pi.on("tool_call", async (event, ctx) => {
-    ctx.ui.setStatus?.("mezmo-governance", "Checking Mezmo Governance");
+    ctx.ui?.setStatus?.("mezmo-governance", "Checking Mezmo Governance");
     try {
+      const args = argumentsObject(event.input);
       const payload = approvalPayload({
         sessionId: sessionId(ctx),
         toolCallId: event.toolCallId,
         toolName: event.toolName,
-        arguments: argumentsObject(event.input),
+        arguments: args,
         eventName: "tool_call",
       });
       const decision = await authorize(payload);
@@ -69,6 +83,10 @@ export default function mezmoGovernance(pi: ExtensionAPI) {
           reason: `Mezmo Governance denied this exact tool call: ${detail}`,
         };
       }
+      if (approved.size >= MAX_PENDING) {
+        approved.delete(approved.keys().next().value as string);
+      }
+      approved.set(event.toolCallId, JSON.stringify(args));
       return undefined;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -77,14 +95,19 @@ export default function mezmoGovernance(pi: ExtensionAPI) {
         reason: `Mezmo Governance could not authorize this exact tool call, so Pi blocked it: ${message}`,
       };
     } finally {
-      ctx.ui.setStatus?.("mezmo-governance", "");
+      ctx.ui?.setStatus?.("mezmo-governance", undefined);
     }
   });
 
   pi.on("tool_result", async (event, ctx) => {
     try {
-      const identity = callIdentity(sessionId(ctx), event.toolCallId);
       const tool = splitToolName(event.toolName);
+      const approvedArgs = approved.get(event.toolCallId);
+      approved.delete(event.toolCallId);
+      const changed = approvedArgs !== undefined && approvedArgs !== JSON.stringify(event.input ?? {});
+      // The identity covers the arguments: use the approved ones to join the decision.
+      const args = approvedArgs !== undefined ? JSON.parse(approvedArgs) : (event.input ?? {});
+      const identity = callIdentity(sessionId(ctx), event.toolCallId, event.toolName, args);
       await appendAudit({
         ts: new Date().toISOString(),
         agent: AGENT,
@@ -92,8 +115,9 @@ export default function mezmoGovernance(pi: ExtensionAPI) {
         request_id: identity.requestId,
         tool_namespace: tool.namespace,
         tool_name: tool.name,
-        status: event.isError || resultFailed(event.result) ? "failed" : "observed",
-        result_preview: resultPreview(event.result),
+        status: event.isError ? "failed" : "observed",
+        result_preview: resultPreview(event.structuredContent ?? event.content ?? null),
+        ...(changed ? { arguments_changed: true } : {}),
       });
     } catch (error) {
       console.error(

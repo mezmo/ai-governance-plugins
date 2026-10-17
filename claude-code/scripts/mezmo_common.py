@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import pathlib
@@ -93,6 +94,34 @@ def resolve_key(explicit: Optional[str], environ: Mapping[str, str] = os.environ
     return explicit or environ.get(KEY_ENV_VAR) or None
 
 
+class RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """Hand a 3xx back as the answer, so a key never goes to another URL."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None
+
+
+def is_loopback(host: Optional[str]) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host or "").is_loopback
+    except ValueError:
+        return False
+
+
+def refuse_exposed_key(url: str, headers: Mapping[str, str]) -> None:
+    """Refuse a request that would expose a key. The errors quote neither the URL nor the key."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.username is not None or parsed.password is not None:
+        raise OSError("the URL must not hold a user name or password")
+    if not (parsed.scheme == "https" or (parsed.scheme == "http" and is_loopback(parsed.hostname))):
+        raise OSError("the URL must use https://; http:// is allowed only to this machine")
+    # http.client quotes a header value it refuses, which would show the key.
+    if not all(value.isascii() and value.isprintable() for value in headers.values()):
+        raise OSError("a key holds a character an HTTP header cannot carry")
+
+
 def http_request(
     method: str,
     url: str,
@@ -101,9 +130,10 @@ def http_request(
     timeout: float = 15.0,
 ) -> Tuple[int, str]:
     """Send a request and return (status, body). Raises OSError on network failures."""
+    refuse_exposed_key(url, headers)
     request = urllib.request.Request(url, data=body, headers=dict(headers), method=method)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.build_opener(RefuseRedirect).open(request, timeout=timeout) as response:
             return response.status, response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as err:
         return err.code, err.read().decode("utf-8", "replace")
