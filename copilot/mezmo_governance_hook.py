@@ -551,8 +551,14 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(event, dict):
             raise HookContractError("hook input must be a JSON object")
         output = handle_event(event, args[0])
-    except (HookContractError, json.JSONDecodeError) as error:
-        print(str(error), file=sys.stderr)
+    except Exception as error:
+        # Any failure blocks, such as a RecursionError on deeply nested input.
+        reason = f"Mezmo Governance blocked this tool call: {str(error) or type(error).__name__}"
+        try:
+            print(json.dumps(deny_output(reason), separators=(",", ":")))
+            print(reason, file=sys.stderr)
+        except OSError:
+            pass
         return 2
 
     if output is not None:

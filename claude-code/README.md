@@ -105,7 +105,8 @@ earlier decision for an id it has seen.
 ## What the hook sends
 
 MCP names `mcp__<server>__<tool>` split into that server and tool. Built-in tools
-(`Bash`, `Edit`, `Write`, `Read`) use namespace `claude_code`.
+(`Bash`, `Edit`, `Write`, `Read`) use namespace `claude_code`. The hook denies a
+call from an MCP server named `claude_code`: its tools would pass as built-ins.
 
 `request_id` is `claude_code:<session_id>:<tool_use_id>#<digest>`, or
 `claude_code:<session_id>:<turn_id>:<tool_use_id>#<digest>` when `turn_id` is

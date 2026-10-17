@@ -82,7 +82,8 @@ with `shell` or `analyze`.
 Other extensions name tools `<extension>__<tool>`. The hook splits at the first
 `__`, so `apps__delete_app` reaches Mezmo as namespace `apps`, tool
 `delete_app` (seen live). An extension key that itself contains `__` splits in
-the wrong place.
+the wrong place. The hook denies a call from an extension named `goose`: its
+tools would pass as built-ins.
 
 The hook denies Code Mode (the `code_execution` extension) scripts itself,
 without asking Mezmo. The tool calls a script makes go to the extensions

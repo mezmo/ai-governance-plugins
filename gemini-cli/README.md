@@ -107,7 +107,8 @@ Gemini CLI names an MCP tool `mcp_<server>_<tool>`. Server names can contain
 the namespace and tool name from `mcp_context.server_name` and
 `mcp_context.tool_name`. These fields are in the Gemini CLI source, not in the
 docs: this is not verified. Without `mcp_context`, an MCP call goes to Mezmo
-with namespace `gemini_cli` and the full `mcp_...` name.
+with namespace `gemini_cli` and the full `mcp_...` name. The hook denies a call
+from an MCP server named `gemini_cli`: its tools would pass as built-ins.
 
 ## Windows
 

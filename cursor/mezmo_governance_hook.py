@@ -139,6 +139,15 @@ def audit_log_path() -> Path:
     return DEFAULT_AUDIT_LOG
 
 
+def server_namespace(name: str) -> str:
+    """Refuse a server or extension named like the agent: its tools would pass as built-ins."""
+    if name.lower() == AGENT:
+        raise HookContractError(
+            f"a tool namespace named {name!r} would pass as a built-in tool"
+        )
+    return name
+
+
 GATE_EVENTS = {"preToolUse", "beforeShellExecution", "beforeMCPExecution"}
 OBSERVE_EVENTS = {
     "postToolUse",
@@ -177,22 +186,23 @@ def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
     canonical_name = required_string(event.get("tool_name"), "tool_name")
     arguments = parse_arguments(event.get("tool_input"))
     server = event.get("mcp_server_name")
-    server_name = server.strip() if isinstance(server, str) and server.strip() else ""
+    # An MCP call without a server name must not pass as a built-in tool.
+    server_name = server.strip() if isinstance(server, str) and server.strip() else "mcp"
 
     if event_name in {"beforeMCPExecution", "afterMCPExecution"}:
-        return NormalizedToolCall(server_name or AGENT, canonical_name, arguments)
+        return NormalizedToolCall(server_namespace(server_name), canonical_name, arguments)
 
     if canonical_name.startswith(MCP_TOOL_PREFIX):
         parts = canonical_name.split("__", 2)
         if len(parts) != 3 or not parts[1] or not parts[2]:
             raise HookContractError("MCP tool names must use mcp__<server>__<tool>")
-        return NormalizedToolCall(parts[1], parts[2], arguments)
+        return NormalizedToolCall(server_namespace(parts[1]), parts[2], arguments)
 
     if canonical_name.startswith("MCP:"):
         rest = canonical_name[4:].strip()
         if not rest:
             raise HookContractError("MCP tool names must use MCP:<tool>")
-        return NormalizedToolCall(server_name or AGENT, rest, arguments)
+        return NormalizedToolCall(server_namespace(server_name), rest, arguments)
 
     return NormalizedToolCall(AGENT, canonical_name, arguments)
 
@@ -601,8 +611,14 @@ def main() -> int:
         if not isinstance(event, dict):
             raise HookContractError("hook input must be a JSON object")
         output = handle_event(event)
-    except (HookContractError, json.JSONDecodeError) as error:
-        print(str(error), file=sys.stderr)
+    except Exception as error:
+        # Any failure blocks, such as a RecursionError on deeply nested input.
+        reason = f"Mezmo Governance blocked this tool call: {str(error) or type(error).__name__}"
+        try:
+            print(json.dumps(deny_output(reason), separators=(",", ":")))
+            print(reason, file=sys.stderr)
+        except OSError:
+            pass
         return 2
 
     if output is not None:

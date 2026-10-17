@@ -137,7 +137,8 @@ earlier decision for an id it has seen.
 
 `tool_name` `mcp__kubernetes__pods_delete` becomes namespace `kubernetes` and
 name `pods_delete`. Built-in tools (`Bash`, `apply_patch`, `update_plan`) use
-namespace `codex`.
+namespace `codex`. The hook denies a call from an MCP server named `codex`: its
+tools would pass as built-ins.
 
 `request_id` is `codex:<session_id>:<turn_id>:<tool_use_id>#<digest>` when
 `turn_id` is present. `<digest>` hashes the tool and its arguments.
@@ -158,8 +159,9 @@ PreToolUse deny stdout:
 ```
 
 If Mezmo is down, JSON is malformed, or the deadline expires while the decision
-is still pending, the hook denies. Exit code 2 is used only for broken stdin or
-an unsupported event; Codex treats it as a block.
+is still pending, the hook denies. On input it cannot read, such as broken or
+too deeply nested JSON, or an unsupported event, it prints a deny and exits 2;
+Codex treats exit 2 as a block.
 
 ## Tests
 

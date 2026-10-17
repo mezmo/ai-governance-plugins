@@ -128,6 +128,12 @@ class GeminiCliGovernanceHookTests(unittest.TestCase):
         self.assertEqual(normalized.name, "pods_delete")
         self.assertEqual(normalized.arguments, event["tool_input"])
 
+    def test_an_mcp_server_named_like_the_agent_is_refused(self) -> None:
+        event = hook_event("BeforeTool")
+        event["mcp_context"]["server_name"] = hook.AGENT
+        with self.assertRaises(hook.HookContractError):
+            hook.normalize_tool_call(event)
+
     def test_built_in_tools_use_the_gemini_cli_namespace(self) -> None:
         normalized = hook.normalize_tool_call(shell_event("BeforeTool"))
 
@@ -208,7 +214,7 @@ class GeminiCliGovernanceHookTests(unittest.TestCase):
         self.assertIn("connection refused", output["reason"])
 
     def test_malformed_stdin_uses_the_blocking_exit_code(self) -> None:
-        with patch.object(sys, "stdin", StringIO("not-json")), patch.object(
+        with patch.object(sys, "stdout", StringIO()), patch.object(sys, "stdin", StringIO("not-json")), patch.object(
             sys, "stderr", StringIO()
         ):
             self.assertEqual(hook.main(), 2)
@@ -715,7 +721,7 @@ class EndToEndTests(unittest.TestCase):
 
     def run_hook(
         self,
-        event: dict[str, Any],
+        event: dict[str, Any] | str,
         url: str | None,
         extra: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
@@ -739,7 +745,7 @@ class EndToEndTests(unittest.TestCase):
         env.update(extra or {})
         return subprocess.run(
             [sys.executable, str(HOOK_PATH)],
-            input=json.dumps(event),
+            input=event if isinstance(event, str) else json.dumps(event),
             env=env,
             capture_output=True,
             text=True,
@@ -876,8 +882,19 @@ class EndToEndTests(unittest.TestCase):
         result = self.run_hook(event, None)
 
         self.assertEqual(result.returncode, 2)
-        self.assertEqual(result.stdout, "")
+        self.assertEqual(set(stdout_json(result)), set(deny_schema("x")))
         self.assertIn("unsupported hook event", result.stderr)
+
+    def test_input_too_deep_to_read_is_denied_with_the_block_code(self) -> None:
+        # Python 3.9 to 3.13 stop at 1000 levels, later versions at the C stack.
+        depth = 200_000
+        raw = json.dumps(hook_event(PRE_EVENT))[:-1]
+        raw += ', "nested": ' + "[" * depth + "]" * depth + "}"
+        result = self.run_hook(raw, None)
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(set(stdout_json(result)), set(deny_schema("x")))
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_post_event_logs_without_calling_governance(self) -> None:
         with StubGovernance([]) as stub:

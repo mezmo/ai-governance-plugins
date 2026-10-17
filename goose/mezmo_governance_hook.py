@@ -141,6 +141,15 @@ def audit_log_path() -> Path:
     return DEFAULT_AUDIT_LOG
 
 
+def server_namespace(name: str) -> str:
+    """Refuse a server or extension named like the agent: its tools would pass as built-ins."""
+    if name.lower() == AGENT:
+        raise HookContractError(
+            f"a tool namespace named {name!r} would pass as a built-in tool"
+        )
+    return name
+
+
 def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
     canonical_name = required_string(event.get("tool_name"), "tool_name")
     # Goose leaves tool_input out when the call has no arguments.
@@ -156,7 +165,7 @@ def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
             raise HookContractError(
                 "extension tool names must use <extension>__<tool>"
             )
-        return NormalizedToolCall(extension, tool, dict(raw_input))
+        return NormalizedToolCall(server_namespace(extension), tool, dict(raw_input))
 
     return NormalizedToolCall(AGENT, canonical_name, dict(raw_input))
 
@@ -546,8 +555,14 @@ def main() -> int:
         if not isinstance(event, dict):
             raise HookContractError("hook input must be a JSON object")
         output = handle_event(event)
-    except (HookContractError, json.JSONDecodeError) as error:
-        print(str(error), file=sys.stderr)
+    except Exception as error:
+        # Any failure blocks, such as a RecursionError on deeply nested input.
+        reason = f"Mezmo Governance blocked this tool call: {str(error) or type(error).__name__}"
+        try:
+            print(json.dumps(deny_output(reason), separators=(",", ":")))
+            print(reason, file=sys.stderr)
+        except OSError:
+            pass
         return 2
 
     if output is not None:

@@ -50,9 +50,10 @@ Cursor's docs give the `MCP:<tool_name>` matcher for `preToolUse`, but not the
 input fields for an MCP call. This is not verified. The hook reads
 `MCP:<tool>` or `mcp__<server>__<tool>` as the tool name, and
 `mcp_server_name` as the namespace when present. Without a server name, an MCP
-call goes to Mezmo with namespace `cursor`, so a policy keyed on the server
+call goes to Mezmo with namespace `mcp`, so a policy keyed on the server
 name does not match it. To gate MCP tools by server, use `beforeMCPExecution`,
-which always sends `mcp_server_name`.
+which always sends `mcp_server_name`. The hook denies a call from an MCP server
+named `cursor`: its tools would pass as built-ins.
 
 ## Windows
 
