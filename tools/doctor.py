@@ -42,6 +42,8 @@ APP_SERVER_SECONDS = 10.0
 # Nothing listens on port 9, so a hook pointed here must deny.
 UNREACHABLE_URL = "http://127.0.0.1:9/governance/workflow/authorize"
 LIBRARIES = "LangChain, OpenAI Agents SDK, Claude Agent SDK and Mastra"
+# Ends each FAIL that means the agent never runs the hook; `agents` then shows "fails closed: no".
+UNGOVERNED = "so every tool call runs ungoverned"
 
 
 def load_hook() -> Any:
@@ -236,6 +238,12 @@ def binary_version(path: str) -> Optional[tuple]:
     return version_tuple(result.stdout + " " + result.stderr)
 
 
+def local_url(url: str) -> bool:
+    """An http URL on this machine, such as the mock's."""
+    parsed = urlparse(url)
+    return parsed.scheme == "http" and parsed.hostname in LOCAL_HOSTS
+
+
 def url_problem(url: str) -> Optional[str]:
     parsed = urlparse(url)
     if parsed.scheme == "https" and parsed.hostname:
@@ -286,7 +294,7 @@ def check_settings(report: Report) -> bool:
                 report.line("FAIL", name, f"{shown_url(value)} {problem}", f"use {DEFAULT_URL}")
                 ready = False
             else:
-                local = " (local mock)" if urlparse(value).scheme == "http" else ""
+                local = " (local mock)" if local_url(value) else ""
                 report.line("ok", name, f"{shown_url(value)}{local}")
         else:
             report.line("ok", name, "set (not shown)")
@@ -425,6 +433,12 @@ def fail_closed(report: Report, subject: str, ok: bool, setting: str, example: s
         )
 
 
+def old_guard(report: Report, subject: str, command: str, fix: str) -> None:
+    """Warn about the guard before ec18454: install skips a config that has a Mezmo hook, so it stays until replaced."""
+    if "hook failed; blocking" in command and "[ $s -eq 2 ]" not in command:
+        report.line("warn", subject, 'the || exit 2 guard is the old one: a deliberate block also prints "hook failed"', fix)
+
+
 def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list]:
     root = claude_dir()
     settings = as_dict(read_json(root / "settings.json"))
@@ -437,7 +451,7 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
         if as_dict(settings.get("enabledPlugins")).get(key) is True:
             report.line("ok", "Claude Code plugin", f"{key} is installed and enabled")
         else:
-            report.line("warn", "Claude Code plugin", f"{key} is installed but not enabled", "enable it in /plugin")
+            report.line("FAIL", "Claude Code plugin", f"{key} is installed but not enabled, {UNGOVERNED}", "enable it in /plugin")
         hooks = as_dict(as_dict(read_json(folder / "hooks" / "hooks.json")).get("hooks"))
         found = mezmo_handlers(hooks.get("PreToolUse"), script=CLAUDE_HOOK_FILE)
         if not found:
@@ -507,41 +521,48 @@ def codex_hooks(binary: str) -> list:
     raise Unknown(f"codex app-server gave no answer to hooks/list (the doctor waits {APP_SERVER_SECONDS:g} s)")
 
 
-def check_codex_plugin(report: Report, plugins: list) -> list:
+def codex_listed() -> tuple:
+    """(the hooks `codex app-server` lists, "") or (None, why they could not be read)."""
+    binary = shutil.which("codex")
+    if binary is None:
+        return None, "codex is not on PATH"
+    try:
+        return codex_hooks(binary), ""
+    except Unknown as error:
+        return None, str(error)
+
+
+def codex_trust(report: Report, subject: str, item: dict, fix: str) -> None:
+    """One line for a hook Codex lists: Codex runs it only when it is on and trusted with its current hash."""
+    status = item.get("trustStatus")
+    if item.get("enabled") is False:
+        report.line("FAIL", subject, f"the PreToolUse hook is turned off in /hooks, so Codex skips it, {UNGOVERNED}", fix)
+    elif status in ("trusted", "managed"):
+        report.line("ok", subject, f"the PreToolUse hook is {status}")
+    elif status == "modified":
+        report.line("FAIL", subject, f"the PreToolUse hook changed since you trusted it, so Codex skips it, {UNGOVERNED}", fix)
+    else:
+        report.line("FAIL", subject, f"the PreToolUse hook is not trusted, so Codex skips it, {UNGOVERNED}", fix)
+
+
+def check_codex_plugin(report: Report, plugins: list, hooks: Optional[list], why: str) -> list:
     """The native install: `codex plugin add` records it under [plugins."<name>@<marketplace>"]."""
     smokes: list = []
     trust_fix = "start codex, run /hooks, and trust both Mezmo hooks"
     for plugin in plugins:
         report.line("ok", "Codex plugin", f"{plugin} is installed")
-    binary = shutil.which("codex")
-    if binary is None:
-        report.line("info", "Codex plugin trust", "not checked: codex is not on PATH", trust_fix)
-        return smokes
-    try:
-        hooks = codex_hooks(binary)
-    except Unknown as error:
-        report.line("info", "Codex plugin trust", f"not checked: {error}", trust_fix)
+    if hooks is None:
+        report.line("info", "Codex plugin trust", f"not checked: {why}", trust_fix)
         return smokes
     for plugin in plugins:
         found = [item for item in hooks if item.get("pluginId") == plugin and item.get("eventName") == "preToolUse"]
         if not found:
             report.line(
-                "FAIL", "Codex plugin trust", f"Codex lists no PreToolUse hook for {plugin}, so no tool call is governed",
+                "FAIL", "Codex plugin trust", f"Codex lists no PreToolUse hook for {plugin}, {UNGOVERNED}",
                 f'set enabled = true under [plugins."{plugin}"] in {shown(codex_dir() / "config.toml")}, or run codex plugin add {plugin}',
             )
         for item in found:
-            status = item.get("trustStatus")
-            if item.get("enabled") is False:
-                report.line("FAIL", "Codex plugin trust", "the PreToolUse hook is turned off in /hooks, so Codex skips it", trust_fix)
-            elif status in ("trusted", "managed"):
-                report.line("ok", "Codex plugin trust", f"the PreToolUse hook is {status}")
-            elif status == "modified":
-                report.line("FAIL", "Codex plugin trust", "the PreToolUse hook changed since you trusted it, so Codex skips it", trust_fix)
-            else:
-                report.line(
-                    "FAIL", "Codex plugin trust", "the PreToolUse hook is not trusted, so Codex skips it and every tool runs ungoverned",
-                    trust_fix,
-                )
+            codex_trust(report, "Codex plugin trust", item, trust_fix)
             smokes.append(Smoke("Codex", hook_path(str(item.get("command"))), CLAUDE_EVENT))
     return smokes
 
@@ -556,29 +577,43 @@ def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
     features = toml_table(config, "features") or ""
     if re.search(r"^\s*hooks\s*=\s*false\b", features, re.M):
         report.line(
-            "FAIL", "Codex hooks", "hooks = false under [features] turns every hook off",
+            "FAIL", "Codex hooks", f"hooks = false under [features] turns every hook off, {UNGOVERNED}",
             f"remove it from {shown(codex_dir() / 'config.toml')}",
         )
     smokes = []
+    hooks, why = codex_listed()
+    trust_fix = "start codex, run /hooks, and trust the Mezmo hook"
     for g, h, _, handler in found:
         command = str(handler.get("command"))
         report.line("ok", "Codex hook", f"PreToolUse hook in {shown(path)}")
         fail_closed(report, "Codex hook", "exit 2" in command, "|| exit 2 guard", "codex/hooks.example.json")
-        state = toml_table(config, f'hooks.state."{path}:pre_tool_use:{g}:{h}"')
-        if state is None or not re.search(r"^\s*trusted_hash\s*=", state, re.M):
-            report.line(
-                "FAIL", "Codex trust", "the hook is not trusted, so Codex skips it",
-                "start codex, run /hooks, and trust the Mezmo hook",
-            )
+        old_guard(
+            report, "Codex guard", command,
+            "run ./mezmo-governance uninstall codex, then install codex, then trust the new hook in /hooks",
+        )
+        key = f":pre_tool_use:{g}:{h}"
+        state = toml_table(config, f'hooks.state."{path}{key}"')
+        listed = [
+            item for item in hooks or []
+            if same_file(item.get("sourcePath"), path) and str(item.get("key", "")).endswith(key)
+        ]
+        if listed:
+            codex_trust(report, "Codex trust", listed[0], trust_fix)
+        elif hooks is not None:
+            report.line("FAIL", "Codex trust", f"Codex lists no PreToolUse hook at {shown(path)}{key}, {UNGOVERNED}", trust_fix)
+        elif state is None or not re.search(r"^\s*trusted_hash\s*=", state, re.M):
+            report.line("FAIL", "Codex trust", f"the hook is not trusted, so Codex skips it, {UNGOVERNED}", trust_fix)
         else:
-            report.line(
-                "ok", "Codex trust",
-                "trusted in /hooks (after an edit Codex asks again; the doctor does not compare the hash)",
-            )
+            # A saved hash outlives an edit to the hook; only Codex can compare it.
+            report.line("info", "Codex trust", f"not checked: {why}; config.toml has a trusted_hash, but it may be for an older hook", trust_fix)
         smokes.append(Smoke("Codex", hook_path(command), CLAUDE_EVENT))
     if plugins:
-        smokes += check_codex_plugin(report, plugins)
+        smokes += check_codex_plugin(report, plugins, hooks, why)
     return smokes
+
+
+def same_file(text: Any, path: Path) -> bool:
+    return isinstance(text, str) and (Path(text) == path or Path(text).resolve() == path.resolve())
 
 
 def check_cursor(report: Report, version: Optional[tuple]) -> Optional[list]:
@@ -623,12 +658,56 @@ def check_gemini(report: Report, version: Optional[tuple]) -> Optional[list]:
         "tool_input": {"command": "echo hi"},
     }
     smokes = []
+    settings = as_dict(read_json(path))
+    hooks_config = as_dict(settings.get("hooksConfig"))
+    if hooks_config.get("enabled") is False:
+        report.line("FAIL", "Gemini CLI hook", f"hooksConfig.enabled is false in {shown(path)}, {UNGOVERNED}", "remove it")
+    disabled = as_list(hooks_config.get("disabled"))
     for where, handler, script in found:
         command = str(handler.get("command"))
         report.line("ok", "Gemini CLI hook", f"BeforeTool hook in {shown(where)}")
         fail_closed(report, "Gemini CLI hook", "exit 2" in command, "|| exit 2 guard", "gemini-cli/hooks/hooks.json")
+        if where == extension:
+            fix = "run ./mezmo-governance uninstall gemini-cli, then install gemini-cli"
+        else:
+            fix = f"copy the BeforeTool command from gemini-cli/settings.example.json into {shown(path)}"
+        old_guard(report, "Gemini CLI guard", command, fix)
+        # Gemini names a hook by its name, else its command.
+        if (handler.get("name") or command) in disabled:
+            report.line(
+                "FAIL", "Gemini CLI hook", f"hooksConfig.disabled in {shown(path)} turns the hook off, {UNGOVERNED}",
+                "in gemini, run /hooks panel and enable it",
+            )
         smokes.append(Smoke("Gemini CLI", script, event))
+    if any(where == extension for where, _, _ in found):
+        for folder in gemini_disabled():
+            report.line(
+                "FAIL", "Gemini CLI hook", f"the extension is turned off in {folder}, {UNGOVERNED}",
+                "run gemini extensions enable mezmo-governance",
+            )
     return smokes
+
+
+def gemini_disabled() -> list:
+    """The folders where extension-enablement.json turns the extension off.
+
+    Gemini CLI 0.64.0: the last override that matches a folder decides; `!` turns it off, a trailing `*` takes subfolders.
+    """
+    path = gemini_dir() / "extensions" / "extension-enablement.json"
+    rules = [rule for rule in as_list(as_dict(as_dict(read_json(path)).get("mezmo-governance")).get("overrides")) if isinstance(rule, str)]
+
+    def enabled(folder: str) -> bool:
+        result = True
+        for rule in rules:
+            base = rule.lstrip("!")
+            subfolders = base.endswith("*")
+            base = base.rstrip("*").rstrip("/") + "/"
+            if (folder.startswith(base) if subfolders else folder == base):
+                result = not rule.startswith("!")
+        return result
+
+    folders = [rule.lstrip("!").rstrip("*").rstrip("/") for rule in rules if rule.startswith("!")]
+    return [folder for folder in dict.fromkeys(folders) if not enabled(folder + "/")]
 
 
 def check_copilot(report: Report, version: Optional[tuple]) -> Optional[list]:
@@ -640,7 +719,7 @@ def check_copilot(report: Report, version: Optional[tuple]) -> Optional[list]:
         data = as_dict(read_json(path))
         hooks = as_dict(data.get("hooks"))
         if data.get("disableAllHooks") is True:
-            report.line("FAIL", "Copilot hooks", f"{shown(path)} sets disableAllHooks", "remove disableAllHooks")
+            report.line("FAIL", "Copilot hooks", f"{shown(path)} sets disableAllHooks, {UNGOVERNED}", "remove disableAllHooks")
         if mezmo_handlers(hooks.get("PreToolUse"), "bash"):
             installed = True
             report.line(
@@ -674,6 +753,8 @@ def check_goose(report: Report, version: Optional[tuple]) -> Optional[list]:
         report.line("FAIL", "Goose plugin", f"no PreToolUse hook in {shown(folder)}", "copy hooks/hooks.json from goose/")
         return []
     report.line("ok", "Goose plugin", f"installed in {shown(folder)}")
+    for problem in goose_disabled(folder):
+        report.line("FAIL", "Goose plugin", f"{problem}, {UNGOVERNED}", "remove that entry")
     if any(group.get("matcher") == "*" for _, _, group, _ in found):
         report.line("FAIL", "Goose plugin", 'a matcher "*" is invalid, and Goose skips that rule', "remove the matcher")
     fail_closed(
@@ -691,6 +772,38 @@ def check_goose(report: Report, version: Optional[tuple]) -> Optional[list]:
         "tool_input": {"command": "echo hi"},
     }
     return [Smoke("Goose", folder / HOOK_FILE, event)]
+
+
+def goose_disabled(folder: Path) -> list:
+    """Where Goose 1.54.0 turns the plugin off (crates/goose/src/plugins/discovery.rs)."""
+    root = os.environ.get("GOOSE_PATH_ROOT")
+    root = Path(root) if root and Path(root).is_absolute() else None
+    settings = (root or home()) / ".config" / "goose" / "settings.json"
+    config = root / "config" / "config.yaml" if root else env_dir("XDG_CONFIG_HOME", home() / ".config") / "goose" / "config.yaml"
+    found = []
+    if folder.name in as_list(as_dict(read_json(settings)).get("disabledPlugins")):
+        found.append(f"{shown(settings)} lists it in disabledPlugins")
+    if yaml_plugin_off(read_text(config) or "", {str(folder), str(folder.resolve())}):
+        found.append(f"{shown(config)} sets enabled: false under plugins")
+    return found
+
+
+def yaml_plugin_off(text: str, keys: set) -> bool:
+    """Whether the `plugins:` map of a Goose config.yaml has `enabled: false` under one of the keys."""
+    block = re.search(r"^plugins:[ \t]*\n((?:[ \t]+.*(?:\n|$)|[ \t]*\n)*)", text, re.M)
+    lines = block.group(1).splitlines() if block else []
+    for number, line in enumerate(lines):
+        match = re.match(r"^([ \t]+)(['\"]?)(.+?)\2:(?:[ \t]+(.*))?$", line)
+        if not match or match.group(3) not in keys:
+            continue
+        if match.group(4):
+            return re.search(r"\benabled:[ \t]*false\b", match.group(4)) is not None
+        for inner in lines[number + 1:]:
+            if inner.strip() and len(inner) - len(inner.lstrip()) <= len(match.group(1)):
+                break
+            if re.match(r"^[ \t]+enabled:[ \t]*false\b", inner):
+                return True
+    return False
 
 
 def opencode_option(report: Report, options: dict, name: str) -> None:
@@ -713,7 +826,8 @@ def opencode_option(report: Report, options: dict, name: str) -> None:
     elif name == "MEZMO_GOVERNANCE_URL" and url_problem(value):
         report.line("FAIL", "OpenCode options", f"{name} {url_problem(value)}", f"use {DEFAULT_URL}")
         return
-    report.line("ok", "OpenCode options", f"{name} is set")
+    local = " (local mock)" if name == "MEZMO_GOVERNANCE_URL" and local_url(value.strip()) else ""
+    report.line("ok", "OpenCode options", f"{name} is set{local}")
 
 
 def check_opencode(report: Report, version: Optional[tuple]) -> Optional[list]:
@@ -795,13 +909,13 @@ class Agent(NamedTuple):
     check: Any
     namespace: str  # the tool_namespace the adapter sends for a built-in tool (AGENT in its hook)
     shell: str
-    read: str
+    read: Optional[str]  # None where the agent has no read-only tool: Codex's apply_patch writes files
 
 
 # Tested versions come from the README's hand-check table; tool names from each adapter README.
 AGENTS = (
     Agent("Claude Code", "claude", ("2.1.296",), "2.1.295", "claude-code", check_claude_code, "claude_code", "Bash", "Read"),
-    Agent("Codex", "codex", ("0.162.1",), None, "codex", check_codex, "codex", "Bash", "apply_patch"),
+    Agent("Codex", "codex", ("0.162.1",), None, "codex", check_codex, "codex", "Bash", None),
     Agent("Cursor", "cursor-agent", ("2026.10.14",), None, "cursor", check_cursor, "cursor", "Shell", "Read"),
     Agent("Gemini CLI", "gemini", ("0.64.0",), None, "gemini-cli", check_gemini, "gemini_cli", "run_shell_command", "read_file"),
     Agent("Copilot CLI", "copilot", ("1.0.95",), None, "copilot", check_copilot, "copilot", "bash", "view"),

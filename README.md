@@ -114,7 +114,12 @@ can watch the plugin wait and then deny.
 
    `doctor` (also `python3 tools/doctor.py`) checks the settings, that Mezmo
    answers and takes the key, and, for each coding agent on your `PATH`, its
-   version, the user-level install and its fail-closed setting. It also runs
+   version, the user-level install and its fail-closed setting. An install the
+   agent has turned off or does not trust fails: a disabled Claude Code plugin,
+   Gemini CLI extension or hook, or Goose plugin, and a Codex hook whose
+   trust Codex does not list as current. A Codex or Gemini CLI hook installed
+   before the guard learned to keep a deliberate block quiet gets a warning
+   with the reinstall step. It also runs
    each installed Python hook against a closed port and checks that the hook
    denies. It reads the agent configs and changes nothing. Each check prints
    one `ok`, `warn`, `FAIL` or `skip` line with a fix, and the exit code is 1
@@ -124,7 +129,9 @@ can watch the plugin wait and then deny.
 
    `smoke` starts its own mock, sends each installed hook or plugin one shell
    call (it must be denied) and one read (it must be approved), and prints a
-   line for each. It calls no model and never sends your key.
+   line for each. The OpenCode plugin gets the options from `opencode.json`,
+   as OpenCode passes them, with the mock's URL and key in place of yours;
+   `smoke --live` keeps yours and reads each `{file:...}`. It calls no model and never sends your key.
 
    `smoke --live [agent...]` sends the same two calls, the agent's shell tool
    and its read tool, to Mezmo at `MEZMO_GOVERNANCE_URL` with
@@ -206,13 +213,18 @@ token's service account, and every agent here may send the same token. So
 when Mezmo has one agent, every installed agent gets its policy. With several,
 an installed agent maps to the Mezmo agents whose Runtime Name is its adapter
 folder name, such as `claude-code`; pass `--agent <name or agent_id>` to use one
-Mezmo agent's policy for all of them. A rule covers a tool when it names the
-tool with `eq` or `in`, has no tool space or the agent's, and checks no
-arguments.
+Mezmo agent's policy for all of them. A rule covers a tool when its tool and
+tool space conditions (`eq`, `neq`, `in`, `nin`, or none) match the tool in
+the agent's space and it checks no arguments. Mezmo decides from every
+matching rule, not the first, so `show` prints the most restrictive one: deny,
+then approval_required, then allow.
 
 `policy apply [agent...]` plans two rules for the named agents, or for every
 installed agent: deny their shell tools with `FORBIDDEN_TOOL` and the message
-`Shell blocked by Mezmo policy`, and allow their read tools. It leaves out
+`Shell blocked by Mezmo policy`, and allow their read tools. Each rule names
+the tool spaces of the agents it lists, so it leaves MCP tools and other
+agents alone. Codex has no read-only tool (`apply_patch` writes files), so it
+gets the deny rule only, and `smoke --live` sends it the shell call only. It leaves out
 each tool a rule already covers and prints every rule it keeps, with its
 `rule_id`. Without `--yes` it stops there. With `--yes` it opens a draft,
 writes your rules back unchanged plus the new ones, and accepts the draft. If
@@ -236,9 +248,12 @@ node for the OpenCode and Pi smoke test.
 own override: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`,
 `COPILOT_HOME`, `GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME` (OpenCode) and
 `PI_CODING_AGENT_DIR`. Before it edits a JSON file, it saves a copy next to it
-as `<name>.mezmo-backup-<time>` and prints the path. It never writes the
-token. Running it twice changes nothing. `uninstall` removes only the
-entries and files `install` added. Codex keys hook trust by position, so where
+as `<name>.mezmo-backup-<time>` and prints the path. It writes through a
+symlink and keeps the file's mode, such as `0600`. It never writes the
+token. Running it twice changes nothing. `uninstall` removes the entries and
+files `install` added, then each key or file that leaves empty, such as an
+empty `hooks` object, a Cursor `hooks.json` with only `version`, or Claude
+Code's empty `enabledPlugins`, even one that was empty before the install. Codex keys hook trust by position, so where
 other groups follow the Mezmo group in `hooks.json`, `uninstall` leaves an empty
 group in its place and those hooks stay trusted. Where a Mezmo handler sits
 ahead of your own handler in one group, `uninstall` changes no Codex file,

@@ -279,6 +279,24 @@ class InstallTests(CliTestCase):
         for name, text in texts.items():
             self.assertEqual((self.tmp / name).read_bytes().decode("utf-8"), text, name)
 
+    def test_a_rewritten_config_keeps_its_symlink_and_its_mode(self) -> None:
+        # A dotfiles user links hooks.json from a repository and keeps opencode.json, which names the key file, 0600.
+        target = self.tmp / "dotfiles/hooks.json"
+        self.write({"dotfiles/hooks.json": ORIGINALS["codex"]["codex/hooks.json"], **ORIGINALS["opencode"]})
+        (self.tmp / "codex").mkdir()
+        (self.tmp / "codex/hooks.json").symlink_to(target)
+        opencode = self.tmp / "xdg/opencode/opencode.json"
+        opencode.chmod(0o600)
+        for verb in ("install", "uninstall"):
+            with self.subTest(verb=verb):
+                result = self.cli(verb, "codex", "opencode")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue((self.tmp / "codex/hooks.json").is_symlink())
+                self.assertEqual(os.readlink(self.tmp / "codex/hooks.json"), str(target))
+                self.assertEqual(oct(opencode.stat().st_mode & 0o777), oct(0o600))
+        self.assertEqual(json.loads(target.read_text()), ORIGINALS["codex"]["codex/hooks.json"])
+        self.assertFalse(list(self.tmp.rglob("*.mezmo-partial")))
+
     def test_codex_uninstall_keeps_the_place_of_later_hook_groups(self) -> None:
         # Codex keys hook trust by group index (hooks.state."<file>:pre_tool_use:<group>:<handler>").
         self.write(ORIGINALS["codex"])
@@ -449,6 +467,18 @@ class InstallTests(CliTestCase):
         self.assertIn("FAIL  codex: could not parse", result.stdout)
         self.assertEqual(path.read_text(), "{not json")
 
+    def test_opencode_install_warns_that_it_keeps_a_local_mock_url(self) -> None:
+        # opencode.json keeps the URL, so a mock's URL outlives the mock.
+        mock_url = "http://127.0.0.1:8787/governance/workflow/authorize"
+        result = self.cli("install", "opencode", "--dry-run", MEZMO_GOVERNANCE_URL=mock_url)
+        self.assertIn("warn  opencode: MEZMO_GOVERNANCE_URL http://127.0.0.1:8787/governance/workflow/authorize is a local mock", result.stdout)
+        result = self.cli("install", "opencode", MEZMO_GOVERNANCE_URL=mock_url)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        doctor = self.cli("doctor", "opencode", MEZMO_GOVERNANCE_URL=mock_url)
+        self.assertIn("ok    OpenCode options: MEZMO_GOVERNANCE_URL is set (local mock)", doctor.stdout)
+        result = self.cli("install", "opencode", "--dry-run", MEZMO_GOVERNANCE_URL="https://api.example.test/governance/workflow/authorize")
+        self.assertNotIn("warn", result.stdout)
+
     def test_opencode_1_is_refused(self) -> None:
         self.fake("opencode", "1.19.0")
         result = self.cli("install", "opencode")
@@ -478,6 +508,8 @@ class CommandTests(CliTestCase):
     def test_agents_shows_binary_version_install_and_fail_closed(self) -> None:
         (self.bin / "goose").unlink()
         self.cli("install", "codex", "pi")
+        # Trusted in /hooks; the fake codex lists no hooks, so the saved hash goes unchecked.
+        (self.tmp / "codex/config.toml").write_text(f'[hooks.state."{self.tmp}/codex/hooks.json:pre_tool_use:0:0"]\ntrusted_hash = "sha256:00"\n')
         lines = self.cli("status").stdout.splitlines()
         self.assertEqual([line.split()[0] for line in lines], list(AGENTS))
         self.assertIn("codex 0.162.1", lines[1])
@@ -486,6 +518,15 @@ class CommandTests(CliTestCase):
         self.assertIn("goose not found", lines[5])
         self.assertIn("installed: no", lines[5])
         self.assertIn("fails closed: n/a", lines[7])
+
+    def test_agents_says_a_disabled_install_does_not_fail_closed(self) -> None:
+        self.cli("install", "claude-code")
+        settings = self.tmp / "claude/settings.json"
+        settings.write_text(json.dumps({**json.loads(settings.read_text()), "enabledPlugins": {"mezmo-governance@mezmo": False}}))
+        line = self.status("claude-code")
+        self.assertIn("installed: yes", line)
+        self.assertIn("fails closed: no", line)
+        self.assertIn("problems: 1", line)
 
     def test_doctor_checks_only_the_named_agents(self) -> None:
         self.cli("install", "codex")
@@ -570,11 +611,32 @@ class LiveSmokeTests(CliTestCase):
         self.assertIn("live  claude-code: Bash denied: mock policy: claude_code:Bash is denied (", result.stdout)
         self.assertIn("live  claude-code: Read pending approval (", result.stdout)
         self.assertIn("live  codex: Bash denied: mock policy: codex:Bash is denied (", result.stdout)
-        self.assertIn("live  codex: apply_patch allowed (", result.stdout)
+        # Codex has no read-only tool, so it gets the shell call only.
+        self.assertNotIn("apply_patch", result.stdout)
         self.assertNotIn("mock  Mezmo stand-in", result.stdout)
         self.assertNotIn("FAIL", result.stdout)
         # The smoke calls stay out of the user's audit log.
         self.assertFalse((self.tmp / "home/.mezmo").exists())
+
+    def test_opencode_gets_its_opencode_json_options(self) -> None:
+        # OpenCode passes the plugin its options, with {file:...} read; the shell's variables lose to them.
+        self.cli("install", "opencode")
+        key = self.tmp / "xdg/mezmo/governance-key"
+        key.parent.mkdir(parents=True, exist_ok=True)
+        key.write_text("from-the-key-file\n")
+        path = self.tmp / "xdg/opencode/opencode.json"
+        config = json.loads(path.read_text())
+        config["plugins"][0]["options"]["MEZMO_GOVERNANCE_URL"] = self.env["MEZMO_GOVERNANCE_URL"]
+        path.write_text(json.dumps(config))
+        result = self.cli("smoke", "--live", "opencode", MEZMO_GOVERNANCE_URL=doctor_unreachable())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("live  opencode: shell allowed (", result.stdout)
+        self.assertIn("live  opencode: read allowed (", result.stdout)
+        # The mock smoke still sends the plugin to its own mock, never to the URL in opencode.json.
+        config["plugins"][0]["options"]["MEZMO_GOVERNANCE_URL"] = doctor_unreachable()
+        path.write_text(json.dumps(config))
+        result = self.cli("smoke", "opencode")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_a_call_that_reaches_no_decision_exits_1(self) -> None:
         self.cli("install", "codex")
@@ -667,7 +729,7 @@ class PolicyTests(CliTestCase):
         self.assertIn("  default  approval_required: No rule in this policy covers this request.", result.stdout)
         self.assertIn("cover   claude-code in Mock policy: shell Bash not covered; read Read not covered", result.stdout)
         # Mezmo has one agent, so every installed agent, which sends its token, gets its policy.
-        self.assertIn("cover   codex in Mock policy: shell Bash not covered; read apply_patch not covered", result.stdout)
+        self.assertIn("cover   codex in Mock policy: shell Bash not covered\n", result.stdout)
         self.assertNotIn("cursor", result.stdout)
         self.assertEqual(self.writes(), [])
 
@@ -678,8 +740,11 @@ class PolicyTests(CliTestCase):
             (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "eq", "value": "claude_code"}), "shell Bash covered (deny"),
             (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "in", "value": ["codex", "claude_code"]}), "shell Bash covered (deny"),
             (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "eq", "value": "codex"}), "shell Bash not covered"),
-            (flat({"op": "neq", "value": "Read"}, "deny"), "shell Bash not covered"),
-            (flat({"op": "nin", "value": ["Read"]}, "deny"), "shell Bash not covered"),
+            (flat({"op": "neq", "value": "Read"}, "deny"), "shell Bash covered (deny"),
+            (flat({"op": "nin", "value": ["Read"]}, "deny"), "shell Bash covered (deny"),
+            (flat({"op": "neq", "value": "Bash"}, "deny"), "shell Bash not covered"),
+            (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "neq", "value": "claude_code"}), "shell Bash not covered"),
+            (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "nin", "value": ["codex"]}), "shell Bash covered (deny"),
             ({**flat({"op": "eq", "value": "Bash"}, "deny"), "definition": {"recourse": "deny", "tool": {"op": "eq", "value": "Bash"},
               "args": [{"field": "command", "op": "eq", "value": "rm"}]}}, "shell Bash not covered"),
         )
@@ -689,6 +754,18 @@ class PolicyTests(CliTestCase):
                 result = self.policy("show")
                 self.assertEqual(result.returncode, 0, result.stdout)
                 self.assertIn(want, result.stdout)
+
+    def test_coverage_is_the_most_restrictive_matching_rule(self) -> None:
+        # Mezmo decides from every matching rule, deny over approval_required over allow, in no list order.
+        self.cli("install", "claude-code")
+        allow = flat({"op": "eq", "value": "Bash"}, "allow")
+        held = flat({"op": "nin", "value": ["Read"]}, "approval_required")
+        deny = flat({"op": "in", "value": ["Bash", "Shell"]}, "deny")
+        for rules, want in (([allow, held], f"approval_required, rule_id {held['rule_id']}"), ([allow, held, deny], f"deny, rule_id {deny['rule_id']}")):
+            with self.subTest(rules=len(rules)):
+                self.policy_rules(rules)
+                result = self.policy("show")
+                self.assertIn(f"shell Bash covered ({want})", result.stdout)
 
     def policy_rules(self, rules: list) -> None:
         self.mock_policy["rules"] = [self.seeded, *rules]
@@ -701,8 +778,8 @@ class PolicyTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"policy  Mock policy ({self.mock_policy['policy_id']}) for claude-code, cursor, copilot:", result.stdout)
         self.assertIn(f"  keep     allow doctor tool eq probe: - (rule_id {self.seeded['rule_id']})", result.stdout)
-        self.assertIn("  would add deny * tool in Bash, Shell, bash: Shell blocked by Mezmo policy", result.stdout)
-        self.assertIn("  would add allow * tool in Read, view: -", result.stdout)
+        self.assertIn("  would add deny in claude_code, cursor, copilot tool in Bash, Shell, bash: Shell blocked by Mezmo policy", result.stdout)
+        self.assertIn("  would add allow in claude_code, cursor, copilot tool in Read, view: -", result.stdout)
         self.assertIn("--yes", result.stdout)
         self.assertEqual(json.dumps(self.governance["policies"]), before)
         self.assertEqual(self.writes(), [])
@@ -724,12 +801,12 @@ class PolicyTests(CliTestCase):
         self.assertEqual(
             [rule["definition"] for rule in rules[2:]],
             [
-                {"recourse": "deny", "tool": {"op": "in", "value": ["Bash"]}, "code": "FORBIDDEN_TOOL",
-                 "error_message": "Shell blocked by Mezmo policy"},
-                {"recourse": "allow", "tool": {"op": "in", "value": ["Read"]}},
+                {"recourse": "deny", "tool": {"op": "in", "value": ["Bash"]}, "namespace": {"op": "in", "value": ["claude_code"]},
+                 "code": "FORBIDDEN_TOOL", "error_message": "Shell blocked by Mezmo policy"},
+                {"recourse": "allow", "tool": {"op": "in", "value": ["Read"]}, "namespace": {"op": "in", "value": ["claude_code"]}},
             ],
         )
-        self.assertIn("  add      deny * tool in Bash: Shell blocked by Mezmo policy", result.stdout)
+        self.assertIn("  add      deny in claude_code tool in Bash: Shell blocked by Mezmo policy", result.stdout)
         self.assertIn("ok    Mock policy: 2 rules added, 2 kept", result.stdout)
         # A second run finds both tools covered and opens no draft.
         self.governance["calls"].clear()
@@ -738,6 +815,39 @@ class PolicyTests(CliTestCase):
         self.assertIn("nothing to add", again.stdout)
         self.assertEqual(self.writes(), [])
 
+    def test_starter_rules_name_the_agents_namespaces_and_never_allow_codex_edits(self) -> None:
+        # Codex's apply_patch writes files, so no allow rule may name it; each rule names only its agents' namespaces.
+        self.cli("install", "claude-code", "codex")
+        result = self.policy("apply", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn("apply_patch", result.stdout)
+        self.assertEqual(
+            [rule["definition"] for rule in self.mock_policy["rules"][1:]],
+            [
+                {"recourse": "deny", "tool": {"op": "in", "value": ["Bash"]}, "namespace": {"op": "in", "value": ["claude_code", "codex"]},
+                 "code": "FORBIDDEN_TOOL", "error_message": "Shell blocked by Mezmo policy"},
+                {"recourse": "allow", "tool": {"op": "in", "value": ["Read"]}, "namespace": {"op": "in", "value": ["claude_code"]}},
+            ],
+        )
+        self.assertIn("  add      deny in claude_code, codex tool in Bash: Shell blocked by Mezmo policy", result.stdout)
+        show = self.policy("show")
+        self.assertIn("cover   codex in Mock policy: shell Bash covered (deny", show.stdout)
+        self.assertNotIn("apply_patch", show.stdout)
+        # The rules cover each tool only in the namespaces they name.
+        self.assertNotIn("not covered", show.stdout)
+
+    def test_a_draft_write_keeps_the_approver_and_channels_it_leaves_out(self) -> None:
+        # Mezmo's draft PUT keeps an omitted approver_role_id and hitl_approval_channels, and clears an omitted description.
+        self.mock_policy.update(approver_role_id="role-1", hitl_approval_channels=["channel-1"])
+        root = f"/policy/{self.mock_policy['policy_id']}"
+        draft = self.call("POST", f"{root}/draft", {})["data"]
+        self.assertEqual((draft["approver_role_id"], draft["hitl_approval_channels"]), ("role-1", ["channel-1"]))
+        written = self.call("PUT", f"{root}/draft/{draft['draft_id']}", {"name": "x", "default_action": {"recourse": "deny"}, "rules": []})["data"]
+        self.assertEqual((written["approver_role_id"], written["hitl_approval_channels"], written["description"]), ("role-1", ["channel-1"], None))
+        self.call("PUT", f"{root}/draft/{draft['draft_id']}", {"name": "x", "default_action": {"recourse": "deny"}, "approver_role_id": "role-2"})
+        self.call("PATCH", root, {"draft_id": draft["draft_id"]})
+        self.assertEqual((self.mock_policy["approver_role_id"], self.mock_policy["hitl_approval_channels"]), ("role-2", ["channel-1"]))
+
     def test_with_one_mezmo_agent_apply_covers_every_installed_agent(self) -> None:
         # Live setup on 2026-10-16: one Mezmo agent, runtime claude-code, and Codex sends its token.
         self.cli("install", "codex")
@@ -745,7 +855,7 @@ class PolicyTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"policy  Mock policy ({self.mock_policy['policy_id']}) for codex:", result.stdout)
         tools = [rule["definition"]["tool"]["value"] for rule in self.mock_policy["rules"][1:]]
-        self.assertEqual(tools, [["Bash"], ["apply_patch"]])
+        self.assertEqual(tools, [["Bash"]])
 
     def test_with_several_mezmo_agents_runtime_name_picks_unless_agent_is_given(self) -> None:
         self.cli("install", "codex")
@@ -766,7 +876,7 @@ class PolicyTests(CliTestCase):
                 self.assertIn(f"cover   codex in {policy}: shell Bash not covered", result.stdout)
         result = self.policy("apply", "--agent", "Cursor on example.test", "--yes")
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(len(other["rules"]), 3)
+        self.assertEqual(len(other["rules"]), 2)
         self.assertEqual(self.mock_policy["rules"], [self.seeded])
         result = self.policy("show", "--agent", "nobody")
         self.assertEqual(result.returncode, 1, result.stdout)
@@ -777,15 +887,15 @@ class PolicyTests(CliTestCase):
         self.cli("install", "claude-code")
         self.policy_rules([flat({"op": "eq", "value": "Bash"}, "allow", {"op": "eq", "value": "claude_code"})])
         result = self.policy("apply")
-        self.assertIn("  would add allow * tool in Read: -", result.stdout)
+        self.assertIn("  would add allow in claude_code tool in Read: -", result.stdout)
         self.assertNotIn("would add deny", result.stdout)
 
     def test_apply_takes_named_agents_and_refuses_unknown_ones(self) -> None:
         self.register("codex")
         result = self.policy("apply", "codex")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("would add deny * tool in Bash", result.stdout)
-        self.assertIn("would add allow * tool in apply_patch", result.stdout)
+        self.assertIn("would add deny in codex tool in Bash", result.stdout)
+        self.assertNotIn("would add allow", result.stdout)
         for args in (("apply", "nope"), ("show", "codex"), ("apply", "--force"), ("frob",), ()):
             with self.subTest(args=args):
                 result = self.cli("policy", *args)
@@ -895,6 +1005,18 @@ class PolicyTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(result.stdout.count("\npolicy  "), 61)
         self.assertIn("extra 59", result.stdout)
+
+    def test_a_page_link_it_cannot_follow_fails(self) -> None:
+        import mezmo_governance_cli as cli
+
+        for pages, words in (
+            ([{"meta": {"page": {"next": "/v3/governance/policy?limit=50&after=a"}}, "data": [{}]}] * 2, "repeats cursor a"),
+            ([{"meta": {"page": {"next": "/v3/governance/policy?page=2"}}, "data": [{}]}], "no after cursor"),
+            ([{"meta": {"page": {"next": 7}}, "data": [{}]}], "no after cursor"),
+        ):
+            with self.subTest(words=words), mock.patch.object(cli, "api", side_effect=[(200, page) for page in pages]):
+                with self.assertRaisesRegex(cli.Failure, words):
+                    cli.listed("https://example.test/v3/governance", ADMIN, "/policy", "read policies")
 
     def test_the_admin_key_is_sent_and_never_the_hook_token(self) -> None:
         self.cli("install", "claude-code")

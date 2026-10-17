@@ -30,6 +30,8 @@ API = "/v3/governance"
 RULE_FIELDS = {"rule_id", "name", "tool", "namespace", "args", "recourse", "code", "error_message"}
 BODY_FIELDS = {"name", "description", "default_action", "approver_role_id", "hitl_approval_channels", "rules"}
 RECOURSES = {"allow", "deny", "approval_required"}
+# What a draft copies from its policy, and what accepting it copies back.
+DRAFT_FIELDS = ("name", "description", "default_action", "approver_role_id", "hitl_approval_channels", "rules")
 
 
 def decide(item: dict, deny: list[str], hold: list[str]) -> str:
@@ -74,6 +76,8 @@ def governance_state() -> dict:
                     "code": "ERR_NO_MATCHING_RULE",
                     "error_message": "No rule in this policy covers this request.",
                 },
+                "approver_role_id": None,
+                "hitl_approval_channels": [],
                 "draft": None,
                 "rules": [probe],
             }
@@ -164,8 +168,7 @@ def make_handler(deny: list[str], hold: list[str], governance: dict | None = Non
                 if held:
                     # Like Mezmo: the caller resumes the open draft, 200 rather than 201.
                     return self.reply(200, {"data": held[0]})
-                fields = ("name", "description", "default_action", "rules")
-                draft = {"draft_id": object_id(), "policy_id": policy["policy_id"], **json.loads(json.dumps({key: policy[key] for key in fields}))}
+                draft = {"draft_id": object_id(), "policy_id": policy["policy_id"], **json.loads(json.dumps({key: policy[key] for key in DRAFT_FIELDS}))}
                 state["drafts"][draft["draft_id"]] = draft
                 policy["draft"] = draft["draft_id"]
                 return self.reply(201, {"data": draft})
@@ -173,10 +176,11 @@ def make_handler(deny: list[str], hold: list[str], governance: dict | None = Non
                 problem = draft_problem(body, draft)
                 if problem:
                     return self.reply(400, {"code": "EINVAL", "message": problem})
-                # Like Mezmo: a write without a description clears it.
+                # Like Mezmo: a write without a description clears it, and one without the approver or channels keeps them.
                 draft.update(
                     name=body["name"], description=body.get("description"), default_action=body["default_action"],
                     rules=[compiled(rule) for rule in body.get("rules", [])],
+                    **{key: body[key] for key in ("approver_role_id", "hitl_approval_channels") if key in body},
                 )
                 return self.reply(200, {"data": draft})
             if method == "PATCH" and len(parts) == 2:
@@ -184,7 +188,7 @@ def make_handler(deny: list[str], hold: list[str], governance: dict | None = Non
                 if not draft_id or draft_id != policy["draft"]:
                     return self.reply(409, {"code": "ECONFLICT", "message": "draft_id is not this policy's draft"})
                 draft = state["drafts"].pop(draft_id)
-                policy.update({key: draft[key] for key in ("name", "description", "default_action", "rules")}, draft=None)
+                policy.update({key: draft[key] for key in DRAFT_FIELDS}, draft=None)
                 return self.reply(200, {"data": policy})
             if method == "DELETE" and draft is not None:
                 del state["drafts"][parts[3]]
