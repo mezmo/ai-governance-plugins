@@ -140,7 +140,8 @@ call gets its own decision. Post-tool records have `decision_id: null`.
 `toolArgs` may arrive as JSON text or as an object; the hook accepts both.
 `postToolUse` and `postToolUseFailure` only append the local JSONL audit log.
 A failure event, or a `toolResult.resultType` other than `success`, is
-recorded as `failed`.
+recorded as `failed`. The audit log keeps up to 2000 characters of each tool result, which can hold
+secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
 ## Tests
 

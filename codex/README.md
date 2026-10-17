@@ -4,6 +4,8 @@ A Codex CLI command hook that asks Mezmo Governance before each tool runs. If
 Mezmo denies the call, or the hook cannot get an answer, the hook denies and
 Codex skips the tool. After an approved tool finishes, the same script appends
 a local JSONL record.
+The audit log keeps up to 2000 characters of each tool result, which can hold
+secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
 Official docs: https://developers.openai.com/codex/hooks
 

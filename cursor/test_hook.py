@@ -6,6 +6,7 @@ import ast
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -872,6 +873,24 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(set(stdout_json(result)), set(deny_schema("x")))
         self.assertNotIn("Traceback", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "Windows has no POSIX file modes")
+    def test_the_audit_log_is_private_to_its_owner(self) -> None:
+        # The log keeps up to 2000 characters of each tool result.
+        fresh = Path(self.tmp.name) / "fresh" / "audit.jsonl"
+        older = Path(self.tmp.name) / "older.jsonl"
+        older.write_text("", encoding="utf-8")
+        older.chmod(0o644)
+        for path in (fresh, older):
+            with self.subTest(log=path.name), StubGovernance([]) as stub:
+                result = self.run_hook(
+                    hook_event(POST_EVENT),
+                    stub.url,
+                    extra={"MEZMO_GOVERNANCE_AUDIT_LOG": str(path)},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(fresh.parent.stat().st_mode), 0o700)
 
     def test_post_event_logs_without_calling_governance(self) -> None:
         with StubGovernance([]) as stub:

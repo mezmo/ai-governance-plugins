@@ -124,7 +124,8 @@ reusing an earlier one. Their post-tool records have `decision_id: null`.
 
 Post-tool events only append the local JSONL audit log. Cursor sends
 `tool_output` and `result_json` as JSON text; the hook parses it to spot a
-failed call.
+failed call. The audit log keeps up to 2000 characters of each tool result, which can hold
+secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
 ## Tests
 

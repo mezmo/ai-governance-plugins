@@ -116,7 +116,8 @@ decision ([identity](../docs/protocol.md#identity)).
 PreToolUse deny uses `hookSpecificOutput.permissionDecision: "deny"`. Exit code
 2 also blocks. PostToolUse and PostToolUseFailure only append
 `~/.mezmo/governance-audit.jsonl` (or `MEZMO_GOVERNANCE_AUDIT_LOG`) and never
-block.
+block. The audit log keeps up to 2000 characters of each tool result, which can hold
+secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
 ## Tests
 

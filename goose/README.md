@@ -139,7 +139,8 @@ with an empty id is denied.
 `PostToolUse` and `PostToolUseFailure` events only append the local JSONL
 audit log, joined to the decision by `decision_id`. Goose 1.54.0 sends no tool
 result, so `result_preview` is `null`, and a `PostToolUseFailure` is recorded
-as `failed`.
+as `failed`. The audit log keeps up to 2000 characters of each tool result, which can hold
+secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
 ## Tests
 

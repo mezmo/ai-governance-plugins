@@ -160,7 +160,8 @@ Gemini CLI sends no tool call id. Each run uses a fresh `run-<uuid>`, so
 identical call gets its own decision. Post-tool records have `decision_id: null`.
 
 `AfterTool` events only append the local JSONL audit log. A `tool_response`
-with an `error` field is recorded as `failed`.
+with an `error` field is recorded as `failed`. The audit log keeps up to 2000 characters of each tool result, which can hold
+secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
 ## Tests
 
