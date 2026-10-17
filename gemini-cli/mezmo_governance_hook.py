@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -138,6 +139,15 @@ def audit_log_path() -> Path:
     return DEFAULT_AUDIT_LOG
 
 
+def server_namespace(name: str) -> str:
+    """Refuse a server or extension named like the agent: its tools would pass as built-ins."""
+    if name.lower() == AGENT:
+        raise HookContractError(
+            f"a tool namespace named {name!r} would pass as a built-in tool"
+        )
+    return name
+
+
 def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
     canonical_name = required_string(event.get("tool_name"), "tool_name")
     raw_input = event.get("tool_input")
@@ -151,7 +161,9 @@ def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
         tool = context.get("tool_name")
         if isinstance(server, str) and server.strip():
             name = tool.strip() if isinstance(tool, str) and tool.strip() else canonical_name
-            return NormalizedToolCall(server.strip(), name, dict(raw_input))
+            return NormalizedToolCall(
+                server_namespace(server.strip()), name, dict(raw_input)
+            )
 
     return NormalizedToolCall(AGENT, canonical_name, dict(raw_input))
 
@@ -227,6 +239,37 @@ class RefuseRedirect(HTTPRedirectHandler):
         return None
 
 
+def is_loopback(host: str | None) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host or "").is_loopback
+    except ValueError:
+        return False
+
+
+def refuse_exposed_token(url: str, authorization: str) -> None:
+    """Refuse a request that would expose the token. The errors quote neither."""
+    parsed = urlparse(url)
+    if parsed.username is not None or parsed.password is not None:
+        raise HookContractError(
+            "the Mezmo Governance URL must not hold a user name or password"
+        )
+    if not (
+        parsed.scheme == "https"
+        or (parsed.scheme == "http" and is_loopback(parsed.hostname))
+    ):
+        raise HookContractError(
+            "the Mezmo Governance URL must use https://; "
+            "http:// is allowed only to this machine"
+        )
+    # http.client quotes a header value it refuses, which would show the token.
+    if not (authorization.isascii() and authorization.isprintable()):
+        raise HookContractError(
+            "the Mezmo Governance token holds a character an HTTP header cannot carry"
+        )
+
+
 def http_json(
     method: str,
     url: str,
@@ -238,8 +281,10 @@ def http_json(
         if payload is None
         else json.dumps(payload, separators=(",", ":")).encode()
     )
+    authorization = authorization_header()
+    refuse_exposed_token(url, authorization)
     headers = {
-        "Authorization": authorization_header(),
+        "Authorization": authorization,
         "Accept": "application/json",
     }
     if body is not None:
@@ -455,11 +500,18 @@ def result_has_known_error(value: Any) -> bool:
 
 
 def append_audit(record: Mapping[str, Any]) -> None:
+    # The log keeps tool results, so only its owner may read it.
     path = audit_log_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, separators=(",", ":"))
-                     + "\n")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+    def private(name: str, flags: int) -> int:
+        return os.open(name, flags, 0o600)
+
+    with open(path, "a", encoding="utf-8", opener=private) as handle:
+        # A log an older version wrote keeps its mode until narrowed here.
+        if os.name != "nt" and os.fstat(handle.fileno()).st_mode & 0o077:
+            os.fchmod(handle.fileno(), 0o600)
+        handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
 def handle_pre_tool_use(
@@ -533,8 +585,14 @@ def main() -> int:
         if not isinstance(event, dict):
             raise HookContractError("hook input must be a JSON object")
         output = handle_event(event)
-    except (HookContractError, json.JSONDecodeError) as error:
-        print(str(error), file=sys.stderr)
+    except Exception as error:
+        # Any failure blocks, such as a RecursionError on deeply nested input.
+        reason = f"Mezmo Governance blocked this tool call: {str(error) or type(error).__name__}"
+        try:
+            print(json.dumps(deny_output(reason), separators=(",", ":")))
+            print(reason, file=sys.stderr)
+        except OSError:
+            pass
         return 2
 
     if output is not None:

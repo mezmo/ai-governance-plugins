@@ -82,7 +82,8 @@ with `shell` or `analyze`.
 Other extensions name tools `<extension>__<tool>`. The hook splits at the first
 `__`, so `apps__delete_app` reaches Mezmo as namespace `apps`, tool
 `delete_app` (seen live). An extension key that itself contains `__` splits in
-the wrong place.
+the wrong place. The hook denies a call from an extension named `goose`: its
+tools would pass as built-ins.
 
 The hook denies Code Mode (the `code_execution` extension) scripts itself,
 without asking Mezmo. The tool calls a script makes go to the extensions
@@ -138,7 +139,8 @@ with an empty id is denied.
 `PostToolUse` and `PostToolUseFailure` events only append the local JSONL
 audit log, joined to the decision by `decision_id`. Goose 1.54.0 sends no tool
 result, so `result_preview` is `null`, and a `PostToolUseFailure` is recorded
-as `failed`.
+as `failed`. The audit log keeps up to 2000 characters of each tool result, which can hold
+secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
 ## Tests
 

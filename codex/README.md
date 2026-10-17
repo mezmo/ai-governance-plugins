@@ -4,6 +4,8 @@ A Codex CLI command hook that asks Mezmo Governance before each tool runs. If
 Mezmo denies the call, or the hook cannot get an answer, the hook denies and
 Codex skips the tool. After an approved tool finishes, the same script appends
 a local JSONL record.
+The audit log keeps up to 2000 characters of each tool result, which can hold
+secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
 Official docs: https://developers.openai.com/codex/hooks
 
@@ -33,6 +35,11 @@ guard blocks those too. Codex still runs the tool when:
 
 - the hook reaches its `timeout`;
 - Codex skips the hook because it is new or changed and not yet trusted.
+
+The example sets the `PreToolUse` `timeout` to `600` seconds, so the script's own
+590 second deadline ends first and returns a clear deny. Keep the `timeout` at
+least 10 seconds above `MEZMO_GOVERNANCE_TIMEOUT_SECONDS`: if you lower one,
+lower the other too, or a call still pending runs the tool.
 
 Keep the guard on `PreToolUse` only. Run the [smoke test](#smoke-test) after
 each install, and check `/hooks` after each config change. Hosted tools such
@@ -137,7 +144,8 @@ earlier decision for an id it has seen.
 
 `tool_name` `mcp__kubernetes__pods_delete` becomes namespace `kubernetes` and
 name `pods_delete`. Built-in tools (`Bash`, `apply_patch`, `update_plan`) use
-namespace `codex`.
+namespace `codex`. The hook denies a call from an MCP server named `codex`: its
+tools would pass as built-ins.
 
 `request_id` is `codex:<session_id>:<turn_id>:<tool_use_id>#<digest>` when
 `turn_id` is present. `<digest>` hashes the tool and its arguments.
@@ -158,8 +166,9 @@ PreToolUse deny stdout:
 ```
 
 If Mezmo is down, JSON is malformed, or the deadline expires while the decision
-is still pending, the hook denies. Exit code 2 is used only for broken stdin or
-an unsupported event; Codex treats it as a block.
+is still pending, the hook denies. On input it cannot read, such as broken or
+too deeply nested JSON, or an unsupported event, it prints a deny and exits 2;
+Codex treats exit 2 as a block.
 
 ## Tests
 

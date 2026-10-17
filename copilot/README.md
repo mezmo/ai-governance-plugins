@@ -24,7 +24,9 @@ start, or exits non-zero: the tool does not run. A crash was verified live
 ("hook errored"). It fails open on a timeout:
 the call goes on to the normal permission flow. The example sets
 `timeoutSec` to `600`, so the script's own 590 second deadline ends first and
-returns a clear deny. Do not lower it below the deadline.
+returns a clear deny. Keep `timeoutSec` at least 10 seconds above
+`MEZMO_GOVERNANCE_TIMEOUT_SECONDS`: if you lower one, lower the other too, or
+a call still pending runs the tool.
 
 `disableAllHooks: true` in a hooks file or in repository `settings.json` turns
 the hook off.
@@ -140,7 +142,8 @@ call gets its own decision. Post-tool records have `decision_id: null`.
 `toolArgs` may arrive as JSON text or as an object; the hook accepts both.
 `postToolUse` and `postToolUseFailure` only append the local JSONL audit log.
 A failure event, or a `toolResult.resultType` other than `success`, is
-recorded as `failed`.
+recorded as `failed`. The audit log keeps up to 2000 characters of each tool result, which can hold
+secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
 ## Tests
 

@@ -6,6 +6,7 @@ import ast
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -186,13 +187,13 @@ class CopilotGovernanceHookTests(unittest.TestCase):
         self.assertIn("connection refused", output["permissionDecisionReason"])
 
     def test_malformed_stdin_uses_the_blocking_exit_code(self) -> None:
-        with patch.object(sys, "stdin", StringIO("not-json")), patch.object(
+        with patch.object(sys, "stdout", StringIO()), patch.object(sys, "stdin", StringIO("not-json")), patch.object(
             sys, "stderr", StringIO()
         ):
             self.assertEqual(hook.main(["preToolUse"]), 2)
 
     def test_a_missing_event_argument_uses_the_blocking_exit_code(self) -> None:
-        with patch.object(sys, "stdin", StringIO("{}")), patch.object(
+        with patch.object(sys, "stdout", StringIO()), patch.object(sys, "stdin", StringIO("{}")), patch.object(
             sys, "stderr", StringIO()
         ) as stderr:
             self.assertEqual(hook.main([]), 2)
@@ -618,7 +619,7 @@ class EndToEndTests(unittest.TestCase):
 
     def run_hook(
         self,
-        event: dict[str, Any],
+        event: dict[str, Any] | str,
         url: str | None,
         event_name: str = PRE_EVENT,
         extra: Mapping[str, str] | None = None,
@@ -643,7 +644,7 @@ class EndToEndTests(unittest.TestCase):
         env.update(extra or {})
         return subprocess.run(
             [sys.executable, str(HOOK_PATH), event_name],
-            input=json.dumps(event),
+            input=event if isinstance(event, str) else json.dumps(event),
             env=env,
             capture_output=True,
             text=True,
@@ -766,6 +767,53 @@ class EndToEndTests(unittest.TestCase):
                 self.assertNotIn("x" * 201, shown)
                 self.assertNotIn("secret-arg", shown)
 
+    def test_a_url_that_would_expose_the_token_is_refused_before_any_request(self) -> None:
+        urls = [
+            "http://192.0.2.1/governance/workflow/authorize",
+            "http://api.example.test/governance/workflow/authorize",
+            "ftp://192.0.2.1/governance",
+            "file:///etc/hosts",
+            "https://user:pw_secret@api.example.test/governance/workflow/authorize",
+        ]
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_TOKEN": "sts_test"}), patch.object(
+            hook, "build_opener"
+        ) as opener:
+            for url in urls:
+                with self.subTest(url=url):
+                    with self.assertRaises(hook.HookContractError) as caught:
+                        hook.http_json("POST", url, {}, 1.0)
+                    self.assertNotIn("pw_secret", str(caught.exception))
+        opener.assert_not_called()
+
+    def test_http_to_this_machine_still_works(self) -> None:
+        hosts = ["127.0.0.1", "127.0.0.2", "localhost", "[::1]"]
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_TOKEN": "sts_test"}), patch.object(
+            hook, "build_opener"
+        ) as opener:
+            response = opener.return_value.open.return_value.__enter__.return_value
+            response.status = 200
+            response.read.return_value = b'{"approved": true}'
+            for host in hosts:
+                with self.subTest(host=host):
+                    url = f"http://{host}:8787/governance/workflow/authorize"
+                    self.assertEqual(
+                        hook.http_json("POST", url, {}, 1.0), (200, {"approved": True})
+                    )
+
+    def test_no_deny_reason_shows_the_token(self) -> None:
+        with StubGovernance([]) as stub:
+            cases = [
+                (stub.url, {"MEZMO_GOVERNANCE_TOKEN": "sts_secret\nX-Injected: 1"}),
+                (stub.url.replace("http://", "http://user:sts_secret@"), {}),
+            ]
+            for url, extra in cases:
+                with self.subTest(url=url, extra=extra):
+                    result = self.run_hook(hook_event(PRE_EVENT), url, extra=extra)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(set(stdout_json(result)), set(deny_schema("x")))
+                    self.assertNotIn("sts_secret", result.stdout + result.stderr)
+            self.assertEqual(stub.requests, [])
+
     def test_unreachable_governance_denies(self) -> None:
         with StubGovernance([]) as stub:
             url = stub.url
@@ -778,8 +826,38 @@ class EndToEndTests(unittest.TestCase):
         result = self.run_hook(hook_event(PRE_EVENT), None, "SomethingElse")
 
         self.assertEqual(result.returncode, 2)
-        self.assertEqual(result.stdout, "")
+        self.assertEqual(set(stdout_json(result)), set(deny_schema("x")))
         self.assertIn("unsupported hook event", result.stderr)
+
+    def test_input_too_deep_to_read_is_denied_with_the_block_code(self) -> None:
+        # Python 3.9 to 3.13 stop at 1000 levels, later versions at the C stack.
+        depth = 200_000
+        raw = json.dumps(hook_event(PRE_EVENT))[:-1]
+        raw += ', "nested": ' + "[" * depth + "]" * depth + "}"
+        result = self.run_hook(raw, None)
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(set(stdout_json(result)), set(deny_schema("x")))
+        self.assertNotIn("Traceback", result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "Windows has no POSIX file modes")
+    def test_the_audit_log_is_private_to_its_owner(self) -> None:
+        # The log keeps up to 2000 characters of each tool result.
+        fresh = Path(self.tmp.name) / "fresh" / "audit.jsonl"
+        older = Path(self.tmp.name) / "older.jsonl"
+        older.write_text("", encoding="utf-8")
+        older.chmod(0o644)
+        for path in (fresh, older):
+            with self.subTest(log=path.name), StubGovernance([]) as stub:
+                result = self.run_hook(
+                    hook_event(POST_EVENT),
+                    stub.url,
+                    event_name=POST_EVENT,
+                    extra={"MEZMO_GOVERNANCE_AUDIT_LOG": str(path)},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(fresh.parent.stat().st_mode), 0o700)
 
     def test_post_event_logs_without_calling_governance(self) -> None:
         with StubGovernance([]) as stub:

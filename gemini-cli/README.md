@@ -88,7 +88,9 @@ not running in a trusted directory". For CI, set
 whole workspace for that run, including its project hooks and settings.
 
 The `BeforeTool` timeout is in milliseconds. The example sets `600000`, so the
-script's own 590 second deadline ends first and returns a clear deny.
+script's own 590 second deadline ends first and returns a clear deny. Keep the
+timeout at least 10 seconds above `MEZMO_GOVERNANCE_TIMEOUT_SECONDS`: if you
+lower one, lower the other too, or a call still pending runs the tool.
 
 If you turn on `security.environmentVariableRedaction`, Gemini CLI removes
 variables whose names contain `KEY` or `TOKEN` from the hook. Add
@@ -107,7 +109,8 @@ Gemini CLI names an MCP tool `mcp_<server>_<tool>`. Server names can contain
 the namespace and tool name from `mcp_context.server_name` and
 `mcp_context.tool_name`. These fields are in the Gemini CLI source, not in the
 docs: this is not verified. Without `mcp_context`, an MCP call goes to Mezmo
-with namespace `gemini_cli` and the full `mcp_...` name.
+with namespace `gemini_cli` and the full `mcp_...` name. The hook denies a call
+from an MCP server named `gemini_cli`: its tools would pass as built-ins.
 
 ## Windows
 
@@ -159,7 +162,8 @@ Gemini CLI sends no tool call id. Each run uses a fresh `run-<uuid>`, so
 identical call gets its own decision. Post-tool records have `decision_id: null`.
 
 `AfterTool` events only append the local JSONL audit log. A `tool_response`
-with an `error` field is recorded as `failed`.
+with an `error` field is recorded as `failed`. The audit log keeps up to 2000 characters of each tool result, which can hold
+secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
 ## Tests
 
