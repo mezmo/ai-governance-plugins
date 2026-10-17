@@ -455,6 +455,7 @@ one shell call (expected: denied) and one file read (expected: approved):
 | Cursor CLI | 2026.10.14 | pass | blocked |
 | Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
 | Copilot CLI | 1.0.95, 1.0.98 | pass, with user-level hooks | blocked (1.0.95) |
+| VS Code | 1.142.0 with Copilot Chat 0.70.0, Copilot harness | pass; the Local harness skips the hook and runs every tool | not checked |
 | Goose CLI | 1.54.0 | pass | blocked with `on_failure: block`, also on a timeout; runs without it |
 | Droid | 0.244.0, `droid exec` with a bring-your-own-key model (no Factory plan); also against production Mezmo | pass | blocked with the guard |
 | Windsurf | 1.126.0 (Devin Desktop 3.10.67); also against production Mezmo | pass, started from a shell or from the Dock after `launchctl setenv`; a plain Dock launch passes no settings, so every call is denied | blocked with the guard |
@@ -473,7 +474,7 @@ To repeat any of these checks, follow [docs/live-testing.md](docs/live-testing.m
 the setup, the two prompts, and the crash, timeout and production runs.
 
 Not checked at all: a decision a person approves while the hook waits,
-Windows, VS Code, and how most runtimes behave when the hook times out. The
+Windows, and how most runtimes behave when the hook times out. The
 Copilot cloud agent ran the hook from `.github/hooks/` and blocked every call,
 because the hook got neither the URL nor the token (see [copilot/](copilot/README.md#cloud-agent)). For Mastra,
 LangChain, the OpenAI Agents SDK and the Python Claude Agent SDK,

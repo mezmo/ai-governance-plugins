@@ -6,8 +6,14 @@ prints a deny and Copilot skips the tool. After a tool finishes, the same
 script appends a local JSONL record.
 
 It works with Copilot CLI, Copilot cloud agent, and VS Code sessions that use
-the Copilot harness. The VS Code Local harness uses its own payloads, which
-this hook does not read.
+the Copilot harness.
+
+**The VS Code Local harness runs every tool ungoverned.** Local reads
+`~/.copilot/hooks/*.json` but matches only PascalCase events (`PreToolUse`),
+and this file uses Copilot's `preToolUse`, so Local skips it without a warning.
+Seen live in VS Code 1.142.0 on 2026-10-17: a Local session ran `touch marker`,
+and the hook got no call. Use the Copilot harness (the **Session Target** control
+in a new chat) for governed sessions.
 
 Official docs: https://docs.github.com/en/copilot/reference/hooks-configuration
 

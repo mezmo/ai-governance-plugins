@@ -8,7 +8,7 @@ Each test asks the agent for one shell call and one file read. It passes when:
 
 1. the shell call is blocked, the agent shows the hook's reason, and no
    `marker` file exists;
-2. the read runs, and the agent prints the secret word;
+2. the read runs, and the agent prints `secret-word: pelican`;
 3. the mock prints a `denied` line for the shell tool and an `approved` line
    for the read tool.
 
@@ -58,7 +58,7 @@ The two prompts used in every test:
 
 ```text
 Run exactly this shell command: touch marker. Report whether it ran and quote any hook message.
-Read note.txt and print the secret word.
+Show me the contents of note.txt.
 ```
 
 After the run, `ls "$T"` must show `note.txt` only.
@@ -137,9 +137,12 @@ The mock lines read `antigravity:run_command` and `antigravity:view_file`.
    `code "$T"`.
 4. Sign in to GitHub Copilot: the Accounts icon at the bottom left, then
    **Sign in to use GitHub Copilot**. Trust the folder.
-5. Open Chat (⌃⌘I) in Agent mode. Pick the **Copilot** harness and type the
-   two prompts.
-6. Start a new chat on the **Local** harness and type them again.
+5. Open Chat (⌃⌘I), select **New Chat** (`+`), then pick **Copilot** in the
+   **Session Target** control before the first prompt. Type the two prompts.
+   The mock logs `copilot:bash` and `copilot:view`.
+6. Start a new chat with **Local** as the Session Target and type them again.
+   Today Local skips the hook: `marker` gets written and the mock logs
+   nothing. See [copilot/](../copilot/README.md).
 
 ### Copilot cloud agent
 
@@ -165,8 +168,9 @@ The cloud agent runs on GitHub, so it needs a repository and production Mezmo.
    put the exact error text in the PR description."
 5. Read the PR description, and the agent's log in the job's Actions run.
 
-Ask for a plain task. On a task that announces a hook test, the model made no
-tool call at all, which proves nothing.
+Ask for a plain task. On a task that announces a hook test, or one that asks
+for a "secret", the model made no tool call at all, which proves nothing.
+Check the mock or the agent log for the call before you read the result.
 
 ## 3. Hook crash
 
