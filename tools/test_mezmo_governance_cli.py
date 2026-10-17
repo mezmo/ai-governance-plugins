@@ -445,6 +445,18 @@ class InstallTests(CliTestCase):
         self.assertIn("FAIL  codex: could not parse", result.stdout)
         self.assertEqual(path.read_text(), "{not json")
 
+    def test_opencode_install_warns_that_it_keeps_a_local_mock_url(self) -> None:
+        # opencode.json keeps the URL, so a mock's URL outlives the mock.
+        mock_url = "http://127.0.0.1:8787/governance/workflow/authorize"
+        result = self.cli("install", "opencode", "--dry-run", MEZMO_GOVERNANCE_URL=mock_url)
+        self.assertIn("warn  opencode: MEZMO_GOVERNANCE_URL http://127.0.0.1:8787/governance/workflow/authorize is a local mock", result.stdout)
+        result = self.cli("install", "opencode", MEZMO_GOVERNANCE_URL=mock_url)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        doctor = self.cli("doctor", "opencode", MEZMO_GOVERNANCE_URL=mock_url)
+        self.assertIn("ok    OpenCode options: MEZMO_GOVERNANCE_URL is set (local mock)", doctor.stdout)
+        result = self.cli("install", "opencode", "--dry-run", MEZMO_GOVERNANCE_URL="https://api.example.test/governance/workflow/authorize")
+        self.assertNotIn("warn", result.stdout)
+
     def test_opencode_1_is_refused(self) -> None:
         self.fake("opencode", "1.19.0")
         result = self.cli("install", "opencode")
@@ -584,6 +596,26 @@ class LiveSmokeTests(CliTestCase):
         # The smoke calls stay out of the user's audit log.
         self.assertFalse((self.tmp / "home/.mezmo").exists())
 
+    def test_opencode_gets_its_opencode_json_options(self) -> None:
+        # OpenCode passes the plugin its options, with {file:...} read; the shell's variables lose to them.
+        self.cli("install", "opencode")
+        key = self.tmp / "xdg/mezmo/governance-key"
+        key.parent.mkdir(parents=True, exist_ok=True)
+        key.write_text("from-the-key-file\n")
+        path = self.tmp / "xdg/opencode/opencode.json"
+        config = json.loads(path.read_text())
+        config["plugins"][0]["options"]["MEZMO_GOVERNANCE_URL"] = self.env["MEZMO_GOVERNANCE_URL"]
+        path.write_text(json.dumps(config))
+        result = self.cli("smoke", "--live", "opencode", MEZMO_GOVERNANCE_URL=doctor_unreachable())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("live  opencode: shell allowed (", result.stdout)
+        self.assertIn("live  opencode: read allowed (", result.stdout)
+        # The mock smoke still sends the plugin to its own mock, never to the URL in opencode.json.
+        config["plugins"][0]["options"]["MEZMO_GOVERNANCE_URL"] = doctor_unreachable()
+        path.write_text(json.dumps(config))
+        result = self.cli("smoke", "opencode")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_a_call_that_reaches_no_decision_exits_1(self) -> None:
         self.cli("install", "codex")
         result = self.cli("smoke", "--live", MEZMO_GOVERNANCE_URL=doctor_unreachable())
@@ -686,8 +718,11 @@ class PolicyTests(CliTestCase):
             (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "eq", "value": "claude_code"}), "shell Bash covered (deny"),
             (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "in", "value": ["codex", "claude_code"]}), "shell Bash covered (deny"),
             (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "eq", "value": "codex"}), "shell Bash not covered"),
-            (flat({"op": "neq", "value": "Read"}, "deny"), "shell Bash not covered"),
-            (flat({"op": "nin", "value": ["Read"]}, "deny"), "shell Bash not covered"),
+            (flat({"op": "neq", "value": "Read"}, "deny"), "shell Bash covered (deny"),
+            (flat({"op": "nin", "value": ["Read"]}, "deny"), "shell Bash covered (deny"),
+            (flat({"op": "neq", "value": "Bash"}, "deny"), "shell Bash not covered"),
+            (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "neq", "value": "claude_code"}), "shell Bash not covered"),
+            (flat({"op": "eq", "value": "Bash"}, "deny", {"op": "nin", "value": ["codex"]}), "shell Bash covered (deny"),
             ({**flat({"op": "eq", "value": "Bash"}, "deny"), "definition": {"recourse": "deny", "tool": {"op": "eq", "value": "Bash"},
               "args": [{"field": "command", "op": "eq", "value": "rm"}]}}, "shell Bash not covered"),
         )
@@ -697,6 +732,18 @@ class PolicyTests(CliTestCase):
                 result = self.policy("show")
                 self.assertEqual(result.returncode, 0, result.stdout)
                 self.assertIn(want, result.stdout)
+
+    def test_coverage_is_the_most_restrictive_matching_rule(self) -> None:
+        # Mezmo decides from every matching rule, deny over approval_required over allow, in no list order.
+        self.cli("install", "claude-code")
+        allow = flat({"op": "eq", "value": "Bash"}, "allow")
+        held = flat({"op": "nin", "value": ["Read"]}, "approval_required")
+        deny = flat({"op": "in", "value": ["Bash", "Shell"]}, "deny")
+        for rules, want in (([allow, held], f"approval_required, rule_id {held['rule_id']}"), ([allow, held, deny], f"deny, rule_id {deny['rule_id']}")):
+            with self.subTest(rules=len(rules)):
+                self.policy_rules(rules)
+                result = self.policy("show")
+                self.assertIn(f"shell Bash covered ({want})", result.stdout)
 
     def policy_rules(self, rules: list) -> None:
         self.mock_policy["rules"] = [self.seeded, *rules]
@@ -936,6 +983,18 @@ class PolicyTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(result.stdout.count("\npolicy  "), 61)
         self.assertIn("extra 59", result.stdout)
+
+    def test_a_page_link_it_cannot_follow_fails(self) -> None:
+        import mezmo_governance_cli as cli
+
+        for pages, words in (
+            ([{"meta": {"page": {"next": "/v3/governance/policy?limit=50&after=a"}}, "data": [{}]}] * 2, "repeats cursor a"),
+            ([{"meta": {"page": {"next": "/v3/governance/policy?page=2"}}, "data": [{}]}], "no after cursor"),
+            ([{"meta": {"page": {"next": 7}}, "data": [{}]}], "no after cursor"),
+        ):
+            with self.subTest(words=words), mock.patch.object(cli, "api", side_effect=[(200, page) for page in pages]):
+                with self.assertRaisesRegex(cli.Failure, words):
+                    cli.listed("https://example.test/v3/governance", ADMIN, "/policy", "read policies")
 
     def test_the_admin_key_is_sent_and_never_the_hook_token(self) -> None:
         self.cli("install", "claude-code")

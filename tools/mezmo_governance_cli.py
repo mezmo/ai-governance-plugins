@@ -127,7 +127,10 @@ def backup(path: Path) -> Path:
 
 
 def write_json(path: Path, data: Any) -> None:
-    """Write data in the file's own indent and line endings, so the lines install did not change stay the same."""
+    """Write data as JSON in the file's own indent, line endings and final newline.
+
+    json.dumps lays out every value again: a value the user kept on one line or aligned by hand comes out one item a line.
+    """
     # Write through a symlink, so a config linked from elsewhere stays linked.
     path = path.resolve()
     indent, newline, ending = "  ", "\n", "\n"
@@ -390,15 +393,17 @@ def goose() -> Installer:
     return Installer(installed, install, uninstall, "")
 
 
+def ours(item: Any) -> bool:
+    """Whether an opencode.json plugins entry names this plugin."""
+    package = item if isinstance(item, str) else as_dict(item).get("package")
+    return isinstance(package, str) and Path(package).name == "mezmo-governance"
+
+
 def opencode() -> Installer:
     def paths() -> tuple:
         config = doctor.opencode_dir()
         key_file = doctor.env_dir("XDG_CONFIG_HOME", doctor.home() / ".config") / "mezmo" / "governance-key"
         return config / "opencode.json", config / "mezmo-governance", key_file
-
-    def ours(item: Any) -> bool:
-        package = item if isinstance(item, str) else as_dict(item).get("package")
-        return isinstance(package, str) and Path(package).name == "mezmo-governance"
 
     def installed() -> Optional[str]:
         config, folder, _ = paths()
@@ -413,6 +418,12 @@ def opencode() -> Installer:
             raise Failure("install does not handle OpenCode 1.x; follow 'Install on 1.x' in opencode/README.md")
         config, folder, key_file = paths()
         url = os.environ.get("MEZMO_GOVERNANCE_URL") or doctor.DEFAULT_URL
+        if doctor.local_url(url):
+            print(
+                f"warn  opencode: MEZMO_GOVERNANCE_URL {doctor.shown_url(url)} is a local mock, and opencode.json keeps it"
+                " after the mock stops; set MEZMO_GOVERNANCE_URL in opencode.json to Mezmo's when you are done",
+                flush=True,
+            )
         entry = {
             "package": "./mezmo-governance",
             "options": {"MEZMO_GOVERNANCE_URL": url, "MEZMO_GOVERNANCE_TOKEN": f"{{file:{key_file}}}"},
@@ -723,6 +734,30 @@ def plugin_files(name: str) -> list:
     return [path for path in candidates if path.is_file()][:1]
 
 
+def plugin_options(name: str, env: dict, live: bool) -> dict:
+    """The options OpenCode passes the plugin: its opencode.json entry's, with each {file:...} read, as OpenCode reads them.
+
+    The smoke's own timeout and audit log win, and against the mock its URL and token do too.
+    """
+    if name != "opencode":
+        return {}
+    config = doctor.opencode_dir() / "opencode.json"
+    entry = next((item for item in as_list(load_object(config).get("plugins")) if ours(item)), None)
+    forced = ["MEZMO_GOVERNANCE_TIMEOUT_SECONDS", "MEZMO_GOVERNANCE_AUDIT_LOG"]
+    if not live:
+        forced += ["MEZMO_GOVERNANCE_URL", "MEZMO_GOVERNANCE_TOKEN"]
+    options = {**as_dict(as_dict(entry).get("options")), **{key: env[key] for key in forced if key in env}}
+
+    def read(match: re.Match) -> str:
+        path = Path(os.path.expanduser(match.group(1)))
+        text = doctor.read_text(path if path.is_absolute() else config.parent / path)
+        if text is None:
+            raise Failure(f"{shown(config)} names {{file:{match.group(1)}}}, which is missing")
+        return text.strip()
+
+    return {key: re.sub(r"\{file:([^}]+)\}", read, value) if isinstance(value, str) else value for key, value in options.items()}
+
+
 def live_env(scratch: Path) -> dict:
     """The user's environment for smoke --live: their URL and token, a 15 s limit unless they set one, a scratch audit log."""
     env = dict(os.environ)
@@ -840,11 +875,17 @@ def smoke_calls(names: list, env: dict, live: bool, seconds: float) -> int:
                 print(f"FAIL  {name}: node is not on PATH, so the plugin could not be run", flush=True)
                 failed = True
                 continue
+            try:
+                options = json.dumps(plugin_options(name, env, live))
+            except (doctor.Unknown, Failure) as error:
+                print(f"FAIL  {name}: {error}", flush=True)
+                failed = True
+                continue
             for path in files:
 
                 def plugin(tool: str, path: Path = path) -> subprocess.CompletedProcess:
                     driver = Path(__file__).resolve().with_name("smoke_plugin.ts")
-                    return run([node, str(driver), name, str(path), tool], "", env, path, seconds)
+                    return run([node, str(driver), name, str(path), tool], options, env, path, seconds)
 
                 calls.append((path, "bash", plugin))
         for path, shell, call in calls:
@@ -950,32 +991,60 @@ def answer(call: tuple, want: int, what: str) -> dict:
 
 
 def listed(base: str, key: str, path: str, what: str) -> list:
-    """Every item of a list, following meta.page.next."""
+    """Every item of a list, following meta.page.next. A link it cannot follow leaves the list unknown."""
     items = []
     url = f"{base}{path}?limit={PAGE_LIMIT}" if path == "/policy" else base + path
+    seen: set = set()
     while True:
         body = answer(api(what, key, "GET", url), 200, what)
         items += as_list(body.get("data"))
-        after = parse_qs(urlparse(str(as_dict(as_dict(body.get("meta")).get("page")).get("next") or "")).query).get("after")
-        if not after:
+        link = as_dict(as_dict(body.get("meta")).get("page")).get("next")
+        if link is None or link == "":
             return items
+        after = parse_qs(urlparse(link).query).get("after") if isinstance(link, str) else None
+        if not after:
+            raise Failure(f"{what}: the next page link {link!r} has no after cursor, so the list is incomplete")
+        if after[0] in seen:
+            raise Failure(f"{what}: the next page link repeats cursor {after[0]}, so the list is incomplete")
+        seen.add(after[0])
         url = f"{base}{path}?limit={PAGE_LIMIT}&after={quote(after[0])}"
 
 
+# Mezmo decides from every matching rule, the most restrictive first, in no list order.
+RESTRICTIVE = ("allow", "approval_required", "deny")
+
+
 def matches(condition: Any, value: str) -> bool:
+    """Whether a tool or namespace condition matches; no condition matches every value."""
+    if not condition:
+        return True
     condition = as_dict(condition)
     op, want = condition.get("op", "eq"), condition.get("value")
-    return (op == "eq" and want == value) or (op == "in" and isinstance(want, list) and value in want)
+    names = want if isinstance(want, list) else None
+    return (
+        (op == "eq" and want == value)
+        or (op == "neq" and isinstance(want, str) and want != value)
+        or (op == "in" and names is not None and value in names)
+        or (op == "nin" and names is not None and value not in names)
+    )
 
 
 def covering(rules: list, namespace: str, tool: str) -> Optional[dict]:
-    """The first rule naming the tool by eq or in, with no namespace or the agent's, and no argument checks."""
+    """The rule that decides every call of the tool in the namespace: the most restrictive match without argument checks.
+
+    A rule with argument checks decides only some calls, so it covers none.
+    """
+    def rank(rule: dict) -> int:
+        recourse = as_dict(rule).get("recourse") or as_dict(as_dict(rule).get("definition")).get("recourse")
+        # A recourse it does not know counts as the most restrictive, so it never hides a deny.
+        return RESTRICTIVE.index(recourse) if recourse in RESTRICTIVE else len(RESTRICTIVE)
+
+    found = []
     for rule in rules:
         definition = as_dict(as_dict(rule).get("definition"))
-        space = definition.get("namespace")
-        if matches(definition.get("tool"), tool) and (not space or matches(space, namespace)) and not definition.get("args"):
-            return rule
-    return None
+        if matches(definition.get("tool"), tool) and matches(definition.get("namespace"), namespace) and not definition.get("args"):
+            found.append(rule)
+    return max(found, key=rank, default=None)
 
 
 def condition_text(condition: Any) -> str:

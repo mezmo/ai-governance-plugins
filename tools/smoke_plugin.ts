@@ -1,10 +1,11 @@
 // Run one tool call through an installed OpenCode 2.x or Pi plugin, the way
 // the agent calls it. `./mezmo-governance smoke` runs this with node.
 //
-//   node tools/smoke_plugin.ts <opencode|pi> <plugin .ts file> <tool name>
+//   node tools/smoke_plugin.ts <opencode|pi> <plugin .ts file> <tool name> < options.json
 //
-// It prints the decision as one JSON line and exits 2 on deny, 0 on approve.
+// OpenCode gets the JSON object on stdin as its plugin options. It prints the decision as one JSON line and exits 2 on deny, 0 on approve.
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 type Handler = (event: unknown, ctx?: unknown) => Promise<any> | any;
@@ -19,6 +20,7 @@ if (kind === "opencode") {
   // OpenCode 2.x: setup registers execute.before, which throws to block.
   const hooks: Record<string, Handler> = {};
   await plugin.setup({
+    options: JSON.parse(readFileSync(0, "utf8") || "{}"),
     tool: {
       hook: async (name: string, callback: Handler) => {
         hooks[name] = callback;

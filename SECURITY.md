@@ -12,8 +12,8 @@ agent and the machine it runs on.
 
 Known limits, not vulnerabilities:
 
-- Codex and GitHub Copilot run the tool when the hook itself crashes or times
-  out (see their READMEs).
+- Codex, Gemini CLI and GitHub Copilot run the tool when the hook times out
+  (see their READMEs). A hook that crashes still blocks the call.
 - Goose's Code Mode runs the tool calls inside its scripts without a hook, so
   the Goose hook denies every Code Mode script.
 - The OpenAI Agents SDK does not gate hosted tools.

@@ -226,6 +226,12 @@ def binary_version(path: str) -> Optional[tuple]:
     return version_tuple(result.stdout + " " + result.stderr)
 
 
+def local_url(url: str) -> bool:
+    """An http URL on this machine, such as the mock's."""
+    parsed = urlparse(url)
+    return parsed.scheme == "http" and parsed.hostname in LOCAL_HOSTS
+
+
 def url_problem(url: str) -> Optional[str]:
     parsed = urlparse(url)
     if parsed.scheme == "https" and parsed.hostname:
@@ -277,7 +283,7 @@ def check_settings(report: Report) -> bool:
                 report.line("FAIL", name, f"{shown_url(value)} {problem}", f"use {DEFAULT_URL}")
                 ready = False
             else:
-                local = " (local mock)" if urlparse(value).scheme == "http" else ""
+                local = " (local mock)" if local_url(value) else ""
                 report.line("ok", name, f"{shown_url(value)}{local}, from {source}")
         else:
             report.line("ok", name, f"set, from {source} (not shown)")
@@ -792,7 +798,8 @@ def opencode_option(report: Report, options: dict, name: str) -> None:
     elif name == "MEZMO_GOVERNANCE_URL" and url_problem(value):
         report.line("FAIL", "OpenCode options", f"{name} {url_problem(value)}", f"use {DEFAULT_URL}")
         return
-    report.line("ok", "OpenCode options", f"{name} is set")
+    local = " (local mock)" if name == "MEZMO_GOVERNANCE_URL" and local_url(value.strip()) else ""
+    report.line("ok", "OpenCode options", f"{name} is set{local}")
 
 
 def check_opencode(report: Report, version: Optional[tuple]) -> Optional[list]:
