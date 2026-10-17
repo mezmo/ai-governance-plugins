@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
-import { appendFile, mkdir } from "node:fs/promises";
+import { mkdir, open } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -458,8 +458,18 @@ export function resultFailed(value: unknown): boolean {
   return typeof record.exit_code === "number" && record.exit_code !== 0;
 }
 
+// The log holds tool output: only its owner may read it.
 export async function appendAudit(record: Record<string, unknown>): Promise<void> {
   const path = auditLogPath();
-  await mkdir(dirname(path), { recursive: true });
-  await appendFile(path, `${JSON.stringify(record)}\n`, "utf8");
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  const handle = await open(path, "a", 0o600);
+  try {
+    // An older version created the log 0644.
+    if ((await handle.stat()).mode & 0o077) {
+      await handle.chmod(0o600);
+    }
+    await handle.appendFile(`${JSON.stringify(record)}\n`, "utf8");
+  } finally {
+    await handle.close();
+  }
 }
