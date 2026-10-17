@@ -486,5 +486,17 @@ class SessionStateTests(unittest.TestCase):
         self.assertEqual(hook.session_state_path("abc"), pathlib.Path.home() / ".mezmo" / "governance" / "sessions" / "abc.json")
 
 
+
+class HookConfigTests(unittest.TestCase):
+    def test_a_pre_tool_hook_that_fails_blocks_the_tool(self) -> None:
+        # Without onFailure, Claude Code runs the tool when the hook crashes, times out
+        # or finds no python3.
+        config = json.loads((pathlib.Path(__file__).resolve().parents[1] / "hooks" / "hooks.json").read_text())
+        handlers = [handler for group in config["hooks"]["PreToolUse"] for handler in group["hooks"]]
+        self.assertTrue(handlers)
+        for handler in handlers:
+            self.assertEqual(handler.get("onFailure"), "block", handler)
+
+
 if __name__ == "__main__":
     unittest.main()
