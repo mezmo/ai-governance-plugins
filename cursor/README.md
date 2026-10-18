@@ -56,30 +56,6 @@ If you prefer the MCP-specific events, the script also handles
 `mcp_server_name` becomes `tool_namespace`) and `beforeShellExecution` /
 `afterShellExecution` (tool name `Shell`, arguments `{ "command": "..." }`).
 
-## MCP tools under preToolUse
-
-Cursor's docs give the `MCP:<tool_name>` matcher for `preToolUse`, but not the
-input fields for an MCP call. This is not verified. The hook reads
-`MCP:<tool>` or `mcp__<server>__<tool>` as the tool name, and
-`mcp_server_name` as the namespace when present. Without a server name, an MCP
-call goes to Mezmo with namespace `mcp`, so a policy keyed on the server
-name does not match it. To gate MCP tools by server, use `beforeMCPExecution`,
-which always sends `mcp_server_name`. The hook denies a call from an MCP server
-named `cursor`: its tools would pass as built-ins.
-
-## Windows
-
-Cursor's docs do not say which shell runs a hook command on Windows. The
-example uses POSIX shell syntax (`${VAR:-default}`, `$HOME`) and `python3`. On
-Windows, use an absolute path:
-
-```json
-"command": "py -3 C:/Users/<you>/.cursor/hooks/mezmo_governance_hook.py"
-```
-
-In PowerShell, set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
-`$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Cursor.
-
 ## Verify
 
 From the repository root, with the two variables exported:
@@ -129,7 +105,31 @@ echo '{"hook_event_name":"preToolUse","conversation_id":"smoke","tool_use_id":"s
 above with your policy's reason. Use a new `tool_use_id` for each run: Mezmo
 returns the earlier decision for an id it has seen.
 
-## Output
+## MCP tools under preToolUse
+
+Cursor's docs give the `MCP:<tool_name>` matcher for `preToolUse`, but not the
+input fields for an MCP call. This is not verified. The hook reads
+`MCP:<tool>` or `mcp__<server>__<tool>` as the tool name, and
+`mcp_server_name` as the namespace when present. Without a server name, an MCP
+call goes to Mezmo with namespace `mcp`, so a policy keyed on the server
+name does not match it. To gate MCP tools by server, use `beforeMCPExecution`,
+which always sends `mcp_server_name`. The hook denies a call from an MCP server
+named `cursor`: its tools would pass as built-ins.
+
+## Windows
+
+Cursor's docs do not say which shell runs a hook command on Windows. The
+example uses POSIX shell syntax (`${VAR:-default}`, `$HOME`) and `python3`. On
+Windows, use an absolute path:
+
+```json
+"command": "py -3 C:/Users/<you>/.cursor/hooks/mezmo_governance_hook.py"
+```
+
+In PowerShell, set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
+`$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Cursor.
+
+## What the hook sends
 
 Allow:
 

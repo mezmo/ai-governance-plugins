@@ -100,38 +100,6 @@ If you turn on `security.environmentVariableRedaction`, Gemini CLI removes
 variables whose names contain `KEY` or `TOKEN` from the hook. Add
 `MEZMO_GOVERNANCE_TOKEN` to its `allowed` list, or every call is denied.
 
-## Tool names in policy
-
-Mezmo sees built-in tools with namespace `gemini_cli`. Names seen live in
-Gemini CLI 0.64.0: `run_shell_command` for shell commands and `read_file` for
-reads.
-
-## MCP tools
-
-Gemini CLI names an MCP tool `mcp_<server>_<tool>`. Server names can contain
-`_`, so the name alone does not say where the server name ends. The hook reads
-the namespace and tool name from `mcp_context.server_name` and
-`mcp_context.tool_name`. These fields are in the Gemini CLI source, not in the
-docs: this is not verified. Without `mcp_context`, an MCP call goes to Mezmo
-with namespace `gemini_cli` and the full `mcp_...` name. The hook denies a call
-from an MCP server named `gemini_cli`: its tools would pass as built-ins.
-
-## Windows
-
-Gemini CLI runs hook commands through PowerShell on Windows (from the source
-code, not verified). The example uses POSIX shell syntax. On Windows, use an
-absolute path:
-
-```json
-"command": "py -3 C:/Users/<you>/.gemini/hooks/mezmo_governance_hook.py; if ($LASTEXITCODE -ne 0) { exit 2 }"
-```
-
-The `if ($LASTEXITCODE ...)` part is the crash guard in PowerShell form, for
-`BeforeTool` only. It was not run on Windows.
-
-Set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
-`$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Gemini CLI.
-
 ## Verify
 
 From the repository root, with the two variables exported:
@@ -173,7 +141,39 @@ Then run the same line without the two inline variables, with your settings
 exported. No output means Mezmo allowed the call. A deny prints the shape
 above with your policy's reason.
 
-## Output
+## Tool names in policy
+
+Mezmo sees built-in tools with namespace `gemini_cli`. Names seen live in
+Gemini CLI 0.64.0: `run_shell_command` for shell commands and `read_file` for
+reads.
+
+## MCP tools
+
+Gemini CLI names an MCP tool `mcp_<server>_<tool>`. Server names can contain
+`_`, so the name alone does not say where the server name ends. The hook reads
+the namespace and tool name from `mcp_context.server_name` and
+`mcp_context.tool_name`. These fields are in the Gemini CLI source, not in the
+docs: this is not verified. Without `mcp_context`, an MCP call goes to Mezmo
+with namespace `gemini_cli` and the full `mcp_...` name. The hook denies a call
+from an MCP server named `gemini_cli`: its tools would pass as built-ins.
+
+## Windows
+
+Gemini CLI runs hook commands through PowerShell on Windows (from the source
+code, not verified). The example uses POSIX shell syntax. On Windows, use an
+absolute path:
+
+```json
+"command": "py -3 C:/Users/<you>/.gemini/hooks/mezmo_governance_hook.py; if ($LASTEXITCODE -ne 0) { exit 2 }"
+```
+
+The `if ($LASTEXITCODE ...)` part is the crash guard in PowerShell form, for
+`BeforeTool` only. It was not run on Windows.
+
+Set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
+`$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Gemini CLI.
+
+## What the hook sends
 
 Allow prints nothing. Deny:
 

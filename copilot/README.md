@@ -88,6 +88,49 @@ Use the plugin or the file install, not both: both run the hook twice.
 `smoke` checks only the file install. A local-path marketplace loads the hook
 from that checkout, so editing it or switching its branch changes the hook.
 
+## Verify
+
+From the repository root, with the two variables exported:
+
+```bash
+./mezmo-governance doctor copilot
+./mezmo-governance smoke copilot
+```
+
+`doctor` checks the install, the settings and the key. `smoke` runs the
+installed hook against its own mock: one shell call must be denied and one
+read approved. Neither starts the agent.
+
+To check that the agent calls the hook, run
+`./mezmo-governance mock --deny bash` in a second terminal. In the agent's
+terminal, export the two lines it prints, start the agent, and ask it to run
+`ls`. The
+mock prints a `denied` line for `copilot:bash`. No line means the hook did not
+run.
+
+## Smoke test
+
+Run these from the `copilot/` folder. First check that the hook
+denies when Mezmo cannot be reached. Nothing listens on port 9:
+
+```bash
+echo '{"sessionId":"smoke","timestamp":0,"cwd":".","toolName":"bash","toolArgs":"{\"command\":\"echo hi\"}"}' \
+  | MEZMO_GOVERNANCE_URL="http://127.0.0.1:9/governance/workflow/authorize" \
+    MEZMO_GOVERNANCE_TOKEN="test" python3 mezmo_governance_hook.py preToolUse
+```
+
+It exits 0 and prints a deny. The text after `unavailable:` varies by
+platform, and `hookSpecificOutput` repeats the same decision:
+
+```json
+{"permissionDecision":"deny","permissionDecisionReason":"Mezmo Governance could not authorize this exact tool call, so Copilot blocked it: Mezmo Governance is unavailable: <urlopen error [Errno 61] Connection refused>","hookSpecificOutput":{…}}
+```
+
+Then run the same line without the two inline variables, with your settings
+exported. No output means Mezmo allowed the call, and Copilot goes on with its
+normal permission flow. A deny prints the shape above with your policy's
+reason.
+
 ## Tool names in policy
 
 Mezmo sees every tool with namespace `copilot`, also from VS Code Local, so a
@@ -175,50 +218,7 @@ the tool. So the `preToolUse` command ends with `if ($LASTEXITCODE -ne 0) { exit
 `$env:MEZMO_GOVERNANCE_URL = "..."` and `$env:MEZMO_GOVERNANCE_TOKEN = "..."`
 before you start Copilot.
 
-## Verify
-
-From the repository root, with the two variables exported:
-
-```bash
-./mezmo-governance doctor copilot
-./mezmo-governance smoke copilot
-```
-
-`doctor` checks the install, the settings and the key. `smoke` runs the
-installed hook against its own mock: one shell call must be denied and one
-read approved. Neither starts the agent.
-
-To check that the agent calls the hook, run
-`./mezmo-governance mock --deny bash` in a second terminal. In the agent's
-terminal, export the two lines it prints, start the agent, and ask it to run
-`ls`. The
-mock prints a `denied` line for `copilot:bash`. No line means the hook did not
-run.
-
-## Smoke test
-
-Run these from the `copilot/` folder. First check that the hook
-denies when Mezmo cannot be reached. Nothing listens on port 9:
-
-```bash
-echo '{"sessionId":"smoke","timestamp":0,"cwd":".","toolName":"bash","toolArgs":"{\"command\":\"echo hi\"}"}' \
-  | MEZMO_GOVERNANCE_URL="http://127.0.0.1:9/governance/workflow/authorize" \
-    MEZMO_GOVERNANCE_TOKEN="test" python3 mezmo_governance_hook.py preToolUse
-```
-
-It exits 0 and prints a deny. The text after `unavailable:` varies by
-platform, and `hookSpecificOutput` repeats the same decision:
-
-```json
-{"permissionDecision":"deny","permissionDecisionReason":"Mezmo Governance could not authorize this exact tool call, so Copilot blocked it: Mezmo Governance is unavailable: <urlopen error [Errno 61] Connection refused>","hookSpecificOutput":{…}}
-```
-
-Then run the same line without the two inline variables, with your settings
-exported. No output means Mezmo allowed the call, and Copilot goes on with its
-normal permission flow. A deny prints the shape above with your policy's
-reason.
-
-## Output
+## What the hook sends
 
 Allow prints nothing. Deny, at the top level for Copilot and in
 `hookSpecificOutput` for VS Code Local:

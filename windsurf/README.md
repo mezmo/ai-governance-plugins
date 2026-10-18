@@ -1,27 +1,5 @@
 # Windsurf + Mezmo Governance
 
-## Partial coverage
-
-Cascade has hooks only for terminal commands, file reads, file edits and MCP
-calls. These actions get no hook, so Mezmo never sees them and they run
-ungoverned:
-
-- grep and find searches;
-- new files written whole (`write_to_file`);
-- web search and URL reads;
-- git commits;
-- web app deploys;
-- subagent tasks.
-
-Terminal reads, browser DOM reads, clipboard use and custom tools get no hook
-either. If your policy must cover any of these, Cascade cannot enforce it
-today.
-
-Windsurf loads no hooks at all while a workspace is open in Restricted Mode,
-the user-level hook included. Trust each workspace you use with Cascade.
-
-## About this hook
-
 A Windsurf Cascade hook that asks Mezmo Governance before Cascade runs a
 command, reads or writes a file, or calls an MCP tool. If Mezmo denies the
 call, or the hook cannot get an answer, the hook exits 2 and Cascade skips the
@@ -47,22 +25,25 @@ codes and file locations below come from those docs and from the Devin Desktop
 `8063233fcc937a9fdb53191ff25de5313b0a580f1b0eb6be6f660a154f40b817`, which
 matches the Windsurf update server).
 
-## What the hook covers
+## Partial coverage
 
-The hook gates these four Cascade hooks, one for each kind of action:
+Cascade has hooks only for terminal commands, file reads, file edits and MCP
+calls. These actions get no hook, so Mezmo never sees them and they run
+ungoverned:
 
-| Hook | Cascade steps it covers |
-|---|---|
-| `pre_run_command` | terminal commands |
-| `pre_read_code` | file views, code item views, directory lists, notebook reads, code context search |
-| `pre_write_code` | code edits, proposed code, notebook edits |
-| `pre_mcp_tool_use` | MCP tool calls, MCP resource lists and reads |
+- grep and find searches;
+- new files written whole (`write_to_file`);
+- web search and URL reads;
+- git commits;
+- web app deploys;
+- subagent tasks.
 
-The step lists, and the steps with no hook in [Partial coverage](#partial-coverage),
-come from the 1.126.0 language server. The Restricted Mode rule is in the docs,
-and the language server logs
-`[HOOKS] Skipping all hook files: workspace is untrusted`. Whether Cascade can
-still run tools in such a workspace is not verified.
+Terminal reads, browser DOM reads, clipboard use and custom tools get no hook
+either. If your policy must cover any of these, Cascade cannot enforce it
+today.
+
+Windsurf loads no hooks at all while a workspace is open in Restricted Mode,
+the user-level hook included. Trust each workspace you use with Cascade.
 
 ## Fail behavior
 
@@ -155,27 +136,6 @@ launchctl setenv MEZMO_GOVERNANCE_TOKEN "$MEZMO_GOVERNANCE_TOKEN"
 `launchctl setenv` lasts until logout, and any app you start can read the token. Without them the hook
 denies every call and names the missing variable.
 
-### Windows is not supported
-
-On Windows, Windsurf runs `command` with `powershell -Command`. PowerShell
-cannot parse the bash `|| exit 2` guard and exits 1, so the action runs: the
-hook would fail open. `./mezmo-governance install windsurf` refuses on
-Windows, and changes nothing.
-
-## Tool names in policy
-
-Mezmo sees each built-in action with namespace `windsurf`:
-
-| Hook | Tool name | Arguments |
-|---|---|---|
-| `pre_run_command` | `run_command` | `command_line`, `cwd` |
-| `pre_read_code` | `read_code` | `file_path`, which may be a directory |
-| `pre_write_code` | `write_code` | `file_path`, `edits` (each `old_string`, `new_string`) |
-| `pre_mcp_tool_use` | the MCP tool name | the MCP tool's own arguments |
-
-An MCP tool arrives with its server as the namespace. The hook denies a call
-from an MCP server named `windsurf`: its tools would pass as built-ins.
-
 ## Verify
 
 From the repository root, with the two variables exported:
@@ -225,6 +185,44 @@ echo '{"agent_action_name":"pre_run_command","trajectory_id":"smoke","tool_info"
 
 Exit 0 with no output means Mezmo allowed the call. Exit 2 prints your
 policy's reason.
+
+## Tool names in policy
+
+Mezmo sees each built-in action with namespace `windsurf`:
+
+| Hook | Tool name | Arguments |
+|---|---|---|
+| `pre_run_command` | `run_command` | `command_line`, `cwd` |
+| `pre_read_code` | `read_code` | `file_path`, which may be a directory |
+| `pre_write_code` | `write_code` | `file_path`, `edits` (each `old_string`, `new_string`) |
+| `pre_mcp_tool_use` | the MCP tool name | the MCP tool's own arguments |
+
+An MCP tool arrives with its server as the namespace. The hook denies a call
+from an MCP server named `windsurf`: its tools would pass as built-ins.
+
+## What the hook covers
+
+The hook gates these four Cascade hooks, one for each kind of action:
+
+| Hook | Cascade steps it covers |
+|---|---|
+| `pre_run_command` | terminal commands |
+| `pre_read_code` | file views, code item views, directory lists, notebook reads, code context search |
+| `pre_write_code` | code edits, proposed code, notebook edits |
+| `pre_mcp_tool_use` | MCP tool calls, MCP resource lists and reads |
+
+The step lists, and the steps with no hook in [Partial coverage](#partial-coverage),
+come from the 1.126.0 language server. The Restricted Mode rule is in the docs,
+and the language server logs
+`[HOOKS] Skipping all hook files: workspace is untrusted`. Whether Cascade can
+still run tools in such a workspace is not verified.
+
+## Windows
+
+Windows is not supported. On Windows, Windsurf runs `command` with
+`powershell -Command`. PowerShell cannot parse the bash `|| exit 2` guard and
+exits 1, so the action runs: the hook would fail open. `./mezmo-governance install windsurf` refuses on
+Windows, and changes nothing.
 
 ## What the hook sends
 

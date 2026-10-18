@@ -112,29 +112,6 @@ install, not both: both run the hook twice. `doctor` checks the plugin's
 trust; `smoke` checks only the file install. For a headless setup, see
 [Codex CLI, Copilot CLI and Droid](../README.md#codex-cli-copilot-cli-and-droid).
 
-## Tool names in policy
-
-Mezmo sees the Codex tool name with namespace `codex`. Names seen live in
-Codex 0.162.1: `Bash` for shell commands and `apply_patch` for file edits. An
-MCP tool arrives with its server as the namespace. Codex has no read tool: it
-reads files with `Bash` (`cat`), so a policy that denies `Bash` also blocks reads.
-
-## Windows
-
-The example command uses POSIX shell syntax (`${VAR:-default}`, `$HOME`) and
-`python3`. On Windows, add `commandWindows` to each handler with an absolute
-path. For `PreToolUse`, add the guard in PowerShell form:
-
-```json
-"commandWindows": "py -3 C:\\Users\\<you>\\.codex\\hooks\\mezmo_governance_hook.py; if ($LASTEXITCODE -ne 0) { exit 2 }"
-```
-
-The Codex docs do not say which shell runs `commandWindows`. The guard
-assumes PowerShell; this is not verified.
-
-In PowerShell, set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
-`$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Codex.
-
 ## Verify
 
 From the repository root, with the two variables exported:
@@ -184,6 +161,29 @@ echo '{"hook_event_name":"PreToolUse","session_id":"smoke","tool_use_id":"smoke-
 No output means Mezmo allowed the call. A deny prints the shape above with your
 policy's reason. Use a new `tool_use_id` for each run: Mezmo returns the
 earlier decision for an id it has seen.
+
+## Tool names in policy
+
+Mezmo sees the Codex tool name with namespace `codex`. Names seen live in
+Codex 0.162.1: `Bash` for shell commands and `apply_patch` for file edits. An
+MCP tool arrives with its server as the namespace. Codex has no read tool: it
+reads files with `Bash` (`cat`), so a policy that denies `Bash` also blocks reads.
+
+## Windows
+
+The example command uses POSIX shell syntax (`${VAR:-default}`, `$HOME`) and
+`python3`. On Windows, add `commandWindows` to each handler with an absolute
+path. For `PreToolUse`, add the guard in PowerShell form:
+
+```json
+"commandWindows": "py -3 C:\\Users\\<you>\\.codex\\hooks\\mezmo_governance_hook.py; if ($LASTEXITCODE -ne 0) { exit 2 }"
+```
+
+The Codex docs do not say which shell runs `commandWindows`. The guard
+assumes PowerShell; this is not verified.
+
+In PowerShell, set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
+`$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Codex.
 
 ## What the hook sends
 
