@@ -344,8 +344,8 @@ both run the hook twice. `smoke` checks only the file install; `doctor` also che
   `[hooks.state."<key>"]` table with `trusted_hash = "<hash>"` to `$CODEX_HOME/config.toml` for each.
 - Copilot CLI: `copilot plugin marketplace add mezmo/ai-governance-plugins`, then `copilot plugin install mezmo-governance@mezmo`.
   A local-path marketplace loads the hook from that checkout, so editing it or switching its branch changes the hook.
-- Droid: `droid plugin marketplace add mezmo/ai-governance-plugins`, then `droid plugin install mezmo-governance@<marketplace> --scope user`.
-  Droid names the marketplace after its source; `droid plugin marketplace list` shows the name. This plugin route is not tested; the file install is. See [droid/](droid/).
+- Droid: `droid plugin marketplace add mezmo/ai-governance-plugins`, then `droid plugin install mezmo-governance@ai-governance-plugins --scope user`.
+  Droid names the marketplace after its source repository, `ai-governance-plugins`; `droid plugin marketplace list` shows it. Run live on 2026-10-17. See [droid/](droid/).
 
 ### Install by hand
 
@@ -401,7 +401,8 @@ out of tool arguments.
 
 The hook examples set a 600 second hook timeout, so the plugin's own deadline
 ends first and returns a clear deny. Windsurf has no hook timeout. Antigravity CLI
-honored a 45 second timeout live; 600 is not verified.
+honored a 600 second timeout live: the hook's own 590 second deadline ended
+first and blocked the call with `approval still pending`.
 
 ## Troubleshooting
 

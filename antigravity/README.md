@@ -31,8 +31,9 @@ run live. So the command needs no `|| exit 2` guard.
 
 The `timeout` is in seconds and defaults to 30. The example sets the
 `PreToolUse` `timeout` to `600`, so the script's own 590 second deadline ends
-first and returns a clear deny. A hook timeout above 30 seconds was honored
-live at 45; 600 is not verified. Keep the `timeout` at least 10 seconds above
+first and returns a clear deny. Antigravity CLI honored `600` live on 2026-10-17:
+against a mock that held the call, the script's deadline ended first and
+blocked it with `approval still pending` after 602 seconds. Keep the `timeout` at least 10 seconds above
 `MEZMO_GOVERNANCE_TIMEOUT_SECONDS`.
 
 Antigravity still runs the tool when:
