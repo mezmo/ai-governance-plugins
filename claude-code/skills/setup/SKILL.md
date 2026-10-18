@@ -14,7 +14,7 @@ allowed-tools:
 
 The plugin does three independent things:
 
-- **Governance**: before each tool call, a hook asks Mezmo Governance whether this exact call may run and blocks it when the answer is no. It uses an agent access key. Until one is configured, the hook does nothing.
+- **Governance**: before each tool call, a hook asks Mezmo Governance whether this exact call may run and blocks it when the answer is no. It uses a service account token, a standard Mezmo service key. Until one is configured, the hook does nothing.
 - **Telemetry**: Claude Code exports OpenTelemetry metrics, events and traces to Mezmo's endpoint, `https://logs.mezmo.com/otel`, authenticated with an ingestion key in an `apikey` header.
 - **MCP**: Claude Code connects to Mezmo's MCP server, `https://mcp.mezmo.com/mcp`, with a service key, so Claude can query Mezmo logs and work on pipelines.
 
@@ -55,7 +55,7 @@ Skip this section if the user didn't choose governance.
 
 ### Access key and environment
 
-Ask for the **agent access key**. In Mezmo, an administrator registers an agent for Claude Code, attaches a policy and copies the agent's access key, which Mezmo shows once. Register a separate agent for each coding tool, so policies and decisions stay separate. The token AURA reads from `MEZMO_GOVERNANCE_TOKEN` is the same kind of key.
+Ask for the **service account token**. In Mezmo, an administrator registers an agent for Claude Code with a service account that has Governance permissions, attaches a policy, and creates that service account's token, a standard Mezmo service key, which Mezmo shows once. It is not a key of the agent. Register a separate agent for each coding tool, so policies and decisions stay separate. The token AURA reads from `MEZMO_GOVERNANCE_TOKEN` is the same kind of key.
 
 Ask which environment:
 

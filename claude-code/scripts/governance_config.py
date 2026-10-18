@@ -192,7 +192,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     configure = sub.add_parser("configure", help="Check the access key, then save it")
-    configure.add_argument("--key", help="Agent access key (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
+    configure.add_argument("--key", help="Service account token (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
     configure.add_argument("--url", default=DEFAULT_URL, help=f"Authorize URL (default: {DEFAULT_URL})")
     configure.add_argument("--store", choices=("plugin", "settings"), default="plugin",
                            help="plugin: plugin options, key in the system keychain (default); settings: the settings file's env")
@@ -210,7 +210,7 @@ def _build_parser() -> argparse.ArgumentParser:
     check.add_argument("--url", help="Authorize URL (default: the configured one)")
 
     managed = sub.add_parser("managed", help="Add the variables to a managed-settings document")
-    managed.add_argument("--key", help="Agent access key (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
+    managed.add_argument("--key", help="Service account token (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
     managed.add_argument("--url", default=DEFAULT_URL)
     managed.add_argument("--required", action="store_true", help="Deny every tool call when governance isn't configured")
     managed.add_argument("--output", type=pathlib.Path, help="Write, or merge into, this file instead of printing")

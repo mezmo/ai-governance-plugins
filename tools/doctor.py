@@ -1127,19 +1127,17 @@ class Agent(NamedTuple):
 
 # Tested versions come from the README's hand-check table; tool names from each adapter README.
 AGENTS = (
-    Agent("Claude Code", "claude", ("2.1.296",), "2.1.295", "claude-code", check_claude_code, "claude_code", "Bash", "Read"),
+    Agent("Claude Code", "claude", ("2.1.301",), "2.1.295", "claude-code", check_claude_code, "claude_code", "Bash", "Read"),
     Agent("Codex", "codex", ("0.162.1",), None, "codex", check_codex, "codex", "Bash", None),
     Agent("Cursor", "cursor-agent", ("2026.10.14",), None, "cursor", check_cursor, "cursor", "Shell", "Read"),
     Agent("Gemini CLI", "gemini", ("0.64.0",), None, "gemini-cli", check_gemini, "gemini_cli", "run_shell_command", "read_file"),
-    Agent("Copilot CLI", "copilot", ("1.0.95",), None, "copilot", check_copilot, "copilot", "bash", "view"),
+    Agent("Copilot CLI", "copilot", ("1.0.95", "1.0.98"), None, "copilot", check_copilot, "copilot", "bash", "view"),
     Agent("Goose", "goose", ("1.54.0",), None, "goose", check_goose, "goose", "shell", "tree"),
     Agent("OpenCode", "opencode", ("1.19.0", "2.0.25"), None, "opencode", check_opencode, "opencode", "shell", "read"),
     Agent("Pi", "pi", ("1.3.0",), None, "pi", check_pi, "pi", "bash", "read"),
-    # Droid 0.244.0 was read from its binary, not run.
     Agent("Droid", "droid", ("0.244.0",), None, "droid", check_droid, "droid", "Execute", "Read"),
-    # Windsurf 1.126.0 was read from its binary, not run.
     Agent("Windsurf", "devin-desktop", ("1.126.0",), None, "windsurf", check_windsurf, "windsurf", "run_command", "read_code"),
-    Agent("Antigravity CLI", "agy", ("1.4.0",), None, "antigravity", check_antigravity, "antigravity", "run_command", "view_file"),
+    Agent("Antigravity CLI", "agy", ("1.4.0", "1.4.1"), None, "antigravity", check_antigravity, "antigravity", "run_command", "view_file"),
 )
 
 
