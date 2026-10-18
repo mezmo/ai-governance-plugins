@@ -89,8 +89,9 @@ blocked, and the message says which argument. Also, `--safe-mode` and `"disableA
 turn the governance check off along with your other hooks.
 
 To check the setup from the repository root, run `./mezmo-governance doctor claude-code` and
-`./mezmo-governance smoke claude-code`. Both read `MEZMO_GOVERNANCE_URL` and
+`./mezmo-governance smoke claude-code`. `doctor` reads `MEZMO_GOVERNANCE_URL` and
 `MEZMO_GOVERNANCE_TOKEN` from the shell, not the key that setup saved, so export them first.
+`smoke` uses its own mock.
 `/mezmo:test` checks the saved key from inside Claude Code.
 
 ## Telemetry

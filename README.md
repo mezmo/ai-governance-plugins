@@ -129,11 +129,10 @@ deny. `--port` sets the port (default 8787).
    Name one or more agents, or pass `--all` for every agent on your `PATH`.
    The names are `claude-code`, `codex`, `cursor`, `gemini-cli`, `copilot`,
    `goose`, `opencode`, `pi`, `droid`, `windsurf` and `antigravity`.
-   `./mezmo-governance agents` lists the ones on your `PATH`; [the table below](#the-mezmo-governance-command)
+   `./mezmo-governance agents` lists them; [the table below](#the-mezmo-governance-command)
    says what `install` does for each.
-4. Check your setup. `doctor` and `smoke` read the two environment variables,
-   even where the agent keeps its own copy, so export them in this shell
-   first:
+4. Check your setup. `doctor` reads the two environment variables, even
+   where the agent keeps its own copy, so export them in this shell first:
 
    ```bash
    ./mezmo-governance doctor
