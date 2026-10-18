@@ -21,9 +21,10 @@ or times out blocks the call on Claude Code 2.1.295 or later. Older versions ign
 governance check off along with your other hooks.
 
 Editors that run Claude Code over ACP, such as Zed, use the Claude CLI bundled with
-`@agentclientprotocol/claude-agent-acp`. Version 0.85.1 bundles CLI 2.1.286, so a crash there
-lets the tool run. Set `CLAUDE_CODE_EXECUTABLE` to your installed `claude` in the agent's `env`
-(Zed: `agent_servers.claude-acp.env`). Not run in Zed.
+`@agentclientprotocol/claude-agent-acp`. An older adapter bundles an older CLI: 0.85.1 bundles
+2.1.286, so a crash there lets the tool run. Set `CLAUDE_CODE_EXECUTABLE` to your installed
+`claude` in the agent's `env` (Zed: `agent_servers.claude-acp.env`). Verified live in Zed 1.24.2
+with adapter 0.93.0 and that setting: `Bash` denied, `Read` approved.
 
 ## Install
 

@@ -169,6 +169,11 @@ Codex 0.162.1: `Bash` for shell commands and `apply_patch` for file edits. An
 MCP tool arrives with its server as the namespace. Codex has no read tool: it
 reads files with `Bash` (`cat`), so a policy that denies `Bash` also blocks reads.
 
+In Zed, Codex runs through `codex-acp`, which uses the same `CODEX_HOME` and trust store.
+Trust the hooks in `codex` `/hooks` first: Zed shows no hook status, so an untrusted hook
+is skipped without a sign. Set `CODEX_PATH` in `agent_servers.codex-acp.env` to your
+installed `codex`; the adapter bundles an older one. Verified live in Zed 1.24.2.
+
 ## Windows
 
 The example command uses POSIX shell syntax (`${VAR:-default}`, `$HOME`) and
