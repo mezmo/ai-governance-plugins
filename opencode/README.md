@@ -95,6 +95,14 @@ export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize
 export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
+## Settings
+
+The variables in the [root README](../README.md#settings). On 2.x, set them
+as plugin options: the background service ignores the environment (see
+[Background service (2.x)](#background-service-2x)). Each audit line keeps up
+to 2,000 characters of the tool's result; the log is created 0600 in a 0700
+folder.
+
 ## Verify it works
 
 1. From the plugin directory, check the URL, the key and your policy. This
@@ -106,6 +114,21 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
    node --input-type=module -e 'import { approvalPayload, authorize } from "./mezmo-governance/client.ts";
    authorize(approvalPayload({ sessionId: "verify", toolCallId: crypto.randomUUID(), toolName: "shell", arguments: { command: "ls" } }))
      .then(console.log, (error) => console.log("no decision:", error.message));'
+   ```
+
+   To see a deny and an allow without Mezmo, run
+   `./mezmo-governance mock --deny shell` from the repository root in a second
+   terminal, and export the two lines it prints. The command above then
+   prints:
+
+   ```text
+   { approved: false, reason: 'mock policy: opencode:shell is denied' }
+   ```
+
+   With `toolName: "read"` it prints:
+
+   ```text
+   { approved: true, reason: null }
    ```
 
 2. Check that OpenCode blocks when Mezmo cannot answer. Set the URL to a
@@ -123,12 +146,18 @@ column once the plugin has loaded. An ID of `-` means it failed to load, and
 tools run ungated. Right after the server starts, the list can still be
 empty; run it again.
 
-## Tool names for policy
+## Load order
 
-OpenCode sends built-in tools in namespace `opencode`. The shell tool is
-`shell` on 2.x and `bash` on 1.x; files are read with `read`. Live on 2.x,
-the plugin sent `opencode:shell` and `opencode:read`. Write policy for both
-shell names if you run both majors.
+OpenCode runs plugin hooks in load order and hands each the same event, so a
+plugin that runs after this one can change the arguments (and on 2.x the tool
+name) after Mezmo approved them. Load this plugin last: a plugin that
+rewrites tool input after it runs input Mezmo never approved. Install only
+plugins you trust next to this one. When what ran differs from what was approved, the audit line carries
+`"arguments_changed": true`.
+
+Do not also rely on `permission.ask` for this gate on 1.x. That hook is not
+triggered on every 1.x release; `tool.execute.before` is the one that can
+throw and stop the call.
 
 ## What it sends
 
@@ -147,16 +176,12 @@ non-zero, or null because the command was killed. It is also `failed` when an
 MCP result has `isError`, when the tool returned no result, or on 2.x when
 the call ended with `status: "error"`.
 
-OpenCode runs plugin hooks in load order and hands each the same event, so a
-plugin that runs after this one can change the arguments (and on 2.x the tool
-name) after Mezmo approved them. Load this plugin last: a plugin that
-rewrites tool input after it runs input Mezmo never approved. Install only
-plugins you trust next to this one. When what ran differs from what was approved, the audit line carries
-`"arguments_changed": true`.
+### Tool names for policy
 
-Do not also rely on `permission.ask` for this gate on 1.x. That hook is not
-triggered on every 1.x release; `tool.execute.before` is the one that can
-throw and stop the call.
+OpenCode sends built-in tools in namespace `opencode`. The shell tool is
+`shell` on 2.x and `bash` on 1.x; files are read with `read`. Live on 2.x,
+the plugin sent `opencode:shell` and `opencode:read`. Write policy for both
+shell names if you run both majors.
 
 ## Troubleshooting
 

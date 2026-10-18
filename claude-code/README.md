@@ -12,11 +12,18 @@ work on pipelines. All three are independent, so you can turn on any of them.
 A small status display in the prompt footer tells you whether governance and telemetry are
 working.
 
+## Fail behavior
+
+Until the plugin has a key, it lets every call run and sends nothing; `MEZMO_GOVERNANCE_REQUIRED=1`
+makes it deny instead (see [Governance](#governance)). With a key, a governance hook that crashes
+or times out blocks the call on Claude Code 2.1.295 or later. Older versions ignore the hook's
+`onFailure: "block"`, so the tool runs. `--safe-mode` and `"disableAllHooks": true` turn the
+governance check off along with your other hooks.
+
 ## Install
 
 You need Python 3.9 or later. The scripts only use the standard library.
-You need Claude Code v2.1.295 or later: older versions ignore the hook's `onFailure: "block"`,
-so a governance hook that crashes or times out lets the tool run.
+You need Claude Code v2.1.295 or later (see [Fail behavior](#fail-behavior)).
 
 Tested version: Claude Code 2.1.301 with this plugin, run live against
 `tools/mock_governance.py`: `Bash` was denied and `Read` was approved, and a
@@ -59,6 +66,14 @@ again. Telemetry settings live in `~/.claude/settings.json` and the MCP server i
 To try the plugin for one session without installing it, run
 `claude --plugin-dir /path/to/ai-governance-plugins/claude-code`.
 
+## Verify
+
+To check the setup from the repository root, run `./mezmo-governance doctor claude-code` and
+`./mezmo-governance smoke claude-code`. `doctor` reads `MEZMO_GOVERNANCE_URL` and
+`MEZMO_GOVERNANCE_TOKEN` from the shell, not the key that setup saved, so export them first.
+`smoke` uses its own mock.
+`/mezmo:test` checks the saved key from inside Claude Code.
+
 ## Governance
 
 With governance on, a `PreToolUse` hook sends each tool call to Mezmo Governance before it runs:
@@ -85,14 +100,7 @@ settings file.
 | Required | | `MEZMO_GOVERNANCE_REQUIRED=1` | off |
 
 The service only accepts plain identifiers as argument names, so a Grep call with `-i` gets
-blocked, and the message says which argument. Also, `--safe-mode` and `"disableAllHooks": true`
-turn the governance check off along with your other hooks.
-
-To check the setup from the repository root, run `./mezmo-governance doctor claude-code` and
-`./mezmo-governance smoke claude-code`. `doctor` reads `MEZMO_GOVERNANCE_URL` and
-`MEZMO_GOVERNANCE_TOKEN` from the shell, not the key that setup saved, so export them first.
-`smoke` uses its own mock.
-`/mezmo:test` checks the saved key from inside Claude Code.
+blocked, and the message says which argument.
 
 ## Telemetry
 

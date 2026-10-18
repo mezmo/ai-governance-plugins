@@ -101,18 +101,6 @@ command would fail there and block every tool. Windows is not verified.
 To gate only some tools, set `matcher`, a regex on the tool name such as
 `run_command|write_to_file`. `*` or an empty matcher matches every tool.
 
-## Tool names in policy
-
-Mezmo sees the Antigravity tool name with namespace `antigravity`. Names seen
-live in 1.4.0: `run_command` for shell commands, `view_file`, `write_to_file`,
-`replace_file_content`, `invoke_subagent` and `send_message`. Other tool names
-are not verified.
-
-An MCP call reaches the hook as `call_mcp_tool` with `ServerName`, `ToolName`
-and `Arguments`. The hook sends it with the server as the namespace, the
-server's tool name, and the tool's own arguments. The hook denies a call to an
-MCP server named `antigravity`: its tools would pass as built-ins.
-
 ## Verify
 
 From the repository root, with the two variables exported:
@@ -160,6 +148,18 @@ echo '{"conversationId":"smoke","toolCall":{"name":"run_command","args":{"Comman
 
 No output means Mezmo allowed the call. A deny prints the shape above with your
 policy's reason.
+
+## Tool names in policy
+
+Mezmo sees the Antigravity tool name with namespace `antigravity`. Names seen
+live in 1.4.0: `run_command` for shell commands, `view_file`, `write_to_file`,
+`replace_file_content`, `invoke_subagent` and `send_message`. Other tool names
+are not verified.
+
+An MCP call reaches the hook as `call_mcp_tool` with `ServerName`, `ToolName`
+and `Arguments`. The hook sends it with the server as the namespace, the
+server's tool name, and the tool's own arguments. The hook denies a call to an
+MCP server named `antigravity`: its tools would pass as built-ins.
 
 ## What the hook sends
 

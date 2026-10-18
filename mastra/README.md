@@ -42,7 +42,47 @@ The import keeps the `.ts` extension. With `tsc`, set
 `allowImportingTsExtensions` (with `noEmit`), or drop the extension if your
 bundler resolves it.
 
-### Run-level hooks bypass the gate
+## Settings
+
+The variables in the [root README](../README.md#settings). There is no
+per-agent URL or key: the hooks read the environment.
+`createMezmoGovernanceHooks({ fetchImpl })` builds a fresh hook pair if you
+need to inject a custom fetch in tests. It takes only that option. Each audit
+line keeps up to 2,000 characters of the tool's result; the log is created
+0600 in a 0700 folder.
+
+## Verify it works
+
+From the folder that holds `mezmo-governance.ts`, ask the hook about one call
+(Node 22.18+):
+
+```bash
+node --input-type=module -e 'import { mezmoGovernanceHooks } from "./mezmo-governance.ts";
+console.log(await mezmoGovernanceHooks.beforeToolCall({ toolName: "echo", input: { text: "hi" }, context: {} }));'
+```
+
+`undefined` means Mezmo approved the call. `{ proceed: false, output: … }`
+means it was denied or could not be checked; `output` says which.
+
+To see a deny and an allow without Mezmo, run
+`./mezmo-governance mock --deny 'delete_*'` from the repository root in a
+second terminal, and export the two lines it prints. The command above then
+prints `undefined`. With `toolName: "delete_note"` it prints:
+
+```text
+{
+  proceed: false,
+  output: 'Mezmo Governance denied this exact tool call: mock policy: mastra:delete_note is denied'
+}
+```
+
+To check
+fail-closed, run it again with
+`MEZMO_GOVERNANCE_URL=http://127.0.0.1:9/authorize`: the output must say
+`could not authorize`. After an approved tool runs in your agent, read the
+last audit line: `tail -1 ~/.mezmo/governance-audit.jsonl`.
+
+## Run-level hooks bypass the gate
 
 Mastra merges run-level `hooks` from `.generate()` or `.stream()` over the
 agent's hooks, key by key. A run-level `beforeToolCall` replaces the
@@ -68,13 +108,13 @@ await agent.generate(prompt, {
 Only a `proceed: false` from your hook may skip the governance hook. Any other
 return value still goes on to Mezmo.
 
-### Give every agent the hooks
+## Give every agent the hooks
 
 The hooks belong to one `Agent`. A sub-agent that another agent calls runs its
 tools under its own hooks, not its caller's. Pass `hooks: mezmoGovernanceHooks`
 to every agent, sub-agents included.
 
-### Calls the hooks never see
+## Calls the hooks never see
 
 These run without asking Mezmo:
 
@@ -87,29 +127,8 @@ These run without asking Mezmo:
 Keep such tools away from agents that need the gate, or gate them in your own
 code.
 
-`createMezmoGovernanceHooks({ fetchImpl })` builds a fresh hook pair if you
-need to inject a custom fetch in tests. It takes only that option: the URL and
-key always come from the environment.
-
 Do not use Mastra's `requireToolApproval` for this. That is Mastra's own
 approval UI. These hooks talk to Mezmo.
-
-## Verify it works
-
-From the folder that holds `mezmo-governance.ts`, ask the hook about one call
-(Node 22.18+):
-
-```bash
-node --input-type=module -e 'import { mezmoGovernanceHooks } from "./mezmo-governance.ts";
-console.log(await mezmoGovernanceHooks.beforeToolCall({ toolName: "echo", input: { text: "hi" }, context: {} }));'
-```
-
-`undefined` means Mezmo approved the call. `{ proceed: false, output: … }`
-means it was denied or could not be checked; `output` says which. To check
-fail-closed, run it again with
-`MEZMO_GOVERNANCE_URL=http://127.0.0.1:9/authorize`: the output must say
-`could not authorize`. After an approved tool runs in your agent, read the
-last audit line: `tail -1 ~/.mezmo/governance-audit.jsonl`.
 
 ## What the hooks send
 

@@ -1,8 +1,8 @@
 # Live testing
 
 How to check, by hand, that a real agent calls the Mezmo hook and obeys its
-answer. `make test` cannot show this; see [What they do not confirm](../README.md#what-they-do-not-confirm).
-The steps below are the ones behind the live-run table in the README.
+answer. `make test` cannot show this. The steps below are the ones behind the
+live-run table in [What they do not confirm](#what-they-do-not-confirm).
 
 Each test asks the agent for one shell call and one file read. It passes when:
 
@@ -305,3 +305,74 @@ launchctl unsetenv MEZMO_GOVERNANCE_URL; launchctl unsetenv MEZMO_GOVERNANCE_TOK
 Stop each mock with Ctrl-C. Remove a Droid plugin with
 `droid plugin uninstall mezmo-governance@ai-governance-plugins --scope user`, and delete the cloud
 agent test repository.
+
+## What the tests confirm
+
+Each adapter's tests feed it the payload its runtime sends and run the real
+entry point: the hook script as a subprocess, or the plugin's exported hooks.
+A local HTTP server stands in for Mezmo. The tests confirm that:
+
+- an approved call runs unchanged, and a denied call is blocked with Mezmo's
+  reason in the runtime's own deny format;
+- the call is blocked when the URL or key is missing, Mezmo cannot be
+  reached, a decision stays pending, or an answer arrives (or drips in)
+  after the deadline; the Python hooks also block on malformed input from
+  the runtime;
+- the call is blocked when Mezmo's reply is not JSON, not an object, or has
+  no boolean `approved`, and when a poll returns an unknown status;
+- a `409` falls into polling, and a call without a call id never reuses an
+  earlier decision;
+- the timeout is capped below the runtime's hook timeout, and `nan`, `inf`
+  and negative values are refused;
+- the post-tool event writes an audit line and never blocks;
+- each example config registers every event and blocks on hook failure,
+  including the `|| exit 2` guard for Codex, Gemini CLI, Droid and Windsurf;
+- `./mezmo-governance` installs each agent, finds it installed, changes
+  nothing on a second install, and on uninstall leaves each config as it was,
+  with the user's other entries and a backup; a run stopped between two steps
+  is finished by the next one; `--dry-run` changes nothing; the key is in no
+  file or output (`tools/test_mezmo_governance_cli.py`, with fake `claude`,
+  `gemini` and `pi` binaries);
+- the shared code is identical across the eight Python hook adapters, across the
+  four `client.ts` copies, and between the LangChain Python client and its
+  OpenAI Agents SDK and Claude Agent SDK copies; the Python hooks import on
+  Python 3.9.
+
+## What they do not confirm
+
+The tests cannot show that a runtime calls the hook, or how it treats the
+answer. That was checked by hand, against `tools/mock_governance.py`, with
+one shell call (expected: denied) and one file read (expected: approved):
+
+| Agent | Version | Deny and allow | Hook crash |
+| --- | --- | --- | --- |
+| Claude Code | 2.1.301 with the Mezmo plugin (2.1.296 with the earlier hook) | pass | blocked |
+| Codex CLI | 0.162.1 | pass | blocked with the guard; runs without it |
+| Cursor CLI | 2026.10.14 | pass | blocked |
+| Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
+| Copilot CLI | 1.0.95, 1.0.98 | pass, with user-level hooks | blocked (1.0.95) |
+| VS Code | 1.142.0 with Copilot Chat 0.70.0 | Copilot harness: pass. Local harness: pass (`run_in_terminal` denied, `read_file` approved); with the earlier hook it ran every tool | not checked |
+| Goose CLI | 1.54.0 | pass | blocked with `on_failure: block`, also on a timeout; runs without it |
+| Droid | 0.244.0, `droid exec` with a bring-your-own-key model (no Factory plan); also against production Mezmo | pass | blocked with the guard |
+| Windsurf | 1.126.0 (Devin Desktop 3.10.67); also against production Mezmo | pass, started from a shell or from the Dock after `launchctl setenv`; a plain Dock launch passes no settings, so every call is denied | blocked with the guard |
+| Antigravity CLI | 1.4.0, `agy -p` with a workspace `.agents/hooks.json`; 1.4.1 with `~/.gemini/config/hooks.json` against production Mezmo | pass | blocked, also on exit 1, output that is not JSON, a missing script and a timeout |
+| OpenCode | 2.0.25 | pass, through the background service with plugin options | not checked |
+| Pi | 1.3.0 | pass | not checked |
+| Mastra | 1.77.0, `generate` and `stream` | pass | not checked |
+| LangChain | 1.4.6, `invoke` and `ainvoke` | pass | not checked |
+| OpenAI Agents SDK | 0.24.0, `run_sync`, `run_streamed` and `run` | pass | blocked, in the tests |
+| Claude Agent SDK | Python 0.2.168, `query` and `ClaudeSDKClient`; TypeScript 0.3.301, `query` | pass | runs if a callback raises (Python, checked), so the callbacks catch every error |
+
+The TypeScript plugins also pass `tsc --strict` against the real Pi, OpenCode
+(1.19.0 and 2.0.25) and Mastra types. That check is not part of `make test`.
+
+To repeat any of these checks, follow the sections above: the setup, the two
+prompts, and the crash, timeout and production runs.
+
+Not checked at all: a decision a person approves while the hook waits,
+Windows, and how most runtimes behave when the hook times out. The
+Copilot cloud agent ran the hook from `.github/hooks/` and blocked every call,
+because the hook got neither the URL nor the token (see [copilot/](../copilot/README.md#cloud-agent)). For Mastra,
+LangChain, the OpenAI Agents SDK and the Python Claude Agent SDK,
+[examples/check.sh](../examples/) runs a real agent and fails if the gate lets
+the wrong tool run.

@@ -1196,11 +1196,11 @@ class SourceTests(unittest.TestCase):
         self.addCleanup(sys.path.remove, str(DOCTOR.parent))
         import doctor
 
-        readme = (REPO / "README.md").read_text(encoding="utf-8")
+        table = (REPO / "docs" / "live-testing.md").read_text(encoding="utf-8")
         for agent in doctor.AGENTS:
             for version in agent.tested:
                 with self.subTest(agent=agent.name, version=version):
-                    self.assertIn(version, readme)
+                    self.assertIn(version, table)
             self.assertTrue((REPO / agent.readme / "README.md").is_file())
         claude = (REPO / "claude-code" / "README.md").read_text(encoding="utf-8")
         self.assertIn(f"Claude Code v{doctor.AGENTS[0].minimum} or later", claude)

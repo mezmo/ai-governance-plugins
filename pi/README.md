@@ -1,8 +1,9 @@
 # Pi + Mezmo Governance
 
-A Pi coding-agent extension that blocks on Mezmo Governance in `tool_call` and
-writes a local JSONL record in `tool_result`. Handler errors on `tool_call`
-also block (Pi fail-safe).
+A Pi coding-agent extension that asks Mezmo Governance in `tool_call` before
+each tool runs. When Mezmo denies the call, cannot be reached, or gives no
+decision in time, the tool does not run. If the handler itself throws, Pi also
+blocks the call. `tool_result` appends a local JSONL record.
 
 Tested with Pi 1.3.0: a live `pi -p -e` run against `tools/mock_governance.py`
 (see below). The type check against its `ExtensionAPI` and the tests with a
@@ -40,6 +41,12 @@ export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize
 export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
+## Settings
+
+The variables in the [root README](../README.md#settings). Each audit line
+keeps up to 2,000 characters of the tool's result; the log is created 0600 in
+a 0700 folder.
+
 ## Verify it works
 
 1. From this folder (Node 22.18+), check the URL, the key and your policy. This prints the
@@ -49,6 +56,21 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
    node --input-type=module -e 'import { approvalPayload, authorize } from "./client.ts";
    authorize(approvalPayload({ sessionId: "verify", toolCallId: crypto.randomUUID(), toolName: "bash", arguments: { command: "ls" } }))
      .then(console.log, (error) => console.log("no decision:", error.message));'
+   ```
+
+   To see a deny and an allow without Mezmo, run
+   `./mezmo-governance mock --deny bash` from the repository root in a second
+   terminal, and export the two lines it prints. The command above then
+   prints:
+
+   ```text
+   { approved: false, reason: 'mock policy: pi:bash is denied' }
+   ```
+
+   With `toolName: "read"` it prints:
+
+   ```text
+   { approved: true, reason: null }
    ```
 
 2. Check that Pi blocks when Mezmo cannot answer. Point the extension at a

@@ -96,27 +96,47 @@ argument. `createMezmoGovernanceHooks({ fetchImpl })` takes one option,
 `fetchImpl`, and builds a fresh set if you need to inject a custom fetch in
 tests.
 
-### Your own hooks
+## Settings
 
-The SDK runs every matching hook, and a deny from any of them wins. To add
-your own, append to the lists instead of replacing them:
+The same variables as the other plugins: see the [root README](../README.md#settings).
+The audit log defaults to `~/.mezmo/governance-audit.jsonl`.
+Each line keeps up to 2,000 characters of the tool's result, so both the
+Python and TypeScript hooks keep the log readable by its owner only: mode
+0600, in a 0700 folder.
 
-```python
-from claude_agent_sdk import HookMatcher
+## Verify it works
 
+To check fail-closed without a model, run the callback against a port where
+nothing listens. From the repository root:
 
-async def my_check(input_data, tool_use_id, context):
-    return {}  # or a deny
-
-
-hooks = mezmo_governance_hooks()
-hooks["PreToolUse"].append(HookMatcher(matcher="Bash", hooks=[my_check]))
+```bash
+cd claude-agent-sdk/python
+MEZMO_GOVERNANCE_URL=http://127.0.0.1:9/authorize MEZMO_GOVERNANCE_TOKEN=test \
+  python -c 'import asyncio
+from mezmo_governance_claude_agent_sdk import create_pre_tool_use
+event = {"hook_event_name": "PreToolUse", "session_id": "smoke", "tool_name": "Bash",
+         "tool_input": {"command": "echo hi"}, "tool_use_id": "smoke-1"}
+print(asyncio.run(create_pre_tool_use()(event, "smoke-1", {"signal": None})))'
 ```
 
-Mezmo approves the input it saw. No other `PreToolUse` hook may return
-`updatedInput`, and no `can_use_tool` (`canUseTool` in TypeScript) may allow
-with updated input: the tool would then run with input Mezmo never saw. The
-callbacks do not check for such a rewrite.
+It prints a deny that says `could not authorize`. With your real URL and key
+set, the same command prints `{}` when Mezmo allows the call. Use a new
+`tool_use_id` each run: Mezmo returns the earlier decision for an id it has
+seen.
+
+To see a deny and an allow without Mezmo, run
+`./mezmo-governance mock --deny Bash` from the repository root in a second
+terminal, and run the command with the two lines it prints in place of the
+inline variables. It prints:
+
+```text
+{'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': 'Mezmo Governance denied this exact tool call: mock policy: claude_agent_sdk:Bash is denied'}}
+```
+
+With `"tool_name": "Read"` and a new `tool_use_id`, it prints `{}`.
+
+With a real model, [examples/check.sh](../examples/) `claude-agent-sdk` runs
+an agent against the local mock and fails if the gate lets the wrong tool run.
 
 ## How it fails closed
 
@@ -141,13 +161,27 @@ callbacks do not check for such a rewrite.
 The Python client bounds each request with `asyncio.wait_for`, so it needs an
 asyncio loop. Under trio every call is denied.
 
-## Settings
+## Your own hooks
 
-The same variables as the other plugins: see the [root README](../README.md#settings).
-The audit log defaults to `~/.mezmo/governance-audit.jsonl`.
-Each line keeps up to 2,000 characters of the tool's result, so both the
-Python and TypeScript hooks keep the log readable by its owner only: mode
-0600, in a 0700 folder.
+The SDK runs every matching hook, and a deny from any of them wins. To add
+your own, append to the lists instead of replacing them:
+
+```python
+from claude_agent_sdk import HookMatcher
+
+
+async def my_check(input_data, tool_use_id, context):
+    return {}  # or a deny
+
+
+hooks = mezmo_governance_hooks()
+hooks["PreToolUse"].append(HookMatcher(matcher="Bash", hooks=[my_check]))
+```
+
+Mezmo approves the input it saw. No other `PreToolUse` hook may return
+`updatedInput`, and no `can_use_tool` (`canUseTool` in TypeScript) may allow
+with updated input: the tool would then run with input Mezmo never saw. The
+callbacks do not check for such a rewrite.
 
 ## What the hooks send
 
@@ -174,29 +208,6 @@ A deny returns:
 ```
 
 The agent sees the reason as the tool result.
-
-## Smoke test
-
-To check fail-closed without a model, run the callback against a port where
-nothing listens. From the repository root:
-
-```bash
-cd claude-agent-sdk/python
-MEZMO_GOVERNANCE_URL=http://127.0.0.1:9/authorize MEZMO_GOVERNANCE_TOKEN=test \
-  python -c 'import asyncio
-from mezmo_governance_claude_agent_sdk import create_pre_tool_use
-event = {"hook_event_name": "PreToolUse", "session_id": "smoke", "tool_name": "Bash",
-         "tool_input": {"command": "echo hi"}, "tool_use_id": "smoke-1"}
-print(asyncio.run(create_pre_tool_use()(event, "smoke-1", {"signal": None})))'
-```
-
-It prints a deny that says `could not authorize`. With your real URL and key
-set, the same command prints `{}` when Mezmo allows the call. Use a new
-`tool_use_id` each run: Mezmo returns the earlier decision for an id it has
-seen.
-
-With a real model, [examples/check.sh](../examples/) `claude-agent-sdk` runs
-an agent against the local mock and fails if the gate lets the wrong tool run.
 
 ## Troubleshooting
 

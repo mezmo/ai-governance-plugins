@@ -68,8 +68,8 @@ deny. `--port` sets the port (default 8787).
 
 ## Connect to Mezmo
 
-1. In Mezmo Governance, create a policy and register one agent per coding
-   tool, so each has its own policy and log. The add-agent form asks for:
+1. In Mezmo Governance, register one agent per coding tool, so each has its
+   own policy and log. The add-agent form asks for:
 
    | Field | Example for Claude Code |
    | --- | --- |
@@ -83,26 +83,26 @@ deny. `--port` sets the port (default 8787).
    service account's token.
    `./mezmo-governance doctor` prints these values for each agent on your
    `PATH`.
-
-   Next the form asks for a service account. Create one only for
-   Governance and give it Governance permissions and nothing else, so a
-   leaked token cannot reach the rest of your Mezmo account. Leave out write
+2. Give the agent a service account: the form asks for one next. Create one
+   only for Governance and give it Governance permissions and nothing else,
+   so a leaked token cannot reach the rest of your Mezmo account. Leave out write
    access to policies and agents: the authorize call needs neither, and a
    governed agent can read its own token, so a token that can edit policies
    lets the agent change its own rules. Use a separate key for
    [`policy apply`](#set-up-rules). An account
-   without Governance permissions gets `401 EAUTH` on every call. Then add
-   policies, as in [Create a policy](#create-a-policy), and assign one to
-   the agent: an agent without one gets `403 EPOLICYUNASSIGNED`. The last page shows a `config.toml` for Mezmo's own agent runtime,
-   Aura. The plugins need only two values from it: the `url`, which is your
-   `MEZMO_GOVERNANCE_URL`, and the token.
+   without Governance permissions gets `401 EAUTH` on every call.
 
    `MEZMO_GOVERNANCE_TOKEN` is the service account's token, a standard Mezmo
    service key, not a key of the agent. Create it under Settings >
    Organization > API Keys, as in [Generate Service and Ingestion Keys](https://docs.mezmo.com/docs/ingestion-key), and copy it when
    Mezmo shows it: the full key appears only once. This README calls it the
    service account token.
-2. Give each agent the URL and the service account token. Most agents read
+3. Add policies, as in [Create a policy](#create-a-policy), and assign one to
+   the agent: an agent without one gets `403 EPOLICYUNASSIGNED`. The last
+   page of the form shows a `config.toml` for Mezmo's own agent runtime,
+   Aura. The plugins need only two values from it: the `url`, which is your
+   `MEZMO_GOVERNANCE_URL`, and the token.
+4. Give each agent the URL and the service account token. Most agents read
    environment variables, so export them in the shell that starts the agent:
 
    ```bash
@@ -110,12 +110,12 @@ deny. `--port` sets the port (default 8787).
    export MEZMO_GOVERNANCE_TOKEN="<service account token>"
    ```
 
-   Claude Code also reads these variables. After step 3 you can instead run
+   Claude Code also reads these variables. After step 5 you can instead run
    `/mezmo:setup governance`, which keeps the key in the system credential
    store. OpenCode 2.x takes them as plugin options in `opencode.json`
    (see [opencode/](opencode/)), because its tools run in a background
    service that does not see your shell.
-3. Install the plugin for your agent, from this repository. The install
+5. Install the plugin for your agent, from this repository. The install
    governs every session of that agent on this machine, so try a new policy
    in one Claude Code session first, as in
    [A policy for an end-to-end check](#a-policy-for-an-end-to-end-check).
@@ -131,7 +131,7 @@ deny. `--port` sets the port (default 8787).
    `goose`, `opencode`, `pi`, `droid`, `windsurf` and `antigravity`.
    `./mezmo-governance agents` lists them; [the table below](#the-mezmo-governance-command)
    says what `install` does for each.
-4. Check your setup. `doctor` reads the two environment variables, even
+6. Check your setup. `doctor` reads the two environment variables, even
    where the agent keeps its own copy, so export them in this shell first:
 
    ```bash
@@ -139,40 +139,12 @@ deny. `--port` sets the port (default 8787).
    ./mezmo-governance smoke
    ```
 
-   `doctor [agent...]` (`python3 tools/doctor.py` runs the same check for all agents) checks the settings, that Mezmo
-   answers and takes the key, and, for each coding agent on your `PATH`, its
-   version, the user-level install and its fail-closed setting. An install the
-   agent has turned off or does not trust fails: a disabled Claude Code plugin,
-   Gemini CLI extension or hook, or Goose plugin, and a Codex hook whose
-   trust Codex does not list as current, Droid's `hooksDisabled`, a Windsurf or
-   Antigravity CLI `hooks.json` that the agent would drop, and an Antigravity
-   CLI hook with `"enabled": false`. A Codex or Gemini CLI hook installed
-   before the guard learned to keep a deliberate block quiet gets a warning
-   with the reinstall step. It also runs
-   each installed Python hook against a closed port and checks that the hook
-   denies. A Codex, Cursor, Copilot, Goose, Droid, Windsurf or Antigravity CLI hook copy that differs from this
-   checkout gets a warning to run `install` again. It reads the agent configs
-   and changes nothing. Each check prints
-   one `ok`, `warn`, `FAIL` or `skip` line with a fix, and the exit code is 1
-   when a check fails. `info` lines give the add-agent form values from
-   step 1. A key can pass the key check and still belong to no agent. Add `--probe` to send Mezmo one test call for the tool
-   `doctor:probe`, which shows up in Mezmo like any other call.
-
-   `smoke` starts its own mock, sends each installed hook or plugin one shell
-   call (it must be denied) and one read (it must be approved), and prints a
-   line for each. The OpenCode plugin gets the options from `opencode.json`,
-   as OpenCode passes them, with the mock's URL and key in place of yours;
-   `smoke --live` keeps yours and reads each `{file:...}`. It calls no model and never sends your key.
-
-   `smoke --live [agent...]` sends the same two calls, the agent's shell tool
-   and its read tool, to Mezmo at `MEZMO_GOVERNANCE_URL` with
-   `MEZMO_GOVERNANCE_TOKEN`. Your policy decides each call, so each line says
-   allowed, denied with Mezmo's reason, or pending approval. A call held for
-   approval waits 15 s unless you set `MEZMO_GOVERNANCE_TIMEOUT_SECONDS`. It
-   exits 1 only when a call reached no decision, such as a `401`, an unknown
-   agent or no connection. The calls show up in Mezmo like any other, but not
-   in your local audit log.
-5. Run one tool call your policy denies, and check that the agent shows the
+   Each `doctor` check prints one `ok`, `warn`, `FAIL` or `skip` line with a
+   fix, and the exit code is 1 when a check fails. `smoke` sends each
+   installed hook one shell call (it must be denied) and one read (it must be
+   approved) through its own mock. See [doctor](#doctor) and [smoke](#smoke)
+   for what each checks.
+7. Run one tool call your policy denies, and check that the agent shows the
    reason. Then check `~/.mezmo/governance-audit.jsonl` for the approved calls.
 
 To remove a plugin, run `./mezmo-governance uninstall <agent> --dry-run`, then
@@ -272,6 +244,8 @@ remove its own rules. Keep the admin key out of the shell that starts your
 agents. The API is `https://api.mezmo.com/v3/governance`, or the host of
 `MEZMO_GOVERNANCE_URL`, or `--url <base>`.
 
+## Install options
+
 ### The mezmo-governance command
 
 `./mezmo-governance help` lists the commands: `agents`, `install`,
@@ -318,6 +292,43 @@ from this checkout, and Claude Code keeps it as the marketplace, so keep the
 checkout where it is. The
 libraries (LangChain, OpenAI Agents SDK, Claude Agent SDK and Mastra) are set
 up in app code; `install` points to their READMEs.
+
+#### doctor
+
+`doctor [agent...]` (`python3 tools/doctor.py` runs the same check for all agents) checks the settings, that Mezmo
+answers and takes the key, and, for each coding agent on your `PATH`, its
+version, the user-level install and its fail-closed setting. An install the
+agent has turned off or does not trust fails: a disabled Claude Code plugin,
+Gemini CLI extension or hook, or Goose plugin, and a Codex hook whose
+trust Codex does not list as current, Droid's `hooksDisabled`, a Windsurf or
+Antigravity CLI `hooks.json` that the agent would drop, and an Antigravity
+CLI hook with `"enabled": false`. A Codex or Gemini CLI hook installed
+before the guard learned to keep a deliberate block quiet gets a warning
+with the reinstall step. It also runs
+each installed Python hook against a closed port and checks that the hook
+denies. A Codex, Cursor, Copilot, Goose, Droid, Windsurf or Antigravity CLI hook copy that differs from this
+checkout gets a warning to run `install` again. It reads the agent configs
+and changes nothing. `info` lines give the add-agent form values from
+step 1 of [Connect to Mezmo](#connect-to-mezmo). A key can pass the key check
+and still belong to no agent. Add `--probe` to send Mezmo one test call for
+the tool `doctor:probe`, which shows up in Mezmo like any other call.
+
+#### smoke
+
+`smoke` starts its own mock, sends each installed hook or plugin one shell
+call (it must be denied) and one read (it must be approved), and prints a
+line for each. The OpenCode plugin gets the options from `opencode.json`,
+as OpenCode passes them, with the mock's URL and key in place of yours;
+`smoke --live` keeps yours and reads each `{file:...}`. It calls no model and never sends your key.
+
+`smoke --live [agent...]` sends the same two calls, the agent's shell tool
+and its read tool, to Mezmo at `MEZMO_GOVERNANCE_URL` with
+`MEZMO_GOVERNANCE_TOKEN`. Your policy decides each call, so each line says
+allowed, denied with Mezmo's reason, or pending approval. A call held for
+approval waits 15 s unless you set `MEZMO_GOVERNANCE_TIMEOUT_SECONDS`. It
+exits 1 only when a call reached no decision, such as a `401`, an unknown
+agent or no connection. The calls show up in Mezmo like any other, but not
+in your local audit log.
 
 ### Claude Code
 
@@ -373,6 +384,21 @@ does not fit your setup.
 times out, or cannot start. Every plugin denies the call when Mezmo denies it,
 cannot be reached, or returns something it does not understand.
 
+## Settings
+
+| Variable | Required | Default |
+| --- | --- | --- |
+| `MEZMO_GOVERNANCE_URL` | yes | none |
+| `MEZMO_GOVERNANCE_TOKEN` | yes | none |
+| `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590`, the longest the plugin waits for a person to decide |
+| `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` |
+| `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` |
+
+The hook examples set a 600 second hook timeout, so the plugin's own deadline
+ends first and returns a clear deny. Windsurf has no hook timeout. Antigravity CLI
+honored a 600 second timeout live: the hook's own 590 second deadline ended
+first and blocked the call with `approval still pending`.
+
 ## What leaves your machine
 
 Before each tool call, the plugin sends Mezmo the tool name and its full
@@ -388,21 +414,6 @@ exporter sends it; see [langchain/README.md](langchain/README.md).
 
 Write policy on the assumption that Mezmo sees every argument, and keep secrets
 out of tool arguments.
-
-## Settings
-
-| Variable | Required | Default |
-| --- | --- | --- |
-| `MEZMO_GOVERNANCE_URL` | yes | none |
-| `MEZMO_GOVERNANCE_TOKEN` | yes | none |
-| `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590`, the longest the plugin waits for a person to decide |
-| `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` |
-| `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` |
-
-The hook examples set a 600 second hook timeout, so the plugin's own deadline
-ends first and returns a clear deny. Windsurf has no hook timeout. Antigravity CLI
-honored a 600 second timeout live: the hook's own 590 second deadline ended
-first and blocked the call with `approval still pending`.
 
 ## Troubleshooting
 
@@ -453,76 +464,8 @@ Python 3.10+:
 (cd claude-agent-sdk/python && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt)
 ```
 
-### What the tests confirm
-
-Each adapter's tests feed it the payload its runtime sends and run the real
-entry point: the hook script as a subprocess, or the plugin's exported hooks.
-A local HTTP server stands in for Mezmo. The tests confirm that:
-
-- an approved call runs unchanged, and a denied call is blocked with Mezmo's
-  reason in the runtime's own deny format;
-- the call is blocked when the URL or key is missing, Mezmo cannot be
-  reached, a decision stays pending, or an answer arrives (or drips in)
-  after the deadline; the Python hooks also block on malformed input from
-  the runtime;
-- the call is blocked when Mezmo's reply is not JSON, not an object, or has
-  no boolean `approved`, and when a poll returns an unknown status;
-- a `409` falls into polling, and a call without a call id never reuses an
-  earlier decision;
-- the timeout is capped below the runtime's hook timeout, and `nan`, `inf`
-  and negative values are refused;
-- the post-tool event writes an audit line and never blocks;
-- each example config registers every event and blocks on hook failure,
-  including the `|| exit 2` guard for Codex, Gemini CLI, Droid and Windsurf;
-- `./mezmo-governance` installs each agent, finds it installed, changes
-  nothing on a second install, and on uninstall leaves each config as it was,
-  with the user's other entries and a backup; a run stopped between two steps
-  is finished by the next one; `--dry-run` changes nothing; the key is in no
-  file or output (`tools/test_mezmo_governance_cli.py`, with fake `claude`,
-  `gemini` and `pi` binaries);
-- the shared code is identical across the eight Python hook adapters, across the
-  four `client.ts` copies, and between the LangChain Python client and its
-  OpenAI Agents SDK and Claude Agent SDK copies; the Python hooks import on
-  Python 3.9.
-
-### What they do not confirm
-
-The tests cannot show that a runtime calls the hook, or how it treats the
-answer. That was checked by hand, against `tools/mock_governance.py`, with
-one shell call (expected: denied) and one file read (expected: approved):
-
-| Agent | Version | Deny and allow | Hook crash |
-| --- | --- | --- | --- |
-| Claude Code | 2.1.301 with the Mezmo plugin (2.1.296 with the earlier hook) | pass | blocked |
-| Codex CLI | 0.162.1 | pass | blocked with the guard; runs without it |
-| Cursor CLI | 2026.10.14 | pass | blocked |
-| Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
-| Copilot CLI | 1.0.95, 1.0.98 | pass, with user-level hooks | blocked (1.0.95) |
-| VS Code | 1.142.0 with Copilot Chat 0.70.0 | Copilot harness: pass. Local harness: pass (`run_in_terminal` denied, `read_file` approved); with the earlier hook it ran every tool | not checked |
-| Goose CLI | 1.54.0 | pass | blocked with `on_failure: block`, also on a timeout; runs without it |
-| Droid | 0.244.0, `droid exec` with a bring-your-own-key model (no Factory plan); also against production Mezmo | pass | blocked with the guard |
-| Windsurf | 1.126.0 (Devin Desktop 3.10.67); also against production Mezmo | pass, started from a shell or from the Dock after `launchctl setenv`; a plain Dock launch passes no settings, so every call is denied | blocked with the guard |
-| Antigravity CLI | 1.4.0, `agy -p` with a workspace `.agents/hooks.json`; 1.4.1 with `~/.gemini/config/hooks.json` against production Mezmo | pass | blocked, also on exit 1, output that is not JSON, a missing script and a timeout |
-| OpenCode | 2.0.25 | pass, through the background service with plugin options | not checked |
-| Pi | 1.3.0 | pass | not checked |
-| Mastra | 1.77.0, `generate` and `stream` | pass | not checked |
-| LangChain | 1.4.6, `invoke` and `ainvoke` | pass | not checked |
-| OpenAI Agents SDK | 0.24.0, `run_sync`, `run_streamed` and `run` | pass | blocked, in the tests |
-| Claude Agent SDK | Python 0.2.168, `query` and `ClaudeSDKClient`; TypeScript 0.3.301, `query` | pass | runs if a callback raises (Python, checked), so the callbacks catch every error |
-
-The TypeScript plugins also pass `tsc --strict` against the real Pi, OpenCode
-(1.19.0 and 2.0.25) and Mastra types. That check is not part of `make test`.
-
-To repeat any of these checks, follow [docs/live-testing.md](docs/live-testing.md):
-the setup, the two prompts, and the crash, timeout and production runs.
-
-Not checked at all: a decision a person approves while the hook waits,
-Windows, and how most runtimes behave when the hook times out. The
-Copilot cloud agent ran the hook from `.github/hooks/` and blocked every call,
-because the hook got neither the URL nor the token (see [copilot/](copilot/README.md#cloud-agent)). For Mastra,
-LangChain, the OpenAI Agents SDK and the Python Claude Agent SDK,
-[examples/check.sh](examples/) runs a real agent and fails if the gate lets
-the wrong tool run.
+What the tests confirm, what they do not, and the live-run table for each
+agent are in [docs/live-testing.md](docs/live-testing.md#what-the-tests-confirm).
 
 ## Security
 

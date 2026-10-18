@@ -128,13 +128,6 @@ Before this folder existed, the same commands offered the Claude Code plugin
 `onFailure: block`, so a hook crash lets the tool run. If you installed it, run
 `droid plugin uninstall mezmo@ai-governance-plugins --scope user`.
 
-## Tool names in policy
-
-Mezmo sees the Droid tool name with namespace `droid`. Names from the Droid
-docs: `Execute` for shell commands, `Read`, `Edit`, `Create`, `ApplyPatch`,
-`LS`, `Glob`, `Grep`, `Task`, `FetchUrl` and `WebSearch`. An MCP tool arrives
-with its server as the namespace.
-
 ## Verify
 
 From the repository root, with the two variables exported:
@@ -182,6 +175,13 @@ echo '{"hook_event_name":"PreToolUse","session_id":"smoke","tool_name":"Execute"
 
 No output means Mezmo allowed the call. A deny prints the shape above with your
 policy's reason.
+
+## Tool names in policy
+
+Mezmo sees the Droid tool name with namespace `droid`. Names from the Droid
+docs: `Execute` for shell commands, `Read`, `Edit`, `Create`, `ApplyPatch`,
+`LS`, `Glob`, `Grep`, `Task`, `FetchUrl` and `WebSearch`. An MCP tool arrives
+with its server as the namespace.
 
 ## What the hook sends
 
