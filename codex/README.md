@@ -11,6 +11,10 @@ Official docs: https://developers.openai.com/codex/hooks
 
 The script needs Python 3.9 or later and uses only the standard library.
 
+Tested version: Codex CLI 0.162.1, run live against `tools/mock_governance.py`:
+`Bash` was denied, and with the guard a hook crash blocked the call. The
+native plugin's trust behavior was seen on 0.163.0.
+
 ## Fail behavior
 
 Codex has no fail-closed setting. Codex 0.162.1 runs the tool when a hook
@@ -48,12 +52,14 @@ as `WebSearch` never fire hooks.
 ## Install
 
 `./mezmo-governance install codex` from the repository root does this for you, and `uninstall` undoes it. The steps below are the manual way.
+Run them from the repository root. With `CODEX_HOME` set, use `$CODEX_HOME`
+for `~/.codex`.
 
 1. Copy the hook:
 
 ```bash
 mkdir -p ~/.codex/hooks
-cp mezmo_governance_hook.py ~/.codex/hooks/
+cp codex/mezmo_governance_hook.py ~/.codex/hooks/
 ```
 
 2. Merge [hooks.example.json](hooks.example.json) into `~/.codex/hooks.json`, or
@@ -63,16 +69,21 @@ cp mezmo_governance_hook.py ~/.codex/hooks/
    session directory, so a relative path breaks. To run the script without
    `python3` in front, run `chmod +x` on it first.
 
-3. Export the agent key from Mezmo:
+3. Export the URL and the service account token. The token is a standard
+   Mezmo service key, not a key of the agent; see
+   [Connect to Mezmo](../README.md#connect-to-mezmo):
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
 export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
-4. Start Codex and run `/hooks`. Review and trust the Mezmo hook entries. Codex
-   skips new or changed hooks until you trust them, and warns at startup when a
-   hook needs review. Repeat this after each edit to the hook entries.
+4. Start Codex, run `/hooks`, and trust both Mezmo hook entries. Until you
+   trust them, Codex skips them and every tool runs ungoverned. Do not wait
+   for a warning: Codex 0.163.0 gave none for the native plugin. Trust them
+   again after each edit to the entries. Then run
+   `./mezmo-governance doctor codex`: it fails while the PreToolUse hook is
+   untrusted.
 
 Hooks are on by default. `hooks = false` under `[features]` in
 `~/.codex/config.toml` turns them all off.
@@ -87,6 +98,19 @@ control every hook source.
 
 To gate only some tools, change `matcher`. Examples: `Bash`, `^apply_patch$`,
 `mcp__kubernetes__.*`. `apply_patch` also matches `Edit` and `Write`.
+
+### As a Codex plugin
+
+```bash
+codex plugin marketplace add mezmo/ai-governance-plugins
+codex plugin add mezmo-governance@mezmo
+```
+
+Then trust both hooks in `/hooks`. Until you do, Codex skips them without a
+warning and every tool runs ungoverned (0.163.0). Use the plugin or the file
+install, not both: both run the hook twice. `doctor` checks the plugin's
+trust; `smoke` checks only the file install. For a headless setup, see
+[Codex CLI, Copilot CLI and Droid](../README.md#codex-cli-copilot-cli-and-droid).
 
 ## Tool names in policy
 
@@ -111,9 +135,30 @@ assumes PowerShell; this is not verified.
 In PowerShell, set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
 `$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Codex.
 
+## Verify
+
+From the repository root, with the two variables exported:
+
+```bash
+./mezmo-governance doctor codex
+./mezmo-governance smoke codex
+```
+
+`doctor` checks the install, the settings and the key. `smoke` runs the
+installed hook against its own mock: one shell call must be denied and one
+read approved. Neither starts the agent.
+
+To check that the agent calls the hook, run
+`./mezmo-governance mock --deny Bash` in a second terminal. In the agent's
+terminal, export the two lines it prints, start the agent, and ask it to run
+`ls`. The
+mock prints a `denied` line for `codex:Bash`. No line means the hook did not
+run. Codex has no read-only tool, so `smoke --live` sends it the
+shell call only.
+
 ## Smoke test
 
-Run these from the directory that holds the script. First check that the hook
+Run these from the `codex/` folder. First check that the hook
 denies when Mezmo cannot be reached. Nothing listens on port 9:
 
 ```bash
@@ -169,6 +214,12 @@ If Mezmo is down, JSON is malformed, or the deadline expires while the decision
 is still pending, the hook denies. On input it cannot read, such as broken or
 too deeply nested JSON, or an unsupported event, it prints a deny and exits 2;
 Codex treats exit 2 as a block.
+
+## Troubleshooting
+
+Run `./mezmo-governance doctor --probe codex` from the repository root.
+[Troubleshooting](../README.md#troubleshooting) in the root README lists each
+error and its fix. The top cause for Codex: a hook not trusted in `/hooks`.
 
 ## Tests
 

@@ -43,12 +43,14 @@ second deadline ends first and returns a clear deny.
 
 `./mezmo-governance install goose` from the repository root does this for you, and `uninstall` undoes it. The steps below are the manual way.
 
+Run them from the repository root.
+
 1. Copy the plugin into Goose's user plugin folder:
 
 ```bash
 mkdir -p ~/.agents/plugins/mezmo-governance/hooks
-cp plugin.json mezmo_governance_hook.py ~/.agents/plugins/mezmo-governance/
-cp hooks/hooks.json ~/.agents/plugins/mezmo-governance/hooks/
+cp goose/plugin.json goose/mezmo_governance_hook.py ~/.agents/plugins/mezmo-governance/
+cp goose/hooks/hooks.json ~/.agents/plugins/mezmo-governance/hooks/
 ```
 
    Goose also loads `<project>/.agents/plugins/<name>/` when it starts in that
@@ -65,7 +67,7 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
    Hook commands inherit Goose's environment. They run with `sh -c`, and
    Goose sets `PLUGIN_ROOT` to the plugin folder.
 
-3. Run the [smoke test](#smoke-test), then one tool call your policy denies.
+3. Run the checks in [Verify](#verify), then one tool call your policy denies.
 
 The rules in `hooks.json` have no `matcher`, so they run for every tool. A
 matcher is a regular expression: a bare `"*"` is invalid, and Goose skips that
@@ -100,9 +102,29 @@ The hook also denies `delegate` without asking Mezmo. A subagent that
 in 1.54.0 before this rule: with `shell` and `write` denied, a delegated
 `shell` call wrote a file, and Mezmo saw only `delegate`.
 
+## Verify
+
+From the repository root, with the two variables exported:
+
+```bash
+./mezmo-governance doctor goose
+./mezmo-governance smoke goose
+```
+
+`doctor` checks the install, the settings and the key. `smoke` runs the
+installed hook against its own mock: one shell call must be denied and one
+read approved. Neither starts the agent.
+
+To check that the agent calls the hook, run
+`./mezmo-governance mock --deny shell` in a second terminal. In the agent's
+terminal, export the two lines it prints, start the agent, and ask it to run
+`ls`. The
+mock prints a `denied` line for `goose:shell`. No line means the hook did not
+run.
+
 ## Smoke test
 
-Run these from this directory. First check that the hook denies when Mezmo
+Run these from the `goose/` folder. First check that the hook denies when Mezmo
 cannot be reached. Nothing listens on port 9:
 
 ```bash
@@ -147,8 +169,16 @@ result, so `result_preview` is `null`, and a `PostToolUseFailure` is recorded
 as `failed`. The audit log keeps up to 2000 characters of each tool result, which can hold
 secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
+## Troubleshooting
+
+Run `./mezmo-governance doctor --probe goose` from the repository root.
+[Troubleshooting](../README.md#troubleshooting) in the root README lists each
+error and its fix. For Goose, put the plugin in `~/.agents/plugins/` and use no `"*"` matcher.
+
 ## Tests
 
 ```bash
 python3 -m unittest test_hook.py -v
 ```
+
+From the repo root: `make test-goose`.

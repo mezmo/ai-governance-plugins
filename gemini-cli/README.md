@@ -30,9 +30,10 @@ as a Python error or a missing `python3`, prints the message above. A missing
 hook script makes Python exit 2 too; Python then names the file it could not
 open.
 
-The docs say exit 2 blocks. The guard itself was verified live in Codex, not
-in Gemini CLI. With it, a crash, a wrong path or a missing `python3` blocks
-the call. Gemini CLI still runs the tool when:
+Verified live in Gemini CLI 0.64.0: with the guard, a hook crash blocks the
+call; without it, the tool runs. A wrong path or a missing `python3` also
+exits non-zero, so the guard blocks those too. Gemini CLI still runs the tool
+when:
 
 - the hook reaches its `timeout` (from the source code, not verified);
 - the hook is disabled in `/hooks`, or a changed project hook is not trusted.
@@ -46,23 +47,26 @@ each install.
 this folder as a Gemini CLI extension:
 
 ```bash
-gemini extensions install ./gemini-cli --consent --skip-settings
+GEMINI_CLI_TRUST_WORKSPACE=true gemini extensions install ./gemini-cli --consent --skip-settings
 ```
 
-Gemini CLI asks you to trust the folder, and with `--consent` it also trusts
-the folder you run it from, without asking. `install` sets
-`GEMINI_CLI_TRUST_WORKSPACE=true` for the command instead, so it trusts
-neither. Gemini copies the folder to
+Run it from the repository root. Without `GEMINI_CLI_TRUST_WORKSPACE=true`,
+`--consent` also trusts the folder you run it from, without asking. With it,
+Gemini trusts nothing for this one command. Gemini copies the folder to
 `~/.gemini/extensions/mezmo-governance/`, and loads the extension's
 `hooks/hooks.json`, the same two hooks as `settings.example.json`.
-`gemini extensions uninstall mezmo-governance` removes it. Without the
-extension:
+`gemini extensions uninstall mezmo-governance` removes it. Gemini keeps its
+own copy, so after you update this repository, run
+`./mezmo-governance uninstall gemini-cli`, then `install`.
+
+Without the extension, run these steps from the repository root. With
+`GEMINI_CLI_HOME` set, use `$GEMINI_CLI_HOME/.gemini` for `~/.gemini`.
 
 1. Copy the hook:
 
 ```bash
 mkdir -p ~/.gemini/hooks
-cp mezmo_governance_hook.py ~/.gemini/hooks/
+cp gemini-cli/mezmo_governance_hook.py ~/.gemini/hooks/
 ```
 
 2. Merge [settings.example.json](settings.example.json) into
@@ -128,9 +132,29 @@ The `if ($LASTEXITCODE ...)` part is the crash guard in PowerShell form, for
 Set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
 `$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Gemini CLI.
 
+## Verify
+
+From the repository root, with the two variables exported:
+
+```bash
+./mezmo-governance doctor gemini-cli
+./mezmo-governance smoke gemini-cli
+```
+
+`doctor` checks the install, the settings and the key. `smoke` runs the
+installed hook against its own mock: one shell call must be denied and one
+read approved. Neither starts the agent.
+
+To check that the agent calls the hook, run
+`./mezmo-governance mock --deny run_shell_command` in a second terminal. In the agent's
+terminal, export the two lines it prints, start the agent, and ask it to run
+`ls`. The
+mock prints a `denied` line for `gemini_cli:run_shell_command`. No line means the hook did not
+run.
+
 ## Smoke test
 
-Run these from the directory that holds the script. First check that the hook
+Run these from the `gemini-cli/` folder. First check that the hook
 denies when Mezmo cannot be reached. Nothing listens on port 9:
 
 ```bash
@@ -165,8 +189,16 @@ identical call gets its own decision. Post-tool records have `decision_id: null`
 with an `error` field is recorded as `failed`. The audit log keeps up to 2000 characters of each tool result, which can hold
 secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
+## Troubleshooting
+
+Run `./mezmo-governance doctor --probe gemini-cli` from the repository root.
+[Troubleshooting](../README.md#troubleshooting) in the root README lists each
+error and its fix. For Gemini CLI, check `security.environmentVariableRedaction`: it strips the token unless `MEZMO_GOVERNANCE_TOKEN` is in its `allowed` list.
+
 ## Tests
 
 ```bash
 python3 -m unittest test_hook.py -v
 ```
+
+From the repo root: `make test-gemini-cli`.

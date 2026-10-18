@@ -14,9 +14,13 @@ working.
 
 ## Install
 
-You need Python 3.8 or later. The scripts only use the standard library.
+You need Python 3.9 or later. The scripts only use the standard library.
 You need Claude Code v2.1.295 or later: older versions ignore the hook's `onFailure: "block"`,
 so a governance hook that crashes or times out lets the tool run.
+
+Tested version: Claude Code 2.1.301 with this plugin, run live against
+`tools/mock_governance.py`: `Bash` was denied and `Read` was approved, and a
+hook crash blocked the call.
 
 ```bash
 claude plugin marketplace add mezmo/ai-governance-plugins
@@ -26,11 +30,21 @@ claude plugin marketplace add mezmo/ai-governance-plugins
 claude plugin install mezmo@mezmo
 ```
 
+Or, from a clone of this repository, run `./mezmo-governance install claude-code`
+(add `--dry-run` to see the change first). It removes the older
+`mezmo-governance` plugin, which would check every call twice. It then
+installs `mezmo` from the clone, unless a `mezmo` marketplace is already set
+up. Keep the clone where it is: Claude Code loads the plugin from it.
+`./mezmo-governance uninstall claude-code` undoes it. Moving between this
+route and the GitHub marketplace deletes the saved key (see below). After you
+update the clone, run `uninstall`, then `install`: Claude Code keeps its own
+copy, and `install` leaves an existing one alone.
+
 Then run `/mezmo:setup` in Claude Code and start a new session. Claude Code reads these settings
 when a session starts, so the session you ran setup in carries on as before.
 
 Removing the marketplace, or uninstalling the plugin, deletes its saved settings, including the
-governance access key in the keychain. That includes moving the plugin to another marketplace.
+governance service account token in the keychain. That includes moving the plugin to another marketplace.
 Afterwards, run `/reload-plugins` or start a new session, then run `/mezmo:setup governance`
 again. Telemetry settings live in `~/.claude/settings.json` and the MCP server in
 `~/.claude.json`, so they aren't affected.
@@ -56,21 +70,28 @@ With governance on, a `PreToolUse` hook sends each tool call to Mezmo Governance
 | Ask a person | The call waits while someone approves or denies it in Mezmo, for up to 590 seconds. If nobody decides, it's blocked |
 | Nothing: the service is unreachable, or rejects the key | The tool is blocked |
 
-Governance stays off until you give it an access key. Until then the hook lets every call through
-and sends nothing. Register an agent for Claude Code in Mezmo Governance, attach a policy, and run
-`/mezmo:setup governance` with the agent's access key. Setup checks the key without recording a
+Governance stays off until you give it a key. Until then the hook lets every call through and
+sends nothing. Register an agent for Claude Code in Mezmo Governance, give it a service account
+with Governance permissions, and attach a policy. Then run `/mezmo:setup governance` with that
+service account's token, a standard Mezmo service key (see
+[Connect to Mezmo](../README.md#connect-to-mezmo)). Setup checks the key without recording a
 decision, then saves it as a plugin option, so it lives in the system keychain rather than in a
 settings file.
 
 | Setting | Plugin option | Environment variable (wins) | Default |
 | --- | --- | --- | --- |
 | Authorize URL | `governance_url` | `MEZMO_GOVERNANCE_URL` | `https://api.mezmo.com/governance/workflow/authorize` |
-| Access key | `governance_access_key` | `MEZMO_GOVERNANCE_ACCESS_KEY` or `MEZMO_GOVERNANCE_TOKEN` | none, so governance is off |
+| Service account token | `governance_access_key` | `MEZMO_GOVERNANCE_ACCESS_KEY` or `MEZMO_GOVERNANCE_TOKEN` | none, so governance is off |
 | Required | | `MEZMO_GOVERNANCE_REQUIRED=1` | off |
 
 The service only accepts plain identifiers as argument names, so a Grep call with `-i` gets
 blocked, and the message says which argument. Also, `--safe-mode` and `"disableAllHooks": true`
 turn the governance check off along with your other hooks.
+
+To check the setup from the repository root, run `./mezmo-governance doctor claude-code` and
+`./mezmo-governance smoke claude-code`. Both read `MEZMO_GOVERNANCE_URL` and
+`MEZMO_GOVERNANCE_TOKEN` from the shell, not the key that setup saved, so export them first.
+`/mezmo:test` checks the saved key from inside Claude Code.
 
 ## Telemetry
 
@@ -169,12 +190,12 @@ Governance also needs the plugin installed on each machine. Add `extraKnownMarke
 
 | Problem | Fix |
 | --- | --- |
-| Tool calls blocked with `HTTP 401` | Mezmo Governance rejected the access key. Run `/mezmo:setup governance` again |
+| Tool calls blocked with `HTTP 401` | Mezmo Governance rejected the service account token. Run `/mezmo:setup governance` again |
 | Blocked with `ENOAGENT`, `EAGENTINACTIVE` or `EPOLICYUNASSIGNED` | The key works, but no active agent with a policy is linked to it |
 | Blocked with `approval still pending` | Nobody decided in time. Approve the call in Mezmo, and Claude's retry goes through |
-| Every call blocked, and governance isn't set up | Your organization set `MEZMO_GOVERNANCE_REQUIRED=1`. Ask them for the access key |
+| Every call blocked, and governance isn't set up | Your organization set `MEZMO_GOVERNANCE_REQUIRED=1`. Ask them for the service account token |
 | Every call blocked with `HTTP 401` right after reinstalling the plugin | The running session still has the old plugin's settings. Run `/reload-plugins` or start a new session, then `/mezmo:setup governance` |
-| Governance is off after reinstalling the plugin | Reinstalling deleted the saved access key. Run `/mezmo:setup governance` again |
+| Governance is off after reinstalling the plugin | Reinstalling deleted the saved service account token. Run `/mezmo:setup governance` again |
 | Telemetry checks pass, but nothing shows up in Mezmo | Start a new session, make sure a pipeline has an OpenTelemetry source, and give metrics a minute |
 | Telemetry setup reports conflicting settings | Your settings already send OpenTelemetry somewhere else. Claude Code only exports to one endpoint |
 | The `mezmo` MCP server fails to connect with `401` | Mezmo rejected the service key. Run `/mezmo:setup mcp` with a current key and replace the server |
@@ -190,6 +211,8 @@ claude -p "hello" --debug-file /tmp/claude-otel.log && grep "3P telemetry" /tmp/
 ```bash
 python3 -m unittest discover -s tests
 ```
+
+From the repo root: `make test-claude-code`. `make test-claude-code-mod` runs `claude plugin test`.
 
 ```bash
 claude plugin test
