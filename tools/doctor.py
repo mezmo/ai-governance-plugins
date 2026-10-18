@@ -738,19 +738,23 @@ def check_copilot(report: Report, version: Optional[tuple]) -> Optional[list]:
         if mezmo_handlers(hooks.get("PreToolUse"), "bash"):
             installed = True
             report.line(
-                "FAIL", "Copilot hook", f"{shown(path)} uses PreToolUse; Copilot then sends a payload the hook rejects",
-                "use the camelCase preToolUse, as in copilot/hooks.example.json",
+                "FAIL", "Copilot hook",
+                f"{shown(path)} uses PreToolUse; Copilot then names tools as Claude does (Bash, not bash),"
+                " and next to preToolUse it asks Mezmo twice for each call",
+                "use the camelCase preToolUse, as in copilot/hooks.example.json; VS Code Local reads it too",
             )
         for *_, handler in mezmo_handlers(hooks.get("preToolUse"), "bash"):
             installed = True
             command = str(handler["bash"])
-            if re.search(r"\spreToolUse\s*$", command):
+            if re.search(r"\spreToolUse\s*(\|\||$)", command):
                 report.line("ok", "Copilot hook", f"preToolUse hook in {shown(path)}")
             else:
                 report.line(
                     "FAIL", "Copilot hook", "the command does not end with the event name preToolUse, so every call is denied",
                     "copy the command from copilot/hooks.example.json",
                 )
+            # VS Code Local runs the tool when the hook exits other than 0 or 2; Copilot blocks it.
+            fail_closed(report, "Copilot hook", "exit 2" in command, "|| exit 2 guard", "copilot/hooks.example.json")
             smokes.append(Smoke("Copilot", hook_path(command), event, ("preToolUse",)))
     return smokes if installed else None
 

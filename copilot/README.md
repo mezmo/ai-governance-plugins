@@ -5,15 +5,8 @@ runs. If Mezmo denies the call, or the hook cannot get an answer, the hook
 prints a deny and Copilot skips the tool. After a tool finishes, the same
 script appends a local JSONL record.
 
-It works with Copilot CLI, Copilot cloud agent, and VS Code sessions that use
-the Copilot harness.
-
-**The VS Code Local harness runs every tool ungoverned.** Local reads
-`~/.copilot/hooks/*.json` but matches only PascalCase events (`PreToolUse`),
-and this file uses Copilot's `preToolUse`, so Local skips it without a warning.
-Seen live in VS Code 1.142.0 on 2026-10-17: a Local session ran `touch marker`,
-and the hook got no call. Use the Copilot harness (the **Session Target** control
-in a new chat) for governed sessions.
+It works with Copilot CLI, Copilot cloud agent, and VS Code sessions on
+either harness, Copilot or Local. See [VS Code](#vs-code).
 
 Official docs: https://docs.github.com/en/copilot/reference/hooks-configuration
 
@@ -36,6 +29,10 @@ a call still pending runs the tool.
 
 `disableAllHooks: true` in a hooks file or in repository `settings.json` turns
 the hook off.
+
+The `preToolUse` command ends with an `|| exit 2` guard, for VS Code Local:
+Local runs the tool when a hook exits with a code other than 0 or 2. Copilot
+blocks on any non-zero exit, so the guard changes nothing there.
 
 ## Install
 
@@ -73,15 +70,49 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 
 Each command passes the event name as its last argument, for example
 `preToolUse`. The hook needs it: the camelCase payload does not name the event.
-Use the camelCase event names. The PascalCase names (`PreToolUse`) send
-another payload, which this hook rejects, so Copilot denies every call.
+Use the camelCase event names only. Copilot CLI 1.0.98 runs a `PreToolUse`
+entry as well as a `preToolUse` one from the same file, so it would ask Mezmo
+twice for each call, and a `PreToolUse` entry gets Claude's tool names (`Bash`,
+not `bash`). The hook reads that payload, but `doctor` flags the entry.
 
 ## Tool names in policy
 
-Mezmo sees every tool with namespace `copilot`. Names seen live in Copilot CLI
-1.0.95: `bash` for shell commands and `view` for reads. In Autopilot, Copilot
+Mezmo sees every tool with namespace `copilot`, also from VS Code Local, so a
+rule for every `copilot` tool covers Local too. Names seen live in Copilot CLI
+1.0.95: `bash` for shell commands and `view` for reads. VS Code Local uses its
+own names, such as `run_in_terminal` (see [VS Code](#vs-code)). In Autopilot, Copilot
 also sends its `task_complete` tool through the hook, so a policy that denies
 every tool stops Autopilot from finishing.
+
+## VS Code
+
+VS Code reads `~/.copilot/hooks/*.json` for both harnesses. Pick one with the
+**Session Target** control in a new chat.
+
+- The Copilot harness runs the hook as Copilot CLI does. Seen live in VS Code
+  1.142.0 with Copilot Chat 0.70.0: the mock logged `copilot:bash` and
+  `copilot:view`.
+- The Local harness maps `preToolUse` to `PreToolUse` and runs the `bash`
+  command on macOS and Linux, but sends its own payload (`hook_event_name`,
+  `session_id`, `tool_name`, `tool_input`, `tool_use_id`). It obeys a deny
+  only in `hookSpecificOutput`. The hook reads that payload and prints its deny
+  both at the top level and in `hookSpecificOutput`.
+
+Before this support, Local ran every tool ungoverned: the hook got the Local
+payload, could not find `toolName`, and printed a top-level deny that Local
+ignored. Seen live in VS Code 1.142.0 on 2026-10-17: a Local session ran
+`touch marker`, and the mock got no call.
+
+Local's `tool_use_id` makes the request id stable for a retried call, and joins
+each post-tool record to its decision. `chat.useHooks`, on by default, turns
+Local hooks on. Local reads `timeoutSec` as its timeout and, like Copilot,
+runs the tool when the hook times out, so the 590 second deadline must end
+first. Local has no `postToolUseFailure` event, so it logs no failed calls.
+
+Seen live with this hook in VS Code 1.142.0 on 2026-10-17: a Local session's
+`touch marker` was denied (`mock policy: copilot:run_in_terminal is denied`, no
+file written), and `read_file` was approved. Not verified: on Windows, Local runs the `powershell` command through Windows
+PowerShell `-Command`; that is not checked.
 
 ## Cloud agent
 
@@ -116,7 +147,9 @@ policy keyed on the MCP server name does not match. This is not verified.
 ## Windows
 
 The example has a `powershell` command that uses `py -3` and `$HOME`. It was
-not run on Windows. In PowerShell, set the variables with
+not run on Windows. VS Code Local runs it with `powershell.exe -Command`, which
+exits 1 for any failed command, even the hook's own exit 2, and Local then runs
+the tool. So the `preToolUse` command ends with `if ($LASTEXITCODE -ne 0) { exit 2 }`. In PowerShell, set the variables with
 `$env:MEZMO_GOVERNANCE_URL = "..."` and `$env:MEZMO_GOVERNANCE_TOKEN = "..."`
 before you start Copilot.
 
@@ -131,10 +164,11 @@ echo '{"sessionId":"smoke","timestamp":0,"cwd":".","toolName":"bash","toolArgs":
     MEZMO_GOVERNANCE_TOKEN="test" python3 mezmo_governance_hook.py preToolUse
 ```
 
-It exits 0 and prints a deny. The text after `unavailable:` varies by platform:
+It exits 0 and prints a deny. The text after `unavailable:` varies by
+platform, and `hookSpecificOutput` repeats the same decision:
 
 ```json
-{"permissionDecision":"deny","permissionDecisionReason":"Mezmo Governance could not authorize this exact tool call, so Copilot blocked it: Mezmo Governance is unavailable: <urlopen error [Errno 61] Connection refused>"}
+{"permissionDecision":"deny","permissionDecisionReason":"Mezmo Governance could not authorize this exact tool call, so Copilot blocked it: Mezmo Governance is unavailable: <urlopen error [Errno 61] Connection refused>","hookSpecificOutput":{…}}
 ```
 
 Then run the same line without the two inline variables, with your settings
@@ -144,15 +178,29 @@ reason.
 
 ## Output
 
-Allow prints nothing. Deny:
+Allow prints nothing. Deny, at the top level for Copilot and in
+`hookSpecificOutput` for VS Code Local:
 
 ```json
-{ "permissionDecision": "deny", "permissionDecisionReason": "Mezmo Governance denied this exact tool call: …" }
+{
+  "permissionDecision": "deny",
+  "permissionDecisionReason": "Mezmo Governance denied this exact tool call: …",
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "Mezmo Governance denied this exact tool call: …"
+  }
+}
 ```
+
+Copilot CLI 1.0.98 obeyed this deny for a `preToolUse` and a `PreToolUse` entry.
 
 Copilot sends no tool call id. Each run uses a fresh `run-<uuid>`, so
 `request_id` is `copilot:<sessionId>:run-<uuid>#<digest>`. A repeated identical
 call gets its own decision. Post-tool records have `decision_id: null`.
+VS Code Local sends `tool_use_id`, so there `request_id` is
+`copilot:<session_id>:<tool_use_id>#<digest>`, and post-tool records carry the
+decision's ids.
 
 `toolArgs` may arrive as JSON text or as an object; the hook accepts both.
 `postToolUse` and `postToolUseFailure` only append the local JSONL audit log.

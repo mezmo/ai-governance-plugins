@@ -168,7 +168,7 @@ The table lists the pieces before `#<digest>`.
 | Claude Code | `claude_code`, `session_id`, `tool_use_id` (plus `turn_id` when present) | `claude_code_hook` | `claude_code`, or MCP server from `mcp__<server>__<tool>` |
 | Cursor | `cursor`, `conversation_id`, `tool_use_id`, or a fresh `run-<uuid>` when the event has none | `cursor_hook` | `cursor`, `mcp_server_name`, or `<server>` from `mcp__<server>__<tool>` |
 | Gemini CLI | `gemini_cli`, `session_id`, a fresh `run-<uuid>` (no call id) | `gemini_cli_hook` | `gemini_cli`, or `mcp_context.server_name` |
-| GitHub Copilot | `copilot`, `sessionId`, a fresh `run-<uuid>` (no call id) | `copilot_hook` | `copilot` |
+| GitHub Copilot | `copilot`, `sessionId`, a fresh `run-<uuid>` (no call id); from VS Code Local, `session_id` and `tool_use_id` | `copilot_hook` | `copilot` |
 | Goose | `goose`, `session_id`, `tool_call_id` | `goose_hook` | `goose`, or `<extension>` from `<extension>__<tool>` |
 | Droid | `droid`, `session_id`, a fresh `run-<uuid>` (no call id) | `droid_hook` | `droid`, or MCP server from `mcp__<server>__<tool>` |
 | Windsurf | `windsurf`, `trajectory_id`, a fresh `run-<uuid>` (no call id) | `windsurf_hook` | `windsurf`, or `mcp_server_name` |
@@ -219,7 +219,8 @@ After an approved tool runs, observe hooks append one JSON object per line:
 
 `decision_id` and `request_id` are `null` when the event carries no tool call
 id, as with Cursor's shell and MCP events and every Gemini CLI, Antigravity
-CLI, Copilot, Droid and Windsurf event.
+CLI, Copilot, Droid and Windsurf event. VS Code Local's events carry one, so
+its Copilot records are joined.
 
 `status` is `failed` when the result looks like an error (`isError`, `is_error`,
 or non-zero `exit_code` or `exitCode`), otherwise `observed`. A result sent as
