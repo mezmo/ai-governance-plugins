@@ -69,6 +69,49 @@ To gate one tool by hand, add `MezmoGovernance().guardrail()` to its
 `tool_input_guardrails`, or `guardrail(namespace="<server>")` to an MCP
 server's.
 
+## Settings
+
+The variables in the [root README](../README.md#settings), except
+`MEZMO_GOVERNANCE_AUDIT_LOG`: this package writes no audit file. The
+guardrail waits for a decision inside the run for up to
+`MEZMO_GOVERNANCE_TIMEOUT_SECONDS` (default and maximum 590).
+
+## Verify it works
+
+With the package installed and the two variables set, ask Mezmo about one
+call. This prints the decision, or raises `GovernanceError` with the reason
+there is none:
+
+```bash
+python -c 'import asyncio, uuid
+from mezmo_governance_openai_agents import approval_payload, authorize
+payload = approval_payload(session_id="verify", tool_call_id=str(uuid.uuid4()),
+                           tool_name="read_note", arguments={"name": "todo"})
+print(asyncio.run(authorize(payload)))'
+```
+
+For a full smoke test with a real model, run
+`examples/check.sh openai-agents` from the repository root with
+`OPENAI_API_KEY` set. It starts the mock with `--deny 'delete_*'` and fails
+unless `read_note` runs and `delete_note` does not, and neither runs when
+Mezmo is unreachable.
+
+## How it fails closed
+
+The tool does not run, and the model gets
+`Mezmo Governance could not authorize this tool call, so the OpenAI Agents SDK blocked it: <error>`,
+when:
+
+- the URL or key is missing, or a seconds setting is not a finite number above 0;
+- Mezmo cannot be reached, returns an HTTP error, or a reply that is not JSON,
+  not an object, or has no boolean `approved`;
+- a decision is still pending at the deadline, or arrives after it;
+- the tool arguments are not a JSON object;
+- anything else in the guardrail raises.
+
+If the guardrail crashes outside its own error handling, the SDK raises
+`UserError` and stops the run; the tool still does not run.
+
 ## What is not gated
 
 The SDK runs tool input guardrails only for function tools, so these kinds
@@ -93,29 +136,6 @@ call; this package does not wire those to Mezmo.
 A handoff itself (the `transfer_to_<agent>` call) is not sent to Mezmo; the
 tools of the agent it hands to are. Realtime and voice agents are not tested.
 
-## Fails closed
-
-The tool does not run, and the model gets
-`Mezmo Governance could not authorize this tool call, so the OpenAI Agents SDK blocked it: <error>`,
-when:
-
-- the URL or key is missing, or a seconds setting is not a finite number above 0;
-- Mezmo cannot be reached, returns an HTTP error, or a reply that is not JSON,
-  not an object, or has no boolean `approved`;
-- a decision is still pending at the deadline, or arrives after it;
-- the tool arguments are not a JSON object;
-- anything else in the guardrail raises.
-
-If the guardrail crashes outside its own error handling, the SDK raises
-`UserError` and stops the run; the tool still does not run.
-
-## Settings
-
-The variables in the [root README](../README.md#settings), except
-`MEZMO_GOVERNANCE_AUDIT_LOG`: this package writes no audit file. The
-guardrail waits for a decision inside the run for up to
-`MEZMO_GOVERNANCE_TIMEOUT_SECONDS` (default and maximum 590).
-
 ## What it sends
 
 `request_id` is `openai_agents:<session_id>:<call_id>#<digest>`, and `origin.kind` is
@@ -136,26 +156,6 @@ decision ([identity](../docs/protocol.md#identity)).
 | tool in an SDK tool namespace | that namespace | the tool name | `<namespace>:<tool>` |
 
 `arguments` is the JSON object the model sent for the call.
-
-## Verify it works
-
-With the package installed and the two variables set, ask Mezmo about one
-call. This prints the decision, or raises `GovernanceError` with the reason
-there is none:
-
-```bash
-python -c 'import asyncio, uuid
-from mezmo_governance_openai_agents import approval_payload, authorize
-payload = approval_payload(session_id="verify", tool_call_id=str(uuid.uuid4()),
-                           tool_name="read_note", arguments={"name": "todo"})
-print(asyncio.run(authorize(payload)))'
-```
-
-For a full smoke test with a real model, run
-`examples/check.sh openai-agents` from the repository root with
-`OPENAI_API_KEY` set. It starts the mock with `--deny 'delete_*'` and fails
-unless `read_note` runs and `delete_note` does not, and neither runs when
-Mezmo is unreachable.
 
 ## Troubleshooting
 

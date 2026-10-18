@@ -77,28 +77,6 @@ export OPENAI_API_KEY="…"
 `example_agent.py` reads the model from `OPENAI_MODEL` (default
 `gpt-4.1-mini`).
 
-## Middleware order
-
-List `MezmoGovernanceMiddleware` last in `middleware=[...]`. LangChain runs
-the first middleware outermost, so the last one sees the tool call just
-before the tool runs. A middleware listed after Mezmo could rewrite the
-arguments of a call Mezmo already approved; listed before it, Mezmo gates the
-rewritten call. A test runs a rewriting middleware ahead of Mezmo and checks
-that Mezmo decides on the rewritten arguments.
-
-## What is not gated
-
-The middleware gates the tool calls LangChain runs. Tools the model provider
-runs itself never reach it:
-
-| Tool kind | Where it runs | What the middleware does |
-| --- | --- | --- |
-| A dict tool of type `mcp` or `mcp_toolset` (a remote MCP server) | on the provider's servers, which call the MCP server's tools, side effects included | raises `GovernanceError` before the model call; connect the server with `langchain-mcp-adapters` instead, whose tools are gated |
-| Other dict tools, such as web search or code execution | on the provider's servers | leaves them in place, not gated |
-
-A model you bind to provider tools yourself, before `create_agent`, is not
-inspected.
-
 ## Settings
 
 The variables in the [root README](../README.md#settings), except
@@ -122,6 +100,28 @@ To check fail-closed in your agent, set
 `MEZMO_GOVERNANCE_URL=http://127.0.0.1:9/authorize` and run a prompt that
 calls a tool: the tool message must say `could not authorize`, and the tool
 must not run.
+
+## Middleware order
+
+List `MezmoGovernanceMiddleware` last in `middleware=[...]`. LangChain runs
+the first middleware outermost, so the last one sees the tool call just
+before the tool runs. A middleware listed after Mezmo could rewrite the
+arguments of a call Mezmo already approved; listed before it, Mezmo gates the
+rewritten call. A test runs a rewriting middleware ahead of Mezmo and checks
+that Mezmo decides on the rewritten arguments.
+
+## What is not gated
+
+The middleware gates the tool calls LangChain runs. Tools the model provider
+runs itself never reach it:
+
+| Tool kind | Where it runs | What the middleware does |
+| --- | --- | --- |
+| A dict tool of type `mcp` or `mcp_toolset` (a remote MCP server) | on the provider's servers, which call the MCP server's tools, side effects included | raises `GovernanceError` before the model call; connect the server with `langchain-mcp-adapters` instead, whose tools are gated |
+| Other dict tools, such as web search or code execution | on the provider's servers | leaves them in place, not gated |
+
+A model you bind to provider tools yourself, before `create_agent`, is not
+inspected.
 
 ## What it sends
 
