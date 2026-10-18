@@ -33,12 +33,12 @@ Run these from the root of this repository.
 
    ```bash
    python3 tools/mock_governance.py --port 8787 \
-     --deny Bash --deny shell --deny bash --deny Execute --deny run_command \
-     --deny run_shell_command --deny run_in_terminal
+     --deny Bash --deny Shell --deny shell --deny bash --deny Execute \
+     --deny run_command --deny run_shell_command --deny run_in_terminal
    ```
 
    A pattern matches the tool name (`Execute`) or `<namespace>:<tool>`
-   (`droid:Execute`), with shell wildcards. The mock prints one line per call:
+   (`droid:Execute`), with shell wildcards, and is case-sensitive. The mock prints one line per call:
    `denied   droid:Execute`, `approved droid:Read`.
 
 3. In the terminal that starts the agent, export the two lines the mock
@@ -58,6 +58,9 @@ Run these from the root of this repository.
    ```
 
    `smoke` must print one denied and one approved line. It calls no model.
+   For Claude Code, skip `install`, which governs every Claude Code session
+   on the machine. Start `claude --plugin-dir ./claude-code` from this
+   repository instead.
 
 The two prompts used in every test:
 
@@ -99,7 +102,8 @@ first, then:
 
 ```bash
 droid plugin marketplace add mezmo/ai-governance-plugins
-droid plugin install mezmo-governance@ai-governance-plugins --scope user
+droid plugin marketplace list    # note the marketplace name
+droid plugin install mezmo-governance@<marketplace> --scope user
 ```
 
 ### Windsurf (Devin Desktop)
@@ -121,7 +125,7 @@ launchctl setenv MEZMO_GOVERNANCE_TOKEN "$MEZMO_GOVERNANCE_TOKEN"
 ```
 
 A Dock launch without them must block every call with
-`MEZMO_GOVERNANCE_URL environment variable is not set`. Remove them after the
+`MEZMO_GOVERNANCE_URL must be a non-empty string`. Remove them after the
 test with `launchctl unsetenv`.
 
 ### Antigravity CLI
@@ -222,15 +226,19 @@ jobs:
 ## 3. Hook crash
 
 This checks that the agent blocks the tool when the hook itself fails. It
-matters most for Codex, Gemini CLI, Droid and Windsurf, which run the tool when
-a hook exits 1: only the `|| exit 2` guard stops it.
+matters most for Codex, Gemini CLI, Droid, Windsurf and VS Code Local, which
+run the tool when a hook exits 1: only the `|| exit 2` guard stops it.
 
 ```bash
 printf 'raise RuntimeError("planted crash")\n' > "$T/../crash_hook.py"
 export MEZMO_GOVERNANCE_HOOK="$(cd "$T/.." && pwd)/crash_hook.py"
 ```
 
-Run the shell prompt. The tool must not run and no `marker` file may exist.
+Run the read prompt. The mock approves a read, so only the crash can block
+it. The read must be blocked, and the mock must print no line for it. This
+test covers only the agents whose example hook command reads
+`MEZMO_GOVERNANCE_HOOK`: Codex, Cursor, Gemini CLI (`settings.example.json`),
+Copilot, Droid, Windsurf and Antigravity CLI.
 For Windsurf from the Dock, set it with `launchctl setenv MEZMO_GOVERNANCE_HOOK ...`
 instead. Unset `MEZMO_GOVERNANCE_HOOK` afterwards, or every call stays blocked.
 
@@ -242,10 +250,14 @@ deadline, before the agent's hook timeout. It takes about 10 minutes.
 1. Start a second mock that holds the shell tool pending:
 
    ```bash
-   python3 tools/mock_governance.py --port 8788 --hold run_command
+   python3 tools/mock_governance.py --port 8788 \
+     --hold Bash --hold Shell --hold shell --hold bash --hold Execute \
+     --hold run_command --hold run_shell_command --hold run_in_terminal
    ```
 
-2. Point `MEZMO_GOVERNANCE_URL` at port 8788 and run the shell prompt.
+2. In the agent's terminal, run
+   `export MEZMO_GOVERNANCE_URL=http://127.0.0.1:8788/governance/workflow/authorize`,
+   then run the shell prompt.
 3. After about 590 s, the call must be denied with `approval still pending`,
    and no `marker` file may exist. A run that ends on the agent's own timeout
    instead shows how that agent treats a timed-out hook.
@@ -262,12 +274,14 @@ Set `MEZMO_GOVERNANCE_TIMEOUT_SECONDS=20` for a quick run of the same path.
    export MEZMO_GOVERNANCE_TOKEN="<service account token>"
    ```
 
-2. Add a deny rule for the shell tool and an allow rule for the read tool.
-   This needs a key with Governance policy rights:
+2. In a separate terminal, not the one that starts the agent, add a deny
+   rule for the shell tool and an allow rule for the read tool. This needs a
+   key with Governance policy rights:
 
    ```bash
    export MEZMO_GOVERNANCE_ADMIN_KEY="<admin key>"
    ./mezmo-governance policy apply <agent> --yes
+   unset MEZMO_GOVERNANCE_ADMIN_KEY
    ```
 
    Without rules, the fallthrough decides, and a call may wait for approval.
@@ -281,11 +295,13 @@ Set `MEZMO_GOVERNANCE_TIMEOUT_SECONDS=20` for a quick run of the same path.
 
 ```bash
 ./mezmo-governance uninstall <agent>
-launchctl unsetenv MEZMO_GOVERNANCE_URL; launchctl unsetenv MEZMO_GOVERNANCE_TOKEN
-unset MEZMO_GOVERNANCE_HOOK
+unset MEZMO_GOVERNANCE_HOOK MEZMO_GOVERNANCE_ADMIN_KEY MEZMO_GOVERNANCE_URL \
+  MEZMO_GOVERNANCE_TOKEN MEZMO_GOVERNANCE_TIMEOUT_SECONDS
 rm -rf "$T"
+# macOS, only if you set them for a Dock launch:
+launchctl unsetenv MEZMO_GOVERNANCE_URL; launchctl unsetenv MEZMO_GOVERNANCE_TOKEN
 ```
 
 Stop each mock with Ctrl-C. Remove a Droid plugin with
-`droid plugin uninstall mezmo-governance@ai-governance-plugins`, and delete the
-cloud agent test repository.
+`droid plugin uninstall mezmo-governance@<marketplace>`, and delete the cloud
+agent test repository.

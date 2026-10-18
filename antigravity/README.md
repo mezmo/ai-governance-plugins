@@ -11,6 +11,10 @@ there.
 
 The script needs Python 3.9 or later and uses only the standard library.
 
+Tested versions: Antigravity CLI 1.4.0, and 1.4.1 with
+`~/.gemini/config/hooks.json`, the path this README installs, against
+production Mezmo, on 2026-10-17.
+
 Run live in `agy -p` 1.4.0 on 2026-10-17 against `tools/mock_governance.py`, with
 the hook in a workspace `.agents/hooks.json`: `run_command` (`touch marker`) was
 denied and no file was written; `view_file` was approved. With
@@ -54,13 +58,14 @@ Run the [smoke test](#smoke-test) after each install, and run
 for you, and `uninstall` undoes it. It refuses, and changes nothing, when
 `hooks.json` already has a `mezmo-governance` hook that runs no Mezmo script,
 or holds an entry that would make Antigravity drop the file. The steps below
-are the manual way.
+are the manual way. Run them from the repository root. Antigravity CLI has
+no override for the `~/.gemini/config` folder.
 
 1. Copy the hook:
 
 ```bash
 mkdir -p ~/.gemini/config/hooks
-cp mezmo_governance_hook.py ~/.gemini/config/hooks/
+cp antigravity/mezmo_governance_hook.py ~/.gemini/config/hooks/
 ```
 
 2. Add the `mezmo-governance` entry from
@@ -75,7 +80,9 @@ cp mezmo_governance_hook.py ~/.gemini/config/hooks/
    the user hook off (`agy -p /hooks`, 1.4.0). When one hook allows a call and
    another denies it, the tool is blocked, in either order (live, 1.4.0).
 
-3. Export the agent key from Mezmo:
+3. Export the URL and the service account token. The token is a standard
+   Mezmo service key, not a key of the agent; see
+   [Connect to Mezmo](../README.md#connect-to-mezmo):
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
@@ -105,9 +112,29 @@ and `Arguments`. The hook sends it with the server as the namespace, the
 server's tool name, and the tool's own arguments. The hook denies a call to an
 MCP server named `antigravity`: its tools would pass as built-ins.
 
+## Verify
+
+From the repository root, with the two variables exported:
+
+```bash
+./mezmo-governance doctor antigravity
+./mezmo-governance smoke antigravity
+```
+
+`doctor` checks the install, the settings and the key. `smoke` runs the
+installed hook against its own mock: one shell call must be denied and one
+read approved. Neither starts the agent.
+
+To check that the agent calls the hook, run
+`./mezmo-governance mock --deny run_command` in a second terminal. In the agent's
+terminal, export the two lines it prints, start the agent, and ask it to run
+`ls`. The
+mock prints a `denied` line for `antigravity:run_command`. No line means the hook did not
+run.
+
 ## Smoke test
 
-Run these from the directory that holds the script. First check that the hook
+Run these from the `antigravity/` folder. First check that the hook
 denies when Mezmo cannot be reached. Nothing listens on port 9:
 
 ```bash
@@ -163,6 +190,12 @@ prints a deny and exits 2.
 The `PostToolUse` payload holds no tool result, only an `error` text when the
 tool failed. The record is `failed` with that text as its preview, else
 `observed` with an empty preview.
+
+## Troubleshooting
+
+Run `./mezmo-governance doctor --probe antigravity` from the repository root.
+[Troubleshooting](../README.md#troubleshooting) in the root README lists each
+error and its fix. For Antigravity CLI, run `agy -p /hooks` and check that the hook is not `"enabled": false`.
 
 ## Tests
 

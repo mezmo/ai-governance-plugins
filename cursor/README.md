@@ -14,13 +14,19 @@ Official docs: https://cursor.com/docs/hooks
 
 The script needs Python 3.9 or later and uses only the standard library.
 
+Tested version: Cursor CLI (`cursor-agent`) 2026.10.14, run live against
+`tools/mock_governance.py`: a shell call was denied, a read was approved, and
+a hook crash blocked the call. The Cursor editor was not run.
+
 ## Install
 
 `./mezmo-governance install cursor` from the repository root does this for you, and `uninstall` undoes it. The steps below are the manual way.
+Run them from the repository root. Cursor has no override for the
+`~/.cursor` folder.
 
 ```bash
 mkdir -p ~/.cursor/hooks
-cp mezmo_governance_hook.py ~/.cursor/hooks/
+cp cursor/mezmo_governance_hook.py ~/.cursor/hooks/
 ```
 
 Merge [hooks.example.json](hooks.example.json) into `~/.cursor/hooks.json` or
@@ -34,6 +40,12 @@ without `python3` in front, run `chmod +x` on it first. Then:
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
 export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
+
+Start Cursor from a shell that exports the variables (`cursor-agent`, or
+`cursor .` for the editor). Windsurf, another VS Code-based editor, passed no
+variables to the hook when started from the Dock, so every call was denied
+with `MEZMO_GOVERNANCE_URL must be a non-empty string`. The Cursor editor may
+do the same; this is not verified.
 
 Optional matchers: `Shell`, `Read`, `Write`, `MCP:<tool_name>`. Cloud agents
 load project `.cursor/hooks.json` only, not `~/.cursor/hooks.json`. MCP
@@ -68,9 +80,29 @@ Windows, use an absolute path:
 In PowerShell, set the variables with `$env:MEZMO_GOVERNANCE_URL = "..."` and
 `$env:MEZMO_GOVERNANCE_TOKEN = "..."` before you start Cursor.
 
+## Verify
+
+From the repository root, with the two variables exported:
+
+```bash
+./mezmo-governance doctor cursor
+./mezmo-governance smoke cursor
+```
+
+`doctor` checks the install, the settings and the key. `smoke` runs the
+installed hook against its own mock: one shell call must be denied and one
+read approved. Neither starts the agent.
+
+To check that the agent calls the hook, run
+`./mezmo-governance mock --deny Shell` in a second terminal. In the agent's
+terminal, export the two lines it prints, start the agent, and ask it to run
+`ls`. The
+mock prints a `denied` line for `cursor:Shell`. No line means the hook did not
+run.
+
 ## Smoke test
 
-Run these from the directory that holds the script. First check that the hook
+Run these from the `cursor/` folder. First check that the hook
 denies when Mezmo cannot be reached. Nothing listens on port 9:
 
 ```bash
@@ -127,8 +159,16 @@ Post-tool events only append the local JSONL audit log. Cursor sends
 failed call. The audit log keeps up to 2000 characters of each tool result, which can hold
 secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
+## Troubleshooting
+
+Run `./mezmo-governance doctor --probe cursor` from the repository root.
+[Troubleshooting](../README.md#troubleshooting) in the root README lists each
+error and its fix. For Cursor, check `failClosed: true` on the `preToolUse` entry. A cloud agent loads only the project `.cursor/hooks.json`.
+
 ## Tests
 
 ```bash
 python3 -m unittest test_hook.py -v
 ```
+
+From the repo root: `make test-cursor`.

@@ -1,12 +1,20 @@
 # Mezmo Governance plugins
 
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white)](#requirements)
+[![Node 22.18+](https://img.shields.io/badge/node-22.18%2B-5FA04E?logo=nodedotjs&logoColor=white)](#requirements)
+[![Last commit](https://img.shields.io/github/last-commit/mezmo/ai-governance-plugins)](https://github.com/mezmo/ai-governance-plugins/commits/main)
+
 Plugins that ask Mezmo Governance before a coding agent runs a tool. If Mezmo
-denies the call, or never answers, the tool does not run.
+denies the call, or never answers, the tool does not run. (The Claude Code
+plugin needs a key first: see [Claude Code](#claude-code).)
 
 To get access to Mezmo Governance, see [mezmo.com/platform/governance](https://www.mezmo.com/platform/governance).
 
 ```text
-Claude Code / Claude Agent SDK / Codex / Cursor / Gemini CLI / Antigravity CLI / Copilot / Goose / Droid / Windsurf / Pi / OpenCode / LangChain / OpenAI Agents SDK / Mastra
+Coding agents: Claude Code, Codex, Cursor, Gemini CLI, Antigravity CLI,
+               Copilot, Goose, Droid, Windsurf, Pi, OpenCode
+Agent SDKs:    Claude Agent SDK, LangChain, OpenAI Agents SDK, Mastra
         │  before the tool runs
         ▼
   plugin  ──POST /governance/workflow/authorize──►  Mezmo Governance
@@ -15,6 +23,15 @@ Claude Code / Claude Agent SDK / Codex / Cursor / Gemini CLI / Antigravity CLI /
         ▼
   run the tool, or stop it and show the reason to the agent
 ```
+
+## Requirements
+
+- Python 3.9+ for the `mezmo-governance` command and the hook adapters.
+- Python 3.10+ for the LangChain, OpenAI Agents SDK and Claude Agent SDK
+  libraries.
+- Node 22.18+ for Pi, OpenCode, Mastra and the TypeScript Claude Agent SDK,
+  and for their tests: they run `.ts` files by type stripping.
+- macOS or Linux. Windows is not tested.
 
 ## Try it in two minutes, without a Mezmo account
 
@@ -39,13 +56,15 @@ call before you connect it to anything. You need Python 3.9+ and Claude Code
    claude --plugin-dir ./claude-code
    ```
 
-3. Ask Claude to run `ls`. The mock prints `denied claude_code:Bash`, and
+3. Ask Claude to run `ls`. The mock prints a `denied` line for `claude_code:Bash`, and
    Claude reports `Mezmo Governance denied this exact tool call: mock policy:
    claude_code:Bash is denied`. Ask it to read a file: that call is approved.
 
-Run `python3 tools/mock_governance.py --help` for patterns (`--deny 'mcp__*'`,
-`--deny 'kubernetes:pods_*'`) and `--hold`, which leaves a call pending so you
-can watch the plugin wait and then deny.
+`--deny PATTERN` and `--hold PATTERN` repeat. A pattern matches the tool name
+(`Bash`) or `<namespace>:<tool>` (`claude_code:Bash`), with shell wildcards,
+and is case-sensitive: `--deny 'mcp__*'`, `--deny 'kubernetes:pods_*'`.
+`--hold` leaves a call pending, so you can watch the plugin wait and then
+deny. `--port` sets the port (default 8787).
 
 ## Connect to Mezmo
 
@@ -74,17 +93,31 @@ can watch the plugin wait and then deny.
    [`policy apply`](#set-up-rules). An account
    without Governance permissions gets `401 EAUTH` on every call. Then add
    policies, as in [Create a policy](#create-a-policy), and assign one to
-   the agent: an agent without one gets `403 EPOLICYUNASSIGNED`. The last page shows a `config.toml` for Aura; the plugins need
-   only two values from it, the `url` (your `MEZMO_GOVERNANCE_URL`) and
-   `MEZMO_GOVERNANCE_TOKEN`.
+   the agent: an agent without one gets `403 EPOLICYUNASSIGNED`. The last page shows a `config.toml` for Mezmo's own agent runtime,
+   Aura. The plugins need only two values from it: the `url`, which is your
+   `MEZMO_GOVERNANCE_URL`, and the token.
 
    `MEZMO_GOVERNANCE_TOKEN` is the service account's token, a standard Mezmo
    service key, not a key of the agent. Create it under Settings >
    Organization > API Keys, as in [Generate Service and Ingestion Keys](https://docs.mezmo.com/docs/ingestion-key), and copy it when
-   Mezmo shows it: the full key appears only once.
-2. Install the plugin for your agent, from this repository. The install
+   Mezmo shows it: the full key appears only once. This README calls it the
+   service account token.
+2. Give each agent the URL and the service account token. Most agents read
+   environment variables, so export them in the shell that starts the agent:
+
+   ```bash
+   export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
+   export MEZMO_GOVERNANCE_TOKEN="<service account token>"
+   ```
+
+   Claude Code also reads these variables. After step 3 you can instead run
+   `/mezmo:setup governance`, which keeps the key in the system credential
+   store. OpenCode 2.x takes them as plugin options in `opencode.json`
+   (see [opencode/](opencode/)), because its tools run in a background
+   service that does not see your shell.
+3. Install the plugin for your agent, from this repository. The install
    governs every session of that agent on this machine, so try a new policy
-   in one session first, as in
+   in one Claude Code session first, as in
    [A policy for an end-to-end check](#a-policy-for-an-end-to-end-check).
    See the change first with `--dry-run`:
 
@@ -94,27 +127,19 @@ can watch the plugin wait and then deny.
    ```
 
    Name one or more agents, or pass `--all` for every agent on your `PATH`.
+   The names are `claude-code`, `codex`, `cursor`, `gemini-cli`, `copilot`,
+   `goose`, `opencode`, `pi`, `droid`, `windsurf` and `antigravity`.
    `./mezmo-governance agents` lists them; [the table below](#the-mezmo-governance-command)
    says what `install` does for each.
-3. Give it the URL and key. In Claude Code, run `/mezmo:setup governance`,
-   which keeps the key in the system credential store. OpenCode 2.x takes them as plugin options in `opencode.json`
-   (see [opencode/](opencode/)), because its tools run in a background
-   service that does not see your shell. Every other agent reads environment
-   variables:
-
-   ```bash
-   export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-   export MEZMO_GOVERNANCE_TOKEN="<service account token>"
-   ```
-
-4. Check your setup, with the variables exported:
+4. Check your setup. `doctor` reads the two environment variables, even
+   where the agent keeps its own copy, so export them in this shell first:
 
    ```bash
    ./mezmo-governance doctor
    ./mezmo-governance smoke
    ```
 
-   `doctor` (also `python3 tools/doctor.py`) checks the settings, that Mezmo
+   `doctor [agent...]` (`python3 tools/doctor.py` runs the same check for all agents) checks the settings, that Mezmo
    answers and takes the key, and, for each coding agent on your `PATH`, its
    version, the user-level install and its fail-closed setting. An install the
    agent has turned off or does not trust fails: a disabled Claude Code plugin,
@@ -149,6 +174,9 @@ can watch the plugin wait and then deny.
    in your local audit log.
 5. Run one tool call your policy denies, and check that the agent shows the
    reason. Then check `~/.mezmo/governance-audit.jsonl` for the approved calls.
+
+To remove a plugin, run `./mezmo-governance uninstall <agent> --dry-run`, then
+run it again without `--dry-run`.
 
 ### Create a policy
 
@@ -248,7 +276,7 @@ agents. The API is `https://api.mezmo.com/v3/governance`, or the host of
 
 `./mezmo-governance help` lists the commands: `agents`, `install`,
 `uninstall`, `doctor`, `mock`, `smoke` and `policy`. It needs Python 3.9 or later, and
-node for the OpenCode and Pi smoke test.
+Node 22.18+ for the OpenCode and Pi smoke tests.
 
 `install` writes into each agent's user config folder and honors the agent's
 own override: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`,
@@ -269,19 +297,19 @@ ahead of your own handler in one group, `uninstall` changes no Codex file,
 names the handlers that would move and how to remove the entry by hand, and
 exits 1.
 
-| Agent | `install` runs | Why this way |
-| --- | --- | --- |
-| Claude Code | `claude plugin install mezmo --marketplace <this repo> -s user`, after it uninstalls an older `mezmo-governance` plugin | `claude plugin install --help`: the marketplace may be "a path" |
-| Codex CLI | copies the hook, merges `codex/hooks.example.json` into `hooks.json` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
-| Cursor | copies the hook, merges `cursor/hooks.example.json` into `~/.cursor/hooks.json` | `cursor-agent plugin` only adds marketplaces from a git URL |
-| Gemini CLI | `gemini extensions install ./gemini-cli --consent --skip-settings` | `gemini extensions install --help`: "from a git repository URL or a local path" |
-| Copilot CLI | copies the hook and `hooks.example.json` to `~/.copilot/hooks/` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
-| Goose | copies the plugin to `~/.agents/plugins/mezmo-governance/` | `goose plugin install` takes a git URL whose root is the plugin |
-| OpenCode 2.x | copies `opencode/` and names it in `opencode.json` with options; the key stays in a file you write | `opencode plugin add` takes an npm or git package only |
-| Pi | `pi install ./pi` | `pi install --help`: `pi install ./local/path` |
-| Droid | copies the hook, merges `droid/hooks.example.json` into `~/.factory/hooks.json`; refuses, changing nothing, when that would hide hooks Droid reads from `settings.json` or the older `hooks/hooks.json` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
-| Windsurf | copies the hook, merges `windsurf/hooks.example.json` into `~/.codeium/windsurf/hooks.json`; refuses, changing nothing, when Windsurf would drop that file whole | Windsurf reads hooks only from `hooks.json` files |
-| Antigravity CLI | copies the hook, adds the `mezmo-governance` hook from `antigravity/hooks.example.json` to `~/.gemini/config/hooks.json`; refuses, changing nothing, when Antigravity would drop that file whole or it already has a `mezmo-governance` hook | `doctor` and `smoke` check this file install; an `agy plugin install` route was not built |
+| Agent | `install` name | `install` runs | Why this way |
+| --- | --- | --- | --- |
+| Claude Code | `claude-code` | `claude plugin install mezmo --marketplace <this repo> -s user`, after it uninstalls an older `mezmo-governance` plugin | `claude plugin install --help`: the marketplace may be "a path" |
+| Codex CLI | `codex` | copies the hook, merges `codex/hooks.example.json` into `hooks.json` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
+| Cursor | `cursor` | copies the hook, merges `cursor/hooks.example.json` into `~/.cursor/hooks.json` | `cursor-agent plugin` only adds marketplaces from a git URL |
+| Gemini CLI | `gemini-cli` | `gemini extensions install ./gemini-cli --consent --skip-settings` | `gemini extensions install --help`: "from a git repository URL or a local path" |
+| Copilot CLI | `copilot` | copies the hook and `hooks.example.json` to `~/.copilot/hooks/` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
+| Goose | `goose` | copies the plugin to `~/.agents/plugins/mezmo-governance/` | `goose plugin install` takes a git URL whose root is the plugin |
+| OpenCode 2.x | `opencode` | copies `opencode/` and names it in `opencode.json` with options; the key stays in a file you write | `opencode plugin add` takes an npm or git package only |
+| Pi | `pi` | `pi install ./pi` | `pi install --help`: `pi install ./local/path` |
+| Droid | `droid` | copies the hook, merges `droid/hooks.example.json` into `~/.factory/hooks.json`; refuses, changing nothing, when that would hide hooks Droid reads from `settings.json` or the older `hooks/hooks.json` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
+| Windsurf | `windsurf` | copies the hook, merges `windsurf/hooks.example.json` into `~/.codeium/windsurf/hooks.json`; refuses, changing nothing, when Windsurf would drop that file whole | Windsurf reads hooks only from `hooks.json` files |
+| Antigravity CLI | `antigravity` | copies the hook, adds the `mezmo-governance` hook from `antigravity/hooks.example.json` to `~/.gemini/config/hooks.json`; refuses, changing nothing, when Antigravity would drop that file whole or it already has a `mezmo-governance` hook | `doctor` and `smoke` check this file install; an `agy plugin install` route was not built |
 
 The Gemini CLI install runs with `GEMINI_CLI_TRUST_WORKSPACE=true` for that
 one command, so Gemini asks nothing and adds no folder to `trustedFolders.json`.
@@ -317,7 +345,7 @@ both run the hook twice. `smoke` checks only the file install; `doctor` also che
 - Copilot CLI: `copilot plugin marketplace add mezmo/ai-governance-plugins`, then `copilot plugin install mezmo-governance@mezmo`.
   A local-path marketplace loads the hook from that checkout, so editing it or switching its branch changes the hook.
 - Droid: `droid plugin marketplace add mezmo/ai-governance-plugins`, then `droid plugin install mezmo-governance@<marketplace> --scope user`.
-  Droid names the marketplace after its source; `droid plugin marketplace list` shows the name. The plugin install was not run: see [droid/](droid/).
+  Droid names the marketplace after its source; `droid plugin marketplace list` shows the name. This plugin route is not tested; the file install is. See [droid/](droid/).
 
 ### Install by hand
 
@@ -353,8 +381,9 @@ content. It also sends the session id and the tool call id (Gemini CLI, Antigrav
 not sent to Mezmo: post-tool hooks only append a line to a local file.
 
 One exception reaches past Mezmo: the LangChain middleware records each
-approved call as an OpenTelemetry span with the full arguments and up to 8,000
-characters of the result. The span goes wherever the app's OpenTelemetry
+approved call as an OpenTelemetry span. With `trace_payloads=True` the span
+also carries the full arguments and up to 8,000 characters of the result. The
+span goes wherever the app's OpenTelemetry
 exporter sends it; see [langchain/README.md](langchain/README.md).
 
 Write policy on the assumption that Mezmo sees every argument, and keep secrets
@@ -384,7 +413,7 @@ or Mastra setup, which lives in app code; for those, run
 | You see | Cause | Fix |
 | --- | --- | --- |
 | Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice; Copilot: install in `~/.copilot/hooks/`, not `.github/hooks/`; Gemini CLI: use `~/.gemini/settings.json` or trust the folder; Goose: put the plugin in `~/.agents/plugins/` and use no `"*"` matcher; Droid: check the **Effective** tab of `/hooks` and trust the folder; Windsurf: trust the workspace, since no hook loads in Restricted Mode, and run `doctor`; Antigravity CLI: run `agy -p /hooks` and `doctor` |
-| Every call is denied: `MEZMO_GOVERNANCE_URL must be a non-empty string` | the agent did not inherit the variables | export them in the shell that starts the agent, or use the agent's own settings `env` block |
+| Every call is denied: `MEZMO_GOVERNANCE_URL must be a non-empty string` (Python) or `MEZMO_GOVERNANCE_URL is required` (TypeScript) | the agent did not inherit the variables | export them in the shell that starts the agent, or use the agent's own settings `env` block |
 | `Mezmo Governance returned HTTP 401 EAUTH` | wrong or revoked service account token, or a service account without Governance permissions | give the agent's service account Governance permissions, then copy a fresh token from the service account in Mezmo |
 | `Mezmo Governance returned HTTP 403 ENOAGENT: no agent is registered for these credentials` | Mezmo accepts the token, but no agent uses its service account | register an agent in Mezmo Governance and use the token of the service account that agent uses |
 | `Mezmo Governance returned HTTP 403 EPOLICYUNASSIGNED: this agent has no policy assigned` | the agent exists but has no policy | assign a policy to the agent in Mezmo Governance |
@@ -397,18 +426,31 @@ The protocol, including polling and request identity, is in
 
 ## Tests
 
-Python 3.9+ and Node 22+. Tests mock HTTP and never call Mezmo.
+Python 3.9+ and Node 22.18+ (it runs `.ts` tests by type stripping). Tests
+mock HTTP and never call Mezmo.
 
 ```bash
 make test
 ```
+
+Run one adapter with `make test-<folder>`, such as `make test-codex`, or the
+`mezmo-governance` command's tests with `make test-tools`.
+`make test-claude-code-mod` runs the Claude Code status display tests; it
+needs the `claude` CLI and is not part of `make test`.
 
 `make test` runs the LangChain middleware tests only when LangChain is
 installed in `langchain/.venv` (see [langchain/](langchain/)), the
 OpenAI Agents SDK guardrail tests only when the SDK is installed in
 `openai-agents/.venv` (see [openai-agents/](openai-agents/)), and the Claude
 Agent SDK transport tests only with `claude-agent-sdk/python/.venv` (see
-[claude-agent-sdk/](claude-agent-sdk/)).
+[claude-agent-sdk/](claude-agent-sdk/)). Make each venv once, with
+Python 3.10+:
+
+```bash
+(cd langchain && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt)
+(cd openai-agents && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt)
+(cd claude-agent-sdk/python && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt)
+```
 
 ### What the tests confirm
 

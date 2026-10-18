@@ -12,13 +12,13 @@ https://docs.factory.com/harness/plugins (plugins), read 2026-10-17.
 
 The script needs Python 3.9 or later and uses only the standard library.
 
-Run live in `droid exec` 0.244.0 on 2026-10-17 against `tools/mock_governance.py`, with a
-bring-your-own-key Anthropic model: `Execute` (`touch marker`) was denied and no file was
-written; `Read` was approved. The plugin install was not run. The other hook fields, exit
-codes and file locations below come
-from those docs and from the Droid 0.244.0 binary (`@factory/cli-darwin-arm64`
-on npm), read but never started. The hook script itself passes its tests and
-`./mezmo-governance smoke`.
+Tested version: Droid 0.244.0, run live on 2026-10-17 with `droid exec` and a
+bring-your-own-key Anthropic model, against `tools/mock_governance.py` and
+production Mezmo. `Execute` (`touch marker`) was denied and no file was
+written; `Read` was approved. With the guard, a hook crash blocked the call.
+The plugin install was not run. The other hook fields, exit codes and file
+locations below come from those docs and from the Droid 0.244.0 binary
+(`@factory/cli-darwin-arm64` on npm).
 
 ## Fail behavior
 
@@ -62,13 +62,14 @@ at startup.
 ## Install
 
 `./mezmo-governance install droid` from the repository root does this for you,
-and `uninstall` undoes it. The steps below are the manual way.
+and `uninstall` undoes it. The steps below are the manual way. Run them from
+the repository root.
 
 1. Copy the hook:
 
 ```bash
 mkdir -p ~/.factory/hooks
-cp mezmo_governance_hook.py ~/.factory/hooks/
+cp droid/mezmo_governance_hook.py ~/.factory/hooks/
 ```
 
 2. Merge [hooks.example.json](hooks.example.json) into `~/.factory/hooks.json`.
@@ -84,7 +85,9 @@ cp mezmo_governance_hook.py ~/.factory/hooks/
    first, or they stop running. `install` refuses, and changes nothing, until
    you do.
 
-3. Export the agent key from Mezmo:
+3. Export the URL and the service account token. The token is a standard
+   Mezmo service key, not a key of the agent; see
+   [Connect to Mezmo](../README.md#connect-to-mezmo):
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
@@ -131,9 +134,29 @@ docs: `Execute` for shell commands, `Read`, `Edit`, `Create`, `ApplyPatch`,
 `LS`, `Glob`, `Grep`, `Task`, `FetchUrl` and `WebSearch`. An MCP tool arrives
 with its server as the namespace.
 
+## Verify
+
+From the repository root, with the two variables exported:
+
+```bash
+./mezmo-governance doctor droid
+./mezmo-governance smoke droid
+```
+
+`doctor` checks the install, the settings and the key. `smoke` runs the
+installed hook against its own mock: one shell call must be denied and one
+read approved. Neither starts the agent.
+
+To check that the agent calls the hook, run
+`./mezmo-governance mock --deny Execute` in a second terminal. In the agent's
+terminal, export the two lines it prints, start the agent, and ask it to run
+`ls`. The
+mock prints a `denied` line for `droid:Execute`. No line means the hook did not
+run.
+
 ## Smoke test
 
-Run these from the directory that holds the script. First check that the hook
+Run these from the `droid/` folder. First check that the hook
 denies when Mezmo cannot be reached. Nothing listens on port 9:
 
 ```bash
@@ -187,6 +210,12 @@ If Mezmo is down, JSON is malformed, or the deadline expires while the decision
 is still pending, the hook denies. On input it cannot read, such as broken or
 too deeply nested JSON, or an unsupported event, it prints a deny and exits 2;
 Droid treats exit 2 as a block.
+
+## Troubleshooting
+
+Run `./mezmo-governance doctor --probe droid` from the repository root.
+[Troubleshooting](../README.md#troubleshooting) in the root README lists each
+error and its fix. For Droid, check the **Effective** tab of `/hooks`, and that `hooksDisabled` is not set.
 
 ## Tests
 

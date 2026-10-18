@@ -46,12 +46,19 @@ pip install ./claude-agent-sdk/python      # from a checkout of this repository
 ```
 
 ```python
+import asyncio
+
 from claude_agent_sdk import ClaudeAgentOptions, query
 from mezmo_governance_claude_agent_sdk import mezmo_governance_hooks
 
-options = ClaudeAgentOptions(hooks=mezmo_governance_hooks())
-async for message in query(prompt="Clean up the build folder", options=options):
-    print(message)
+
+async def main() -> None:
+    options = ClaudeAgentOptions(hooks=mezmo_governance_hooks())
+    async for message in query(prompt="Clean up the build folder", options=options):
+        print(message)
+
+
+asyncio.run(main())
 ```
 
 `ClaudeSDKClient(options=options)` takes the same options.
@@ -62,8 +69,10 @@ address such as `127.0.0.1`, for a local mock. A URL with a password is refused.
 
 ### TypeScript
 
-Node 22.18+. Copy `typescript/client.ts` and `typescript/mezmo-governance.ts`
-into your project:
+Node 22.18+. Install the SDK with `npm install @anthropic-ai/claude-agent-sdk`.
+Copy `typescript/client.ts` and `typescript/mezmo-governance.ts` into one
+folder of your project. Run the example as an ES module (`"type": "module"`),
+since it uses top-level `for await`:
 
 ```typescript
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -77,8 +86,15 @@ for await (const message of query({
 }
 ```
 
-`createMezmoGovernanceHooks({ fetchImpl })` builds a fresh set if you need to
-inject a custom fetch in tests.
+The import keeps the `.ts` extension. With `tsc`, set
+`allowImportingTsExtensions` (with `noEmit`), or drop the extension if your
+bundler resolves it.
+
+The TypeScript hooks read only `MEZMO_GOVERNANCE_URL` and
+`MEZMO_GOVERNANCE_TOKEN` from the environment: there is no URL or key
+argument. `createMezmoGovernanceHooks({ fetchImpl })` takes one option,
+`fetchImpl`, and builds a fresh set if you need to inject a custom fetch in
+tests.
 
 ### Your own hooks
 
@@ -86,6 +102,13 @@ The SDK runs every matching hook, and a deny from any of them wins. To add
 your own, append to the lists instead of replacing them:
 
 ```python
+from claude_agent_sdk import HookMatcher
+
+
+async def my_check(input_data, tool_use_id, context):
+    return {}  # or a deny
+
+
 hooks = mezmo_governance_hooks()
 hooks["PreToolUse"].append(HookMatcher(matcher="Bash", hooks=[my_check]))
 ```
@@ -122,8 +145,9 @@ asyncio loop. Under trio every call is denied.
 
 The same variables as the other plugins: see the [root README](../README.md#settings).
 The audit log defaults to `~/.mezmo/governance-audit.jsonl`.
-Each line keeps up to 2,000 characters of the tool's result, so the Python
-hooks keep the log readable by its owner only: mode 0600, in a 0700 folder.
+Each line keeps up to 2,000 characters of the tool's result, so both the
+Python and TypeScript hooks keep the log readable by its owner only: mode
+0600, in a 0700 folder.
 
 ## What the hooks send
 
@@ -154,7 +178,7 @@ The agent sees the reason as the tool result.
 ## Smoke test
 
 To check fail-closed without a model, run the callback against a port where
-nothing listens:
+nothing listens. From the repository root:
 
 ```bash
 cd claude-agent-sdk/python
@@ -173,6 +197,13 @@ seen.
 
 With a real model, [examples/check.sh](../examples/) `claude-agent-sdk` runs
 an agent against the local mock and fails if the gate lets the wrong tool run.
+
+## Troubleshooting
+
+`doctor` does not check this library: its setup lives in app code. The
+[root table](../README.md#troubleshooting) lists each Mezmo error and its fix.
+`MEZMO_GOVERNANCE_URL is required` or `must be a non-empty string` means the
+process that runs the agent lacks the variables.
 
 ## Tests
 

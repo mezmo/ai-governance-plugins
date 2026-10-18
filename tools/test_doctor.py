@@ -371,13 +371,13 @@ class ClaudeCodeTests(DoctorTestCase):
         return folder
 
     def test_an_agent_without_the_plugin_warns(self) -> None:
-        self.agent("claude", "2.1.300 (Claude Code)")
+        self.agent("claude", "2.1.301 (Claude Code)")
 
         result = self.doctor()
 
         self.assertEqual(result.returncode, 0, result.stdout)
         claude = self.lines(result, "Claude Code")
-        self.assertTrue(claude[0].startswith("ok    Claude Code: 2.1.300"), claude)
+        self.assertTrue(claude[0].startswith("ok    Claude Code: 2.1.301"), claude)
         self.assertIn("not installed", claude[1])
         self.assertTrue(claude[1].startswith("warn"))
 
@@ -396,7 +396,7 @@ class ClaudeCodeTests(DoctorTestCase):
         self.assertEqual(self.lines(result, "Mezmo agent form for Codex"), [])
 
     def test_versions_below_tested_or_fail_closed_minimum_warn(self) -> None:
-        cases = [("2.1.295 (Claude Code)", "tested 2.1.296"), ("2.1.200 (Claude Code)", "fail-closed setting needs")]
+        cases = [("2.1.295 (Claude Code)", "tested 2.1.301"), ("2.1.200 (Claude Code)", "fail-closed setting needs")]
         for version, words in cases:
             with self.subTest(version=version):
                 self.agent("claude", version)

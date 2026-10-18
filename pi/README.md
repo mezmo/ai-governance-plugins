@@ -17,11 +17,12 @@ Official docs: https://pi.dev/docs/latest/extensions
 
 `./mezmo-governance install pi` from the repository root runs `pi install` on this folder, and `uninstall` runs `pi remove`. Pi then loads the extension from the checkout. The steps below copy it instead.
 
-Copy the extension into its own folder under a trusted extension path:
+By hand, from the repository root: `pi install ./pi`. Or copy the extension
+into its own folder under a trusted extension path:
 
 ```bash
 mkdir -p ~/.pi/agent/extensions/mezmo-governance
-cp mezmo-governance.ts client.ts package.json ~/.pi/agent/extensions/mezmo-governance/
+cp pi/mezmo-governance.ts pi/client.ts pi/package.json ~/.pi/agent/extensions/mezmo-governance/
 ```
 
 Keep the files in that folder. Pi loads every `.ts` file directly under
@@ -41,7 +42,7 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 
 ## Verify it works
 
-1. From this folder, check the URL, the key and your policy. This prints the
+1. From this folder (Node 22.18+), check the URL, the key and your policy. This prints the
    decision for one `bash` call, or why there is none:
 
    ```bash
@@ -90,6 +91,13 @@ Pi's built-in tools are `bash`, `powershell`, `read`, `edit`, `write`,
 `grep`, `find` and `ls`, in namespace `pi`. A live `pi -p -e` run with Pi
 1.3.0 against `tools/mock_governance.py` sent `pi:bash` and `pi:read`.
 
+## Troubleshooting
+
+`doctor` does not check this library: its setup lives in app code. The
+[root table](../README.md#troubleshooting) lists each Mezmo error and its fix.
+`MEZMO_GOVERNANCE_URL is required` or `must be a non-empty string` means the
+process that runs the agent lacks the variables.
+
 ## Tests
 
 Node 22.18+ (type stripping):
@@ -100,3 +108,5 @@ node --test test/*.test.ts
 
 `test/drift.test.ts` compares this `client.ts` with the OpenCode, Mastra and
 Claude Agent SDK copies. It skips when those directories are absent.
+
+From the repo root: `make test-pi`.

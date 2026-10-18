@@ -24,7 +24,7 @@
     "governance_access_key": {
       "type": "string",
       "title": "Mezmo Governance access key",
-      "description": "Access key of the agent registered for Claude Code in Mezmo Governance. Leave empty to keep governance off. With a key, every tool call is checked before it runs.",
+      "description": "Token of the service account that the Claude Code agent uses in Mezmo Governance, a standard Mezmo service key. Leave empty to keep governance off. With a key, every tool call is checked before it runs.",
       "sensitive": true
     },
     "governance_url": {

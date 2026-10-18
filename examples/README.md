@@ -5,12 +5,20 @@ Four small agent projects that use the plugins the way an application would.
 agent against a real model, and exits 1 if the gate let the wrong tool run.
 
 ```bash
-export OPENAI_API_KEY=...
-examples/check.sh mastra      # needs Node 22+; runs npm install on first use
-examples/check.sh langchain   # needs Python 3.10+; makes .venv on first use
-examples/check.sh openai-agents   # needs Python 3.10+; makes .venv on first use
-examples/check.sh claude-agent-sdk   # needs Python 3.10+ and Claude credentials
+export OPENAI_API_KEY=...            # Mastra, LangChain, OpenAI Agents SDK
+examples/check.sh mastra             # needs Node 22.18+; runs npm install on first use
+examples/check.sh langchain          # needs Python 3.10+; makes .venv on first use
+examples/check.sh openai-agents      # needs Python 3.10+; makes .venv on first use
+examples/check.sh claude-agent-sdk   # needs Python 3.10+ and Claude Code credentials, such as ANTHROPIC_API_KEY
 ```
+
+`check.sh` makes the venv with `python3`, which must be 3.10 or later. If a
+first run failed, delete `examples/<name>/.venv` (or
+`examples/mastra/node_modules`) and run again.
+
+A passing run prints three `pass` lines, then the mock's decisions, and exits
+0. A `FAIL` line and exit 1 mean the gate let the wrong tool run, or the model
+skipped a tool.
 
 Each example asks the model to call `read_note` and then `delete_note`, three
 times:
@@ -43,3 +51,7 @@ Tested on 2026-10-15 with `@mastra/core` 1.77.0, `langchain` 1.4.6 and
 with `claude-agent-sdk` 0.2.168 and `claude-haiku-5-5`: every run passed.
 With a mock that denies nothing, runs 1 and 2 fail, which shows the check can
 fail.
+
+Adapter docs: [mastra/](../mastra/), [langchain/](../langchain/),
+[openai-agents/](../openai-agents/) and [claude-agent-sdk/](../claude-agent-sdk/).
+Pi and OpenCode have no example here: use `./mezmo-governance smoke`.

@@ -12,8 +12,14 @@ agent and the machine it runs on.
 
 Known limits, not vulnerabilities:
 
-- Codex, Gemini CLI and GitHub Copilot run the tool when the hook times out
-  (see their READMEs). A hook that crashes still blocks the call.
+- Codex, Gemini CLI, Droid and GitHub Copilot run the tool when the hook
+  times out (see their READMEs). In Codex, Gemini CLI, Droid, Windsurf and
+  VS Code Local, a hook that crashes blocks the call only with the
+  `|| exit 2` guard that the example configs carry.
+- The Claude Code plugin lets every call run until it has a key. Set
+  `MEZMO_GOVERNANCE_REQUIRED=1` to make it deny instead.
+- Windsurf has no hook for grep and find, `write_to_file`, web search, URL
+  reads, git commit, deploy or subagents, and loads no hook in Restricted Mode.
 - Goose runs the tool calls inside Code Mode scripts and `delegate` subagents
   without a hook, so the Goose hook denies every Code Mode script and every
   `delegate` call.

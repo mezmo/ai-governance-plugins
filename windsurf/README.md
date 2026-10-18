@@ -37,15 +37,15 @@ same. Official docs: https://docs.devin.ai/desktop/cascade/hooks
 
 The script needs Python 3.9 or later and uses only the standard library.
 
-Run live in Windsurf 1.126.0 on 2026-10-17 against `tools/mock_governance.py`: Cascade's
-`touch marker` was denied (no file written) and a file read was approved. The hook fields, exit codes and file locations below come
-from those docs and from the Devin Desktop 3.10.67 build for macOS on Apple
-silicon (`devin-desktop --version` prints 1.126.0, commit
-`0b186d6e13a1a48a46430c51fe414dd0747d46f6`; zip SHA-256
+Tested version: Windsurf 1.126.0 (Devin Desktop 3.10.67), run live on
+2026-10-17 against `tools/mock_governance.py` and production Mezmo. Cascade's
+`touch marker` was denied and no file was written; a file read was approved.
+With the guard, a hook crash blocked the command. The other hook fields, exit
+codes and file locations below come from those docs and from the Devin Desktop
+3.10.67 build for macOS on Apple silicon (`devin-desktop --version` prints
+1.126.0, commit `0b186d6e13a1a48a46430c51fe414dd0747d46f6`; zip SHA-256
 `8063233fcc937a9fdb53191ff25de5313b0a580f1b0eb6be6f660a154f40b817`, which
-matches the Windsurf update server). Its language server was read, never
-started. The hook script itself passes its tests and
-`./mezmo-governance smoke`.
+matches the Windsurf update server).
 
 ## What the hook covers
 
@@ -97,13 +97,15 @@ after each install.
 ## Install
 
 `./mezmo-governance install windsurf` from the repository root does this for
-you, and `uninstall` undoes it. The steps below are the manual way.
+you, and `uninstall` undoes it. The steps below are the manual way. Run them
+from the repository root. Windsurf has no override for the `~/.codeium`
+folder.
 
 1. Copy the hook:
 
 ```bash
 mkdir -p ~/.codeium/windsurf/hooks
-cp mezmo_governance_hook.py ~/.codeium/windsurf/hooks/
+cp windsurf/mezmo_governance_hook.py ~/.codeium/windsurf/hooks/
 ```
 
 2. Merge [hooks.example.json](hooks.example.json) into
@@ -124,21 +126,24 @@ cp mezmo_governance_hook.py ~/.codeium/windsurf/hooks/
    JetBrains plugin reads `~/.codeium/hooks.json`; `install` covers only the
    stable editor.
 
-3. Export the agent key from Mezmo:
+3. Export the URL and the service account token. The token is a standard
+   Mezmo service key, not a key of the agent; see
+   [Connect to Mezmo](../README.md#connect-to-mezmo):
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
 export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
-4. Quit and start Windsurf. Run a command in Cascade and check that Mezmo
-   records the call.
+4. Quit and start Windsurf, and trust the workspace. Ask Cascade to run
+   `ls`. Mezmo, or the mock from [Verify](#verify), shows a
+   `windsurf:run_command` call.
 
 The hook reads these variables from the environment Windsurf gives it.
 VS Code-based editors read your login shell's environment at start, so set
 them in your shell profile, then quit and start Windsurf. Started from the Dock on
 2026-10-17, Windsurf did not pass them to the hook, which blocked the command with
-`MEZMO_GOVERNANCE_URL environment variable is not set`. Started from a shell that
+`MEZMO_GOVERNANCE_URL must be a non-empty string`. Started from a shell that
 exports them (`devin-desktop <folder>`), the hook got them. For a Dock launch, set them
 for the login session and restart Windsurf; verified 2026-10-17:
 
@@ -171,9 +176,29 @@ Mezmo sees each built-in action with namespace `windsurf`:
 An MCP tool arrives with its server as the namespace. The hook denies a call
 from an MCP server named `windsurf`: its tools would pass as built-ins.
 
+## Verify
+
+From the repository root, with the two variables exported:
+
+```bash
+./mezmo-governance doctor windsurf
+./mezmo-governance smoke windsurf
+```
+
+`doctor` checks the install, the settings and the key. `smoke` runs the
+installed hook against its own mock: one shell call must be denied and one
+read approved. Neither starts the agent.
+
+To check that the agent calls the hook, run
+`./mezmo-governance mock --deny run_command` in a second terminal. In the agent's
+terminal, export the two lines it prints, start the agent, and ask it to run
+`ls`. The
+mock prints a `denied` line for `windsurf:run_command`. No line means the hook did not
+run. Windsurf has no headless mode, so type the request in Cascade.
+
 ## Smoke test
 
-Run these from the directory that holds the script. First check that the hook
+Run these from the `windsurf/` folder. First check that the hook
 denies when Mezmo cannot be reached. Nothing listens on port 9:
 
 ```bash
@@ -182,7 +207,8 @@ echo '{"agent_action_name":"pre_run_command","trajectory_id":"smoke","tool_info"
     MEZMO_GOVERNANCE_TOKEN="test" python3 mezmo_governance_hook.py; echo "exit $?"
 ```
 
-It exits 2 and prints the reason on stderr. The text after `unavailable:`
+It exits 2, prints the reason on stderr, and prints the same reason as JSON
+on stdout, which Windsurf ignores. The text after `unavailable:`
 varies by platform:
 
 ```text
@@ -216,6 +242,12 @@ If Mezmo is down, JSON is malformed, a field the call needs is missing, or the
 deadline expires while the decision is still pending, the hook denies. It
 denies on input it cannot read too, such as broken or too deeply nested JSON,
 or an unsupported event.
+
+## Troubleshooting
+
+Run `./mezmo-governance doctor --probe windsurf` from the repository root.
+[Troubleshooting](../README.md#troubleshooting) in the root README lists each
+error and its fix. For Windsurf, trust the workspace: Restricted Mode loads no hook. A Dock launch passes no variables unless you ran `launchctl setenv`.
 
 ## Tests
 

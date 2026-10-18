@@ -6,7 +6,8 @@ prints a deny and Copilot skips the tool. After a tool finishes, the same
 script appends a local JSONL record.
 
 It works with Copilot CLI, Copilot cloud agent, and VS Code sessions on
-either harness, Copilot or Local. See [VS Code](#vs-code).
+either harness, Copilot or Local. See [VS Code](#vs-code). The cloud agent
+runs the hook but cannot be given the token yet, so it blocks every call.
 
 Official docs: https://docs.github.com/en/copilot/reference/hooks-configuration
 
@@ -44,22 +45,23 @@ Install the hook at user level, in `~/.copilot/hooks/` or
 `copilot -p` the hook did not run, and `ls` ran ungoverned. The user-level
 file ran in the same folder.
 
-To confirm the hook runs, start `python3 tools/mock_governance.py --deny bash`
-from this repository, point `MEZMO_GOVERNANCE_URL` at it, and ask Copilot to
-run `ls`. The mock prints a `denied copilot:bash` line for each call it sees.
-No line means the hook did not run.
+To confirm the hook runs, see [Verify](#verify).
+
+Run these steps from the repository root.
 
 1. Copy the hook:
 
 ```bash
 mkdir -p ~/.copilot/hooks
-cp mezmo_governance_hook.py ~/.copilot/hooks/
+cp copilot/mezmo_governance_hook.py ~/.copilot/hooks/
 ```
 
 2. Copy [hooks.example.json](hooks.example.json) to
    `~/.copilot/hooks/mezmo-governance.json`. The example path starts at
    `$HOME/.copilot`, so it works from any directory. With `COPILOT_HOME` set,
    or to keep the script elsewhere, set `MEZMO_GOVERNANCE_HOOK` to its absolute path.
+   On Windows, edit the `powershell` path by hand: it does not read
+   `MEZMO_GOVERNANCE_HOOK`.
 
 3. Export the settings in the shell that starts `copilot`:
 
@@ -75,6 +77,17 @@ entry as well as a `preToolUse` one from the same file, so it would ask Mezmo
 twice for each call, and a `PreToolUse` entry gets Claude's tool names (`Bash`,
 not `bash`). The hook reads that payload, but `doctor` flags the entry.
 
+### As a Copilot CLI plugin
+
+```bash
+copilot plugin marketplace add mezmo/ai-governance-plugins
+copilot plugin install mezmo-governance@mezmo
+```
+
+Use the plugin or the file install, not both: both run the hook twice.
+`smoke` checks only the file install. A local-path marketplace loads the hook
+from that checkout, so editing it or switching its branch changes the hook.
+
 ## Tool names in policy
 
 Mezmo sees every tool with namespace `copilot`, also from VS Code Local, so a
@@ -88,6 +101,11 @@ every tool stops Autopilot from finishing.
 
 VS Code reads `~/.copilot/hooks/*.json` for both harnesses. Pick one with the
 **Session Target** control in a new chat.
+
+Start VS Code from a shell that exports the variables (`code <folder>`): the
+hook reads them from VS Code's environment. Both harnesses passed live on
+2026-10-17 with a terminal-launched `code`. A Dock launch was not tested; it
+may pass no variables, so every call would be denied.
 
 - The Copilot harness runs the hook as Copilot CLI does. Seen live in VS Code
   1.142.0 with Copilot Chat 0.70.0: the mock logged `copilot:bash` and
@@ -116,6 +134,9 @@ file written), and `read_file` was approved. Not verified: on Windows, Local run
 PowerShell `-Command`; that is not checked.
 
 ## Cloud agent
+
+Today the cloud agent blocks every call: no tested route gives the hook the
+token (see below).
 
 The cloud agent reads only `.github/hooks/*.json` in the repository. Commit
 the script as `.github/hooks/mezmo_governance_hook.py`, and point the `bash`
@@ -154,9 +175,29 @@ the tool. So the `preToolUse` command ends with `if ($LASTEXITCODE -ne 0) { exit
 `$env:MEZMO_GOVERNANCE_URL = "..."` and `$env:MEZMO_GOVERNANCE_TOKEN = "..."`
 before you start Copilot.
 
+## Verify
+
+From the repository root, with the two variables exported:
+
+```bash
+./mezmo-governance doctor copilot
+./mezmo-governance smoke copilot
+```
+
+`doctor` checks the install, the settings and the key. `smoke` runs the
+installed hook against its own mock: one shell call must be denied and one
+read approved. Neither starts the agent.
+
+To check that the agent calls the hook, run
+`./mezmo-governance mock --deny bash` in a second terminal. In the agent's
+terminal, export the two lines it prints, start the agent, and ask it to run
+`ls`. The
+mock prints a `denied` line for `copilot:bash`. No line means the hook did not
+run.
+
 ## Smoke test
 
-Run these from the directory that holds the script. First check that the hook
+Run these from the `copilot/` folder. First check that the hook
 denies when Mezmo cannot be reached. Nothing listens on port 9:
 
 ```bash
@@ -209,8 +250,16 @@ A failure event, or a `toolResult.resultType` other than `success`, is
 recorded as `failed`. The audit log keeps up to 2000 characters of each tool result, which can hold
 secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
+## Troubleshooting
+
+Run `./mezmo-governance doctor --probe copilot` from the repository root.
+[Troubleshooting](../README.md#troubleshooting) in the root README lists each
+error and its fix. For Copilot, install in `~/.copilot/hooks/`: Copilot CLI skips `.github/hooks/` in an untrusted folder without a warning.
+
 ## Tests
 
 ```bash
 python3 -m unittest test_hook.py -v
 ```
+
+From the repo root: `make test-copilot`.
