@@ -384,6 +384,10 @@ does not fit your setup.
 times out, or cannot start. Every plugin denies the call when Mezmo denies it,
 cannot be reached, or returns something it does not understand.
 
+Editors that run agents over ACP, such as Zed, run the agent's own hook:
+Claude Code, Codex and Goose are governed there. Gemini CLI is not. See
+[docs/live-testing.md](docs/live-testing.md#zed).
+
 ## Settings
 
 | Variable | Required | Default |

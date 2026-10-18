@@ -144,7 +144,8 @@ The mock lines read `antigravity:run_command` and `antigravity:view_file`.
 2. `./mezmo-governance install copilot`. VS Code reads `~/.copilot/hooks/`.
 3. Quit VS Code (⌘Q), then start it from the terminal that holds the
    exports: `code "$T"`. The hook reads the settings from VS Code's
-   environment; a Dock launch does not have them.
+   environment. A Dock launch reads them from your login shell instead; see
+   [Dock launch](#dock-launch).
 4. Sign in to GitHub Copilot: the Accounts icon at the bottom left, then
    **Sign in to use GitHub Copilot**. Trust the folder.
 5. Open Chat (⌃⌘I), select **New Chat** (`+`), then pick **Copilot** in the
@@ -156,6 +157,77 @@ The mock lines read `antigravity:run_command` and `antigravity:view_file`.
    command?" prompt appears, click Allow: the hook must still block it. With the
    earlier hook, `marker` got written and the mock logged nothing. See
    [copilot/](../copilot/README.md#vs-code).
+
+### Cursor editor
+
+1. `brew install --cask cursor`. Sign in on first start.
+2. `./mezmo-governance install cursor`, or put the hook in the folder's
+   `.cursor/hooks.json`, with the script path made absolute.
+3. Quit Cursor (⌘Q), then start it from the terminal that holds the exports:
+   `cursor "$T"`. Trust the folder.
+4. Open the agent chat (⌘L), set the mode to **Agent**, and type the two
+   prompts.
+
+### Zed
+
+Zed runs agents over ACP. Each agent loads its own hook, so the test is per
+agent. Gemini CLI runs ungoverned there (see
+[gemini-cli/](../gemini-cli/README.md#fail-behavior)): skip it. Start Zed
+from the terminal that holds the exports: `zed "$T"`. Open the Agent panel
+(⌘?), click **+**, and pick the agent.
+
+Settings go in `~/.config/zed/settings.json`, under `agent_servers`. Settings
+`env` wins over the shell's. To keep your own agent configs untouched, point
+each agent at a scratch folder and install there:
+
+```bash
+S=$(mktemp -d)
+CLAUDE_CONFIG_DIR="$S/claude" ./mezmo-governance install claude-code
+CODEX_HOME="$S/codex" ./mezmo-governance install codex
+CODEX_HOME="$S/codex" codex   # log in, trust both hooks in /hooks, then /quit
+```
+
+```jsonc
+"agent_servers": {
+  "claude-acp": { "type": "registry", "env": {
+    "CLAUDE_CONFIG_DIR": "<S>/claude",
+    "CLAUDE_CODE_EXECUTABLE": "/opt/homebrew/bin/claude" } },
+  "codex-acp": { "type": "registry", "env": {
+    "CODEX_HOME": "<S>/codex",
+    "CODEX_PATH": "/opt/homebrew/bin/codex" } },
+  "goose": { "type": "registry", "env": {
+    "GOOSE_PROVIDER": "openai", "GOOSE_MODEL": "gpt-5-mini" } }
+}
+```
+
+- Claude Code with a scratch `CLAUDE_CONFIG_DIR` has no login: export
+  `CLAUDE_CODE_OAUTH_TOKEN` in the shell that starts Zed. The mock lines
+  read `claude_code:Bash` and `claude_code:Read`.
+- Codex has no read tool: it reads with `cat`, so a `Bash` deny blocks the
+  read too. For the approved call, ask it to create a file with
+  `apply_patch`. The mock logs `approved codex:apply_patch`.
+- Goose loads a plugin from the project, so it needs no install: copy
+  `goose/` to `"$T/.agents/plugins/mezmo-governance"`. Goose needs a provider
+  and its key, such as `OPENAI_API_KEY`, in the shell. The mock lines read
+  `goose:shell` and `goose:read`.
+
+### Dock launch
+
+A GUI app started from the Dock reads no terminal exports. The Cursor editor,
+VS Code and Zed read the variables from your login shell, so export them in
+your shell profile. Windsurf reads only `launchctl setenv` (see
+[Windsurf](#windsurf-devin-desktop)).
+
+1. Export `MEZMO_GOVERNANCE_URL` and `MEZMO_GOVERNANCE_TOKEN` in your shell
+   profile, such as `~/.zprofile`. Point them at the mock or at production.
+2. Put the hook in the test folder, so nothing global changes: `.cursor/hooks.json`
+   for Cursor, `.github/hooks/mezmo-governance.json` for VS Code, and
+   `.agents/plugins/mezmo-governance/` for Goose in Zed. Use absolute script
+   paths.
+3. Quit the app (⌘Q), start it from the Dock or Spotlight, open `$T`, and
+   type the shell prompt.
+4. The shell call must be blocked with your policy's reason. A block that
+   names a missing `MEZMO_GOVERNANCE_URL` means the app got no variables.
 
 ### Copilot cloud agent
 
@@ -240,7 +312,8 @@ test covers only the agents whose example hook command reads
 `MEZMO_GOVERNANCE_HOOK`: Codex, Cursor, Gemini CLI (`settings.example.json`),
 Copilot, Droid, Windsurf and Antigravity CLI.
 For Windsurf from the Dock, set it with `launchctl setenv MEZMO_GOVERNANCE_HOOK ...`
-instead. Unset `MEZMO_GOVERNANCE_HOOK` afterwards, or every call stays blocked.
+instead. For Goose, which runs `${PLUGIN_ROOT}/mezmo_governance_hook.py`, replace
+that file in the plugin folder with the crash script, and restore it after. Unset `MEZMO_GOVERNANCE_HOOK` afterwards, or every call stays blocked.
 
 ## 4. Hook timeout
 
@@ -263,6 +336,21 @@ deadline, before the agent's hook timeout. It takes about 10 minutes.
    instead shows how that agent treats a timed-out hook.
 
 Set `MEZMO_GOVERNANCE_TIMEOUT_SECONDS=20` for a quick run of the same path.
+
+To see how the agent treats its own hook timeout, make a hook that sleeps
+past a short timeout:
+
+```bash
+printf 'import sys, time\nsys.stdin.read()\ntime.sleep(60)\n' > "$T/../sleep_hook.py"
+export MEZMO_GOVERNANCE_HOOK="$(cd "$T/.." && pwd)/sleep_hook.py"
+```
+
+Lower the pre-tool timeout to 5 in the installed config (`timeout`, or
+`timeoutSec` for Copilot), then run the shell prompt. For Claude Code, copy
+`claude-code/` and edit its `hooks/hooks.json`, then start `claude
+--plugin-dir <copy>`. Codex needs the changed hook trusted again in `/hooks`.
+Seen on 2026-10-18: Claude Code and Cursor CLI block the call. Copilot CLI and
+Codex CLI run the tool, guard or not. Restore the timeout afterwards.
 
 ## 5. Production Mezmo
 
@@ -301,6 +389,9 @@ rm -rf "$T"
 # macOS, only if you set them for a Dock launch:
 launchctl unsetenv MEZMO_GOVERNANCE_URL; launchctl unsetenv MEZMO_GOVERNANCE_TOKEN
 ```
+
+For Zed, remove the `env` blocks you added under `agent_servers` and delete the
+scratch folder `$S`. It holds the Codex login.
 
 Stop each mock with Ctrl-C. Remove a Droid plugin with
 `droid plugin uninstall mezmo-governance@ai-governance-plugins --scope user`, and delete the cloud
