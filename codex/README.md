@@ -37,7 +37,7 @@ With the guard, a crash blocks the call (verified live: `hook: PreToolUse
 Blocked`). A wrong path or a missing `python3` also exits non-zero, so the
 guard blocks those too. Codex still runs the tool when:
 
-- the hook reaches its `timeout`;
+- the hook reaches its `timeout`, guard or not (verified live in 0.163.0);
 - Codex skips the hook because it is new or changed and not yet trusted;
 - the tool is hosted, such as `WebSearch`: it fires no hook.
 
@@ -168,6 +168,11 @@ Mezmo sees the Codex tool name with namespace `codex`. Names seen live in
 Codex 0.162.1: `Bash` for shell commands and `apply_patch` for file edits. An
 MCP tool arrives with its server as the namespace. Codex has no read tool: it
 reads files with `Bash` (`cat`), so a policy that denies `Bash` also blocks reads.
+
+In Zed, Codex runs through `codex-acp`, which uses the same `CODEX_HOME` and trust store.
+Trust the hooks in `codex` `/hooks` first: Zed shows no hook status, so an untrusted hook
+is skipped without a sign. Set `CODEX_PATH` in `agent_servers.codex-acp.env` to your
+installed `codex`; the adapter bundles an older one. Verified live in Zed 1.24.2.
 
 ## Windows
 
