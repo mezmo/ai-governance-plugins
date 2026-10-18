@@ -91,7 +91,8 @@ VS Code reads `~/.copilot/hooks/*.json` for both harnesses. Pick one with the
 
 - The Copilot harness runs the hook as Copilot CLI does. Seen live in VS Code
   1.142.0 with Copilot Chat 0.70.0: the mock logged `copilot:bash` and
-  `copilot:view`.
+  `copilot:view`, and with this hook's deny shape `touch marker` was still
+  denied (`mock policy: copilot:bash is denied`, no file written).
 - The Local harness maps `preToolUse` to `PreToolUse` and runs the `bash`
   command on macOS and Linux, but sends its own payload (`hook_event_name`,
   `session_id`, `tool_name`, `tool_input`, `tool_use_id`). It obeys a deny
