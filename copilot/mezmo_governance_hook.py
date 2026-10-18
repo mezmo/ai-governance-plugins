@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GitHub Copilot preToolUse / postToolUse hook for Mezmo Governance."""
+"""GitHub Copilot and VS Code Local preToolUse / postToolUse hook for Mezmo Governance."""
 
 from __future__ import annotations
 
@@ -140,11 +140,21 @@ def audit_log_path() -> Path:
     return DEFAULT_AUDIT_LOG
 
 
-PRE_EVENTS = {"preToolUse"}
-POST_EVENTS = {"postToolUse", "postToolUseFailure"}
+PRE_EVENTS = {"preToolUse", "PreToolUse"}
+POST_EVENTS = {"postToolUse", "postToolUseFailure", "PostToolUse", "PostToolUseFailure"}
+FAILURE_EVENTS = {"postToolUseFailure", "PostToolUseFailure"}
 
 
-def parse_arguments(raw: Any) -> dict[str, Any]:
+def snake_case(event: Mapping[str, Any]) -> bool:
+    """True for the VS Code payload, which names its event in hook_event_name.
+
+    VS Code Local sends it to the camelCase entries; Copilot sends it to a
+    PascalCase entry. Copilot's camelCase payload names no event.
+    """
+    return "hook_event_name" in event
+
+
+def parse_arguments(raw: Any, field: str = "toolArgs") -> dict[str, Any]:
     if raw is None:
         return {}
     if isinstance(raw, str):
@@ -153,18 +163,27 @@ def parse_arguments(raw: Any) -> dict[str, Any]:
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError as error:
-            raise HookContractError("toolArgs must be a JSON object") from error
+            raise HookContractError(f"{field} must be a JSON object") from error
         if not isinstance(parsed, dict):
-            raise HookContractError("toolArgs must be a JSON object")
+            raise HookContractError(f"{field} must be a JSON object")
         return parsed
     if isinstance(raw, dict):
         return dict(raw)
-    raise HookContractError("toolArgs must be a JSON object")
+    raise HookContractError(f"{field} must be a JSON object")
 
 
 def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:
+    if snake_case(event):
+        name = required_string(event.get("tool_name"), "tool_name")
+        return NormalizedToolCall(AGENT, name, parse_arguments(event.get("tool_input"), "tool_input"))
     name = required_string(event.get("toolName"), "toolName")
     return NormalizedToolCall(AGENT, name, parse_arguments(event.get("toolArgs")))
+
+
+def tool_use_id(event: Mapping[str, Any]) -> str | None:
+    """VS Code Local's call id. Copilot sends none, in either payload."""
+    value = event.get("tool_use_id")
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def call_digest(namespace: str, name: str, arguments: Mapping[str, Any]) -> str:
@@ -192,10 +211,13 @@ def bounded_request_id(request_id: str) -> str:
 def call_identity(
     event: Mapping[str, Any], tool_call: NormalizedToolCall
 ) -> CallIdentity:
-    session_id = required_string(event.get("sessionId"), "sessionId")
-    # Copilot sends no tool call id. A fresh id per run keeps a repeated
-    # identical call from reusing an earlier decision through HTTP 409.
-    request_id = f"{AGENT}:{session_id}:run-{uuid.uuid4()}"
+    field = "session_id" if snake_case(event) else "sessionId"
+    session_id = required_string(event.get(field), field)
+    # Copilot sends no tool call id; VS Code Local does. Without one, a fresh id
+    # per run keeps a repeated identical call from reusing an earlier decision
+    # through HTTP 409.
+    call_id = tool_use_id(event) or f"run-{uuid.uuid4()}"
+    request_id = f"{AGENT}:{session_id}:{call_id}"
     request_id += "#" + call_digest(*tool_call)
     decision_id = str(uuid.uuid5(uuid.NAMESPACE_URL, request_id))
     return CallIdentity(decision_id, bounded_request_id(request_id), session_id)
@@ -528,22 +550,33 @@ def handle_pre_tool_use(
 
 def handle_post_tool_use(event: Mapping[str, Any], event_name: str) -> None:
     tool_call = normalize_tool_call(event)
-    if event_name == "postToolUseFailure":
+    # Without a tool call id the record cannot be joined to its decision.
+    identity = call_identity(event, tool_call) if tool_use_id(event) else None
+    if event_name in FAILURE_EVENTS:
         response: Any = event.get("error")
         failed = True
     else:
-        response = event.get("toolResult")
+        response = next(
+            (
+                event[key]
+                for key in ("toolResult", "tool_result", "tool_response")
+                if event.get(key) is not None
+            ),
+            None,
+        )
         failed = result_has_known_error(response) or (
             isinstance(response, dict)
-            and response.get("resultType") not in (None, "success")
+            and any(
+                response.get(key) not in (None, "success")
+                for key in ("resultType", "result_type")
+            )
         )
     append_audit(
         {
             "ts": datetime.now(timezone.utc).isoformat(),
             "agent": AGENT,
-            # Without a tool call id the record cannot be joined to its decision.
-            "decision_id": None,
-            "request_id": None,
+            "decision_id": identity.decision_id if identity else None,
+            "request_id": identity.request_id if identity else None,
             "tool_namespace": tool_call.namespace,
             "tool_name": tool_call.name,
             "status": "failed" if failed else "observed",
@@ -553,7 +586,10 @@ def handle_post_tool_use(event: Mapping[str, Any], event_name: str) -> None:
 
 
 def deny_output(reason: str) -> dict[str, Any]:
-    return {"permissionDecision": "deny", "permissionDecisionReason": reason}
+    # Copilot reads the top level; VS Code Local reads only hookSpecificOutput
+    # and runs the tool on a top-level deny. Copilot CLI 1.0.98 obeyed this deny.
+    decision = {"permissionDecision": "deny", "permissionDecisionReason": reason}
+    return {**decision, "hookSpecificOutput": {"hookEventName": "PreToolUse", **decision}}
 
 
 def handle_event(
@@ -563,6 +599,10 @@ def handle_event(
     clock: Clock = time.monotonic,
     sleep: Sleeper = time.sleep,
 ) -> dict[str, Any] | None:
+    if snake_case(event):
+        # The payload's own name wins: VS Code Local runs the camelCase entries.
+        named = event.get("hook_event_name")
+        event_name = named if isinstance(named, str) else ""
     if event_name in PRE_EVENTS:
         try:
             return handle_pre_tool_use(event, event_name, http, clock, sleep)

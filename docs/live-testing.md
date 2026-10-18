@@ -141,8 +141,11 @@ The mock lines read `antigravity:run_command` and `antigravity:view_file`.
    **Session Target** control before the first prompt. Type the two prompts.
    The mock logs `copilot:bash` and `copilot:view`.
 6. Start a new chat with **Local** as the Session Target and type them again.
-   Today Local skips the hook: `marker` gets written and the mock logs
-   nothing. See [copilot/](../copilot/README.md).
+   It passes like step 5, with Local's tool names: the VS Code 1.142.0 code
+   names `run_in_terminal` and `read_file`, so expect `denied
+   copilot:run_in_terminal` and an `approved` line for the read. With the
+   earlier hook, `marker` got written and the mock logged nothing. See
+   [copilot/](../copilot/README.md#vs-code).
 
 ### Copilot cloud agent
 

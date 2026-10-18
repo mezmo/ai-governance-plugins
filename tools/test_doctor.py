@@ -871,7 +871,7 @@ class OtherHookAgentTests(DoctorTestCase):
         cases = [
             ({"version": 1, "hooks": {"preToolUse": [good]}}, "Copilot hook", "ok"),
             ({"version": 1, "hooks": {"PreToolUse": [good]}}, "Copilot hook", "FAIL"),
-            ({"version": 1, "hooks": {"preToolUse": [{**good, "bash": good["bash"].rsplit(" ", 1)[0]}]}}, "Copilot hook", "FAIL"),
+            ({"version": 1, "hooks": {"preToolUse": [{**good, "bash": good["bash"].replace(" preToolUse", "")}]}}, "Copilot hook", "FAIL"),
             ({"version": 1, "disableAllHooks": True, "hooks": {"preToolUse": [good]}}, "Copilot hooks", "FAIL"),
         ]
         for config, subject, status in cases:
@@ -882,6 +882,17 @@ class OtherHookAgentTests(DoctorTestCase):
         self.write(".copilot/hooks/mezmo-governance.json", {"version": 1, "hooks": {"preToolUse": [good]}})
         self.assertStatus(self.doctor(), "Copilot smoke", "ok")
 
+    def test_copilot_hook_without_the_guard_fails(self) -> None:
+        # VS Code Local reads the same file and runs the tool when the hook exits other than 0 or 2.
+        self.agent("copilot", "GitHub Copilot CLI 1.0.98.")
+        self.copy_hook("copilot", ".copilot/hooks/mezmo_governance_hook.py")
+        good = json.loads((REPO / "copilot/hooks.example.json").read_text())["hooks"]["preToolUse"][0]
+        for command, status in ((good["bash"], "ok"), (good["bash"].split(" || ")[0], "FAIL")):
+            with self.subTest(status=status):
+                self.write(".copilot/hooks/mezmo-governance.json", {"version": 1, "hooks": {"preToolUse": [{**good, "bash": command}]}})
+                lines = self.lines(self.doctor(), "Copilot hook")
+                self.assertTrue(any(line.startswith(status) and "exit 2 guard" in line for line in lines), lines)
+
     def test_copilot_home_moves_the_hook_folder(self) -> None:
         self.agent("copilot", "GitHub Copilot CLI 1.0.95.")
         example = json.loads((REPO / "copilot/hooks.example.json").read_text())
@@ -889,7 +900,9 @@ class OtherHookAgentTests(DoctorTestCase):
 
         result = self.doctor(COPILOT_HOME=str(self.home / "copilot-home"))
 
-        self.assertIn("copilot-home", self.assertStatus(result, "Copilot hook", "ok"))
+        lines = self.lines(result, "Copilot hook")
+        self.assertTrue(lines and all(line.startswith("ok ") for line in lines), lines)
+        self.assertIn("copilot-home", lines[0])
 
     def install_goose(self, root: Path, hooks: dict | None = None) -> None:
         folder = root / ".agents/plugins/mezmo-governance"

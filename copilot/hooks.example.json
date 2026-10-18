@@ -4,7 +4,7 @@
     "preToolUse": [
       {
         "type": "command",
-        "bash": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.copilot/hooks/mezmo_governance_hook.py}\" preToolUse",
+        "bash": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.copilot/hooks/mezmo_governance_hook.py}\" preToolUse || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }",
         "powershell": "py -3 \"$HOME/.copilot/hooks/mezmo_governance_hook.py\" preToolUse",
         "timeoutSec": 600
       }
