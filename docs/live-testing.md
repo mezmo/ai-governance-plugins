@@ -189,10 +189,32 @@ worked:
 | --- | --- |
 | Variable and secret in the repository's `copilot` environment | neither reaches the hook |
 | `MEZMO_GOVERNANCE_URL=...` inline in the `bash` command | the URL arrives; the token is still missing |
-| `.github/workflows/copilot-setup-steps.yml` writing both to `$GITHUB_ENV` | the setup job sees the variable, but the secret is empty, also with `environment: copilot` |
+| `.github/workflows/copilot-setup-steps.yml` writing both to `$GITHUB_ENV` | the URL reaches the hook, so `$GITHUB_ENV` works; the token does not, because the setup job gets no secret |
 
-The setup-steps file must be on the default branch, and its job must be
-named `copilot-setup-steps`.
+In the setup job, `${{ secrets.MEZMO_GOVERNANCE_TOKEN }}` was empty for a
+secret in the `copilot` environment (also with `environment: copilot`) and
+for a repository Actions secret, and no `MEZMO_GOVERNANCE_TOKEN` was in the
+job's environment. The runs used a personal Copilot plan; an organization
+plan was not tried. The setup-steps file must be on the default branch, and
+its job must be named `copilot-setup-steps`. The workflow used:
+
+```yaml
+name: Copilot Setup Steps
+on: workflow_dispatch
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Pass Mezmo Governance settings to the agent
+        env:
+          URL: ${{ vars.MEZMO_GOVERNANCE_URL }}
+          TOKEN: ${{ secrets.MEZMO_GOVERNANCE_TOKEN }}
+        run: |
+          echo "MEZMO_GOVERNANCE_URL=$URL" >> "$GITHUB_ENV"
+          [ -z "$TOKEN" ] || echo "MEZMO_GOVERNANCE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+```
 
 ## 3. Hook crash
 
