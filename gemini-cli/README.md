@@ -36,7 +36,10 @@ exits non-zero, so the guard blocks those too. Gemini CLI still runs the tool
 when:
 
 - the hook reaches its `timeout` (from the source code, not verified);
-- the hook is disabled in `/hooks`, or a changed project hook is not trusted.
+- the hook is disabled in `/hooks`, or a changed project hook is not trusted;
+- Gemini CLI runs as an editor agent with `--acp`, as in Zed. That path
+  runs tools without calling `BeforeTool`, so no call is governed (Gemini CLI
+  0.64.0 source, not run).
 
 Keep the guard on `BeforeTool` only. Run the [smoke test](#smoke-test) after
 each install.
