@@ -96,6 +96,21 @@ payload = approval_payload(session_id="verify", tool_call_id=str(uuid.uuid4()),
 print(asyncio.run(authorize(payload)))'
 ```
 
+To see a deny and an allow without Mezmo, run
+`./mezmo-governance mock --deny 'delete_*'` from the repository root in a
+second terminal, and export the two lines it prints. The command above then
+prints:
+
+```text
+Decision(approved=True, reason=None)
+```
+
+With `tool_name="delete_note"` it prints:
+
+```text
+Decision(approved=False, reason='mock policy: langchain:delete_note is denied')
+```
+
 To check fail-closed in your agent, set
 `MEZMO_GOVERNANCE_URL=http://127.0.0.1:9/authorize` and run a prompt that
 calls a tool: the tool message must say `could not authorize`, and the tool

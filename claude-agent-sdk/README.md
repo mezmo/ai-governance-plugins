@@ -124,6 +124,17 @@ set, the same command prints `{}` when Mezmo allows the call. Use a new
 `tool_use_id` each run: Mezmo returns the earlier decision for an id it has
 seen.
 
+To see a deny and an allow without Mezmo, run
+`./mezmo-governance mock --deny Bash` from the repository root in a second
+terminal, and run the command with the two lines it prints in place of the
+inline variables. It prints:
+
+```text
+{'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': 'Mezmo Governance denied this exact tool call: mock policy: claude_agent_sdk:Bash is denied'}}
+```
+
+With `"tool_name": "Read"` and a new `tool_use_id`, it prints `{}`.
+
 With a real model, [examples/check.sh](../examples/) `claude-agent-sdk` runs
 an agent against the local mock and fails if the gate lets the wrong tool run.
 

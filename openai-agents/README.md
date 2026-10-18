@@ -61,6 +61,9 @@ To reach the agent behind `as_tool` or `handoff()`, it reads private SDK
 fields. If they are missing, as in a newer SDK, `govern` raises
 `GovernanceError` rather than leave that agent's tools ungated.
 
+`pyproject.toml` allows `openai-agents>=0.24`, but only 0.24.0 is tested. Pin
+it, `pip install openai-agents==0.24.0`, until a newer SDK is checked.
+
 Call it once the agent's tools are final: a tool or server added later is not
 gated. It adds its guardrail to a tool once, so a second `govern` call (or a
 second `MezmoGovernance`) leaves the first in place.
@@ -88,6 +91,21 @@ from mezmo_governance_openai_agents import approval_payload, authorize
 payload = approval_payload(session_id="verify", tool_call_id=str(uuid.uuid4()),
                            tool_name="read_note", arguments={"name": "todo"})
 print(asyncio.run(authorize(payload)))'
+```
+
+To see a deny and an allow without Mezmo, run
+`./mezmo-governance mock --deny 'delete_*'` from the repository root in a
+second terminal, and export the two lines it prints. The command above then
+prints:
+
+```text
+Decision(approved=True, reason=None)
+```
+
+With `tool_name="delete_note"` it prints:
+
+```text
+Decision(approved=False, reason='mock policy: openai_agents:delete_note is denied')
 ```
 
 For a full smoke test with a real model, run

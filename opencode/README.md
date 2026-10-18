@@ -95,6 +95,14 @@ export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize
 export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
+## Settings
+
+The variables in the [root README](../README.md#settings). On 2.x, set them
+as plugin options: the background service ignores the environment (see
+[Background service (2.x)](#background-service-2x)). Each audit line keeps up
+to 2,000 characters of the tool's result; the log is created 0600 in a 0700
+folder.
+
 ## Verify it works
 
 1. From the plugin directory, check the URL, the key and your policy. This
@@ -106,6 +114,21 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
    node --input-type=module -e 'import { approvalPayload, authorize } from "./mezmo-governance/client.ts";
    authorize(approvalPayload({ sessionId: "verify", toolCallId: crypto.randomUUID(), toolName: "shell", arguments: { command: "ls" } }))
      .then(console.log, (error) => console.log("no decision:", error.message));'
+   ```
+
+   To see a deny and an allow without Mezmo, run
+   `./mezmo-governance mock --deny shell` from the repository root in a second
+   terminal, and export the two lines it prints. The command above then
+   prints:
+
+   ```text
+   { approved: false, reason: 'mock policy: opencode:shell is denied' }
+   ```
+
+   With `toolName: "read"` it prints:
+
+   ```text
+   { approved: true, reason: null }
    ```
 
 2. Check that OpenCode blocks when Mezmo cannot answer. Set the URL to a
