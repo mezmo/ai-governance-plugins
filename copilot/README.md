@@ -100,7 +100,11 @@ Tested 2026-10-17: the cloud agent ran this hook and blocked each tool call.
 A variable and a secret set in the repository's `copilot` environment did not
 reach the hook, which denied with `MEZMO_GOVERNANCE_URL must be a non-empty
 string`, and with the URL set inline in the `bash` command, `MEZMO_GOVERNANCE_TOKEN
-must be a non-empty string`. How to give the hook the token is not verified.
+must be a non-empty string`. A `copilot-setup-steps.yml` job that writes them
+to `$GITHUB_ENV` got the URL to the hook, but the job got no secret: an
+environment secret and a repository Actions secret were both empty. How to give the hook the token is not verified, so
+today the cloud agent blocks every call. The routes tried are in
+[docs/live-testing.md](../docs/live-testing.md#copilot-cloud-agent).
 The audit log is lost when the job ends.
 
 ## MCP tools

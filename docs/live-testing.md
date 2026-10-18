@@ -14,6 +14,11 @@ Each test asks the agent for one shell call and one file read. It passes when:
 
 A file that exists after the run, or a mock that prints nothing, is a fail.
 
+Read the mock before the agent's reply. A model can refuse a prompt without
+calling any tool, and its reply then looks like a block. Copilot did this on
+a prompt that asked for a "secret word", and the cloud agent did it on a task
+that announced a hook test.
+
 ## 1. Set up once
 
 Run these from the root of this repository.
@@ -133,8 +138,9 @@ The mock lines read `antigravity:run_command` and `antigravity:view_file`.
    `brew install --cask visual-studio-code`, then
    `code --install-extension GitHub.copilot-chat`.
 2. `./mezmo-governance install copilot`. VS Code reads `~/.copilot/hooks/`.
-3. Quit VS Code, then start it from the terminal that holds the exports:
-   `code "$T"`.
+3. Quit VS Code (⌘Q), then start it from the terminal that holds the
+   exports: `code "$T"`. The hook reads the settings from VS Code's
+   environment; a Dock launch does not have them.
 4. Sign in to GitHub Copilot: the Accounts icon at the bottom left, then
    **Sign in to use GitHub Copilot**. Trust the folder.
 5. Open Chat (⌃⌘I), select **New Chat** (`+`), then pick **Copilot** in the
@@ -166,11 +172,49 @@ The cloud agent runs on GitHub, so it needs a repository and production Mezmo.
 4. Assign Copilot a task that needs the shell, such as: "Add a file named
    build-info.txt with the output of `uname -a`. If a tool call is blocked,
    put the exact error text in the PR description."
-5. Read the PR description, and the agent's log in the job's Actions run.
+5. Read the PR description, and the agent's log in the job's Actions run:
+   `gh run view <run id> --log | grep tool.execution`. A run with no
+   `tool.execution_start` line proves nothing.
 
-Ask for a plain task. On a task that announces a hook test, or one that asks
-for a "secret", the model made no tool call at all, which proves nothing.
-Check the mock or the agent log for the call before you read the result.
+Ask for a plain task, such as the one in step 4.
+
+**Expected today: every tool call is blocked.** No tested route gets the
+token to the hook, so the hook denies with
+`MEZMO_GOVERNANCE_URL must be a non-empty string`, or names the token when
+the URL is set inline in the `bash` command. That shows the hook runs and
+fails closed, but no call reaches Mezmo. Tried on 2026-10-17, none of which
+worked:
+
+| Route | Result |
+| --- | --- |
+| Variable and secret in the repository's `copilot` environment | neither reaches the hook |
+| `MEZMO_GOVERNANCE_URL=...` inline in the `bash` command | the URL arrives; the token is still missing |
+| `.github/workflows/copilot-setup-steps.yml` writing both to `$GITHUB_ENV` | the URL reaches the hook, so `$GITHUB_ENV` works; the token does not, because the setup job gets no secret |
+
+In the setup job, `${{ secrets.MEZMO_GOVERNANCE_TOKEN }}` was empty for a
+secret in the `copilot` environment (also with `environment: copilot`) and
+for a repository Actions secret, and no `MEZMO_GOVERNANCE_TOKEN` was in the
+job's environment. The runs used a personal Copilot plan; an organization
+plan was not tried. The setup-steps file must be on the default branch, and
+its job must be named `copilot-setup-steps`. The workflow used:
+
+```yaml
+name: Copilot Setup Steps
+on: workflow_dispatch
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Pass Mezmo Governance settings to the agent
+        env:
+          URL: ${{ vars.MEZMO_GOVERNANCE_URL }}
+          TOKEN: ${{ secrets.MEZMO_GOVERNANCE_TOKEN }}
+        run: |
+          echo "MEZMO_GOVERNANCE_URL=$URL" >> "$GITHUB_ENV"
+          [ -z "$TOKEN" ] || echo "MEZMO_GOVERNANCE_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+```
 
 ## 3. Hook crash
 
