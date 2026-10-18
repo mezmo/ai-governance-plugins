@@ -219,7 +219,8 @@ After an approved tool runs, observe hooks append one JSON object per line:
 
 `decision_id` and `request_id` are `null` when the event carries no tool call
 id, as with Cursor's shell and MCP events and every Gemini CLI, Antigravity
-CLI, Copilot, Droid and Windsurf event.
+CLI, Copilot, Droid and Windsurf event. VS Code Local's events carry one, so
+its Copilot records are joined.
 
 `status` is `failed` when the result looks like an error (`isError`, `is_error`,
 or non-zero `exit_code` or `exitCode`), otherwise `observed`. A result sent as
