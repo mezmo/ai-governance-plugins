@@ -16,7 +16,7 @@ Tested version: Droid 0.244.0, run live on 2026-10-17 with `droid exec` and a
 bring-your-own-key Anthropic model, against `tools/mock_governance.py` and
 production Mezmo. `Execute` (`touch marker`) was denied and no file was
 written; `Read` was approved. With the guard, a hook crash blocked the call.
-The plugin install was not run. The other hook fields, exit codes and file
+The plugin install gave the same deny and approve against the mock. The other hook fields, exit codes and file
 locations below come from those docs and from the Droid 0.244.0 binary
 (`@factory/cli-darwin-arm64` on npm).
 
@@ -113,19 +113,20 @@ Code plugin.
 ```bash
 droid plugin marketplace add mezmo/ai-governance-plugins
 droid plugin marketplace list
-droid plugin install mezmo-governance@<marketplace> --scope user
+droid plugin install mezmo-governance@ai-governance-plugins --scope user
 ```
 
-Droid names the marketplace after its source; `droid plugin marketplace list`
-shows the name. The plugin's [hooks/hooks.json](hooks/hooks.json) is the
+Droid names the marketplace after its source repository, `ai-governance-plugins`;
+`droid plugin marketplace list` shows it. The plugin's [hooks/hooks.json](hooks/hooks.json) is the
 example with `${DROID_PLUGIN_ROOT}` for the script path. Use the plugin or the
 file install, not both: both run the hook twice. `doctor` and `smoke` check
-only the file install. Not run.
+only the file install. Run live on 2026-10-17 against the mock: `Execute`
+was denied, with no marker file, and `Read` was approved.
 
 Before this folder existed, the same commands offered the Claude Code plugin
 `mezmo`. In Droid it sends the Claude Code origin, and Droid 0.244.0 drops its
 `onFailure: block`, so a hook crash lets the tool run. If you installed it, run
-`droid plugin uninstall mezmo@<marketplace> --scope user`.
+`droid plugin uninstall mezmo@ai-governance-plugins --scope user`.
 
 ## Tool names in policy
 

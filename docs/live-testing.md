@@ -102,8 +102,8 @@ first, then:
 
 ```bash
 droid plugin marketplace add mezmo/ai-governance-plugins
-droid plugin marketplace list    # note the marketplace name
-droid plugin install mezmo-governance@<marketplace> --scope user
+droid plugin marketplace list    # shows ai-governance-plugins
+droid plugin install mezmo-governance@ai-governance-plugins --scope user
 ```
 
 ### Windsurf (Devin Desktop)
@@ -303,5 +303,5 @@ launchctl unsetenv MEZMO_GOVERNANCE_URL; launchctl unsetenv MEZMO_GOVERNANCE_TOK
 ```
 
 Stop each mock with Ctrl-C. Remove a Droid plugin with
-`droid plugin uninstall mezmo-governance@<marketplace>`, and delete the cloud
+`droid plugin uninstall mezmo-governance@ai-governance-plugins --scope user`, and delete the cloud
 agent test repository.
