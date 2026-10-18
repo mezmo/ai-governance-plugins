@@ -18,6 +18,8 @@ Python 3.10+. Install the package into your project's environment:
 
 ```bash
 pip install ./openai-agents        # from a checkout of this repository
+export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
+export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
 To run the tests from this directory instead:
@@ -155,6 +157,13 @@ For a full smoke test with a real model, run
 unless `read_note` runs and `delete_note` does not, and neither runs when
 Mezmo is unreachable.
 
+## Troubleshooting
+
+`doctor` does not check this library: its setup lives in app code. The
+[root table](../README.md#troubleshooting) lists each Mezmo error and its fix.
+`MEZMO_GOVERNANCE_URL is required` or `must be a non-empty string` means the
+process that runs the agent lacks the variables.
+
 ## Tests
 
 ```bash
@@ -166,4 +175,5 @@ PYTHONPATH=. .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 `mezmo_governance_openai_agents/client.py` matches `langchain/`'s copy except
 for the agent name, `origin.kind` and `origin.reason`: the copy keeps this
 package installable without LangChain. The guardrail tests skip unless the SDK
-is installed, so run them with the venv.
+is installed, so run them with the venv. From the repo root:
+`make test-openai-agents`.

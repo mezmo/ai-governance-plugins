@@ -9,15 +9,17 @@ configuration) also returns an error `ToolMessage`: the tool does not run, and
 the agent keeps going.
 
 Tested against `langchain` 1.4.6 and `langgraph` 1.2.15: the tests run real
-`create_agent` graphs with a fake chat model through `invoke`.
+`create_agent` graphs with a fake chat model through `invoke`. A live run with
+`gpt-5-mini` through `invoke` and `ainvoke` passed: see
+[examples/check.sh](../examples/) `langchain`.
 
 ## Install
 
 Python 3.10+. Install the package into your project's environment:
 
 ```bash
-pip install ./langchain            # from a checkout of this repository
-pip install './langchain[otel]'    # also install OpenTelemetry
+pip install ./langchain langchain-openai   # from a checkout; langchain-openai is for the example model
+pip install './langchain[otel]'            # also the OpenTelemetry API; add opentelemetry-sdk and an exporter to send spans
 ```
 
 To run the example and the tests from this directory instead:
@@ -69,8 +71,11 @@ an id gets a random one, so it never reuses an earlier decision.
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
 export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 export OPENAI_API_KEY="…"
-python3 example_agent.py
+.venv/bin/python example_agent.py   # from this folder, after the venv step above
 ```
+
+`example_agent.py` reads the model from `OPENAI_MODEL` (default
+`gpt-4.1-mini`).
 
 ## Middleware order
 
@@ -93,6 +98,11 @@ runs itself never reach it:
 
 A model you bind to provider tools yourself, before `create_agent`, is not
 inspected.
+
+## Settings
+
+The variables in the [root README](../README.md#settings), except
+`MEZMO_GOVERNANCE_AUDIT_LOG`: this package writes no audit file.
 
 ## Verify it works
 
@@ -139,6 +149,13 @@ arguments as JSON) and `tool.result` (up to 8,000 characters of the result),
 and the app's exporter sends them wherever it points. With only
 `opentelemetry-api` installed the spans are no-ops.
 
+## Troubleshooting
+
+`doctor` does not check this library: its setup lives in app code. The
+[root table](../README.md#troubleshooting) lists each Mezmo error and its fix.
+`MEZMO_GOVERNANCE_URL is required` or `must be a non-empty string` means the
+process that runs the agent lacks the variables.
+
 ## Tests
 
 ```bash
@@ -147,4 +164,5 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
 `tests/test_client.py` has no LangChain dependency. Middleware tests skip unless
-LangChain is installed, so run them with the venv.
+LangChain is installed, so run them with the venv. From the repo root:
+`make test-langchain`.

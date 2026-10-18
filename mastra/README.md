@@ -6,13 +6,18 @@ failed checks skip the tool (`proceed: false`). After an approved tool finishes,
 
 Requires `@mastra/core` 1.49.0 or later (agent `hooks`). Tested against
 `@mastra/core` 1.77.0: a type check against its `ToolHooks` and
-`Agent.generate` options, plus tests that call the hooks directly. Official
-docs: https://mastra.ai/docs/agents/using-tools
+`Agent.generate` options, plus tests that call the hooks directly. A live run
+with `gpt-5-mini` through `generate` and `stream` passed: see
+[examples/check.sh](../examples/) `mastra`. Official docs:
+https://mastra.ai/docs/agents/using-tools
 
 ## Install
 
-Copy the TypeScript files into your Mastra project and pass the hooks to the
-agent:
+Node 22.18+. Copy `mezmo-governance.ts` and `client.ts` into one folder of
+your Mastra project, for example
+`cp mastra/mezmo-governance.ts mastra/client.ts src/mastra/governance/`. Keep
+both files together: `mezmo-governance.ts` imports `./client.ts`. Set the
+variables, then pass the hooks to the agent:
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
@@ -27,11 +32,15 @@ export const agent = new Agent({
   id: "support-agent",
   name: "support-agent",
   instructions: "Help users with their questions.",
-  model: "openai/gpt-5.6-sol",
+  model: "openai/gpt-5-mini",
   tools: { /* your tools */ },
   hooks: mezmoGovernanceHooks,
 });
 ```
+
+The import keeps the `.ts` extension. With `tsc`, set
+`allowImportingTsExtensions` (with `noEmit`), or drop the extension if your
+bundler resolves it.
 
 ### Run-level hooks bypass the gate
 
@@ -78,8 +87,9 @@ These run without asking Mezmo:
 Keep such tools away from agents that need the gate, or gate them in your own
 code.
 
-`createMezmoGovernanceHooks()` builds a fresh hook pair if you need to inject a
-custom fetch in tests.
+`createMezmoGovernanceHooks({ fetchImpl })` builds a fresh hook pair if you
+need to inject a custom fetch in tests. It takes only that option: the URL and
+key always come from the environment.
 
 Do not use Mastra's `requireToolApproval` for this. That is Mastra's own
 approval UI. These hooks talk to Mezmo.
@@ -134,6 +144,13 @@ The tool does not execute. The agent sees that string as the tool result.
 
 If Mezmo is down, JSON is malformed, or the deadline expires while the decision
 is still pending, the hook also skips the tool.
+
+## Troubleshooting
+
+`doctor` does not check this library: its setup lives in app code. The
+[root table](../README.md#troubleshooting) lists each Mezmo error and its fix.
+`MEZMO_GOVERNANCE_URL is required` or `must be a non-empty string` means the
+process that runs the agent lacks the variables.
 
 ## Tests
 

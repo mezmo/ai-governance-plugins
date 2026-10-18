@@ -39,8 +39,8 @@ not to files it finds in `plugins/`.
 
 `./mezmo-governance install opencode` from the repository root does this for you, and `uninstall` undoes it. The steps below are the manual way.
 
-1. Copy this folder out of any `plugins/` folder, and put the key in a file
-   only you can read:
+1. Copy this folder to a place outside any `plugins/` folder, and put the key
+   in a file only you can read. Run these from the repository root:
 
    ```bash
    cp -R opencode ~/.config/opencode/mezmo-governance
@@ -98,7 +98,9 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ## Verify it works
 
 1. From the plugin directory, check the URL, the key and your policy. This
-   prints the decision for one shell call, or why there is none (Node 22.18+):
+   prints the decision for one shell call, or why there is none (Node 22.18+).
+   On 2.x the plugin options are not in your shell, so prefix the command with
+   `MEZMO_GOVERNANCE_URL=https://api.mezmo.com/governance/workflow/authorize MEZMO_GOVERNANCE_TOKEN="$(cat ~/.config/mezmo/governance-key)"`:
 
    ```bash
    node --input-type=module -e 'import { approvalPayload, authorize } from "./mezmo-governance/client.ts";
@@ -156,6 +158,13 @@ Do not also rely on `permission.ask` for this gate on 1.x. That hook is not
 triggered on every 1.x release; `tool.execute.before` is the one that can
 throw and stop the call.
 
+## Troubleshooting
+
+`doctor` does not check this library: its setup lives in app code. The
+[root table](../README.md#troubleshooting) lists each Mezmo error and its fix.
+`MEZMO_GOVERNANCE_URL is required` or `must be a non-empty string` means the
+process that runs the agent lacks the variables. On 2.x, set them as plugin options: the background service ignores the shell.
+
 ## Tests
 
 Node 22.18+:
@@ -163,3 +172,5 @@ Node 22.18+:
 ```bash
 node --test test/*.test.ts
 ```
+
+From the repo root: `make test-opencode`.
