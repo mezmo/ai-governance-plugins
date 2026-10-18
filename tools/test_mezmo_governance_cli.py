@@ -399,6 +399,21 @@ class InstallTests(CliTestCase):
         self.assertEqual(list(registry["plugins"]), ["mezmo@mezmo"])
         self.assertIn("installed: yes", self.status("claude-code"))
 
+    def test_reinstalling_copilot_adds_the_guard_to_a_file_without_it(self) -> None:
+        # An older file lacks the guard, and VS Code Local runs the tool when the hook crashes.
+        self.assertEqual(self.cli("install", "copilot").returncode, 0)
+        config = self.tmp / "copilot/hooks/mezmo-governance.json"
+        older = json.loads(config.read_text())
+        pre = older["hooks"]["preToolUse"][0]
+        pre["bash"] = pre["bash"].split(" || ")[0]
+        config.write_text(json.dumps(older))
+
+        result = self.cli("install", "copilot")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        command = json.loads(config.read_text())["hooks"]["preToolUse"][0]["bash"]
+        self.assertTrue(command.endswith("exit 2; }"), command)
+
     def test_the_installed_files_are_what_each_readme_installs(self) -> None:
         result = self.cli("install", "--all")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

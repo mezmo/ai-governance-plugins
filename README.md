@@ -329,7 +329,7 @@ does not fit your setup.
 | [Codex CLI](codex/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | copy the script, merge `hooks.example.json`, trust it in `/hooks` |
 | [Cursor](cursor/) | `preToolUse` hook | yes, with `failClosed: true` | copy the script, merge `hooks.example.json` |
 | [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | `gemini extensions install ./gemini-cli`, or copy the script and merge `settings.example.json` |
-| [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code) | on a crash yes; on a timeout no | copy the script, add `hooks.example.json` to `~/.copilot/hooks/` |
+| [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code on the Copilot and Local harnesses) | on a crash yes (VS Code Local needs the `\|\| exit 2` guard); on a timeout no | copy the script, add `hooks.example.json` to `~/.copilot/hooks/` |
 | [Goose](goose/) | `PreToolUse` plugin hook | yes, with `on_failure: block` | copy the plugin to `~/.agents/plugins/mezmo-governance/` |
 | [Droid](droid/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | copy the script, merge `hooks.example.json` into `~/.factory/hooks.json` |
 | [Windsurf](windsurf/) | `pre_run_command`, `pre_read_code`, `pre_write_code` and `pre_mcp_tool_use` hooks. Partial coverage: grep/find, `write_to_file`, web search, URL reads, git commit, deploy and subagents run ungoverned, and Restricted Mode loads no hooks | on a crash yes (with the `\|\| exit 2` guard); Windsurf sets no hook timeout | copy the script, merge `hooks.example.json` into `~/.codeium/windsurf/hooks.json` |
@@ -349,7 +349,7 @@ cannot be reached, or returns something it does not understand.
 
 Before each tool call, the plugin sends Mezmo the tool name and its full
 arguments: the shell command, the file path, and for write tools the file
-content. It also sends the session id and the tool call id (Gemini CLI, Antigravity CLI, Copilot, Droid and Windsurf send a fresh random id per call, because they expose none). Tool results are
+content. It also sends the session id and the tool call id (Gemini CLI, Antigravity CLI, Copilot, Droid and Windsurf send a fresh random id per call, because they expose none; VS Code Local exposes one). Tool results are
 not sent to Mezmo: post-tool hooks only append a line to a local file.
 
 One exception reaches past Mezmo: the LangChain middleware records each
@@ -455,7 +455,7 @@ one shell call (expected: denied) and one file read (expected: approved):
 | Cursor CLI | 2026.10.14 | pass | blocked |
 | Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
 | Copilot CLI | 1.0.95, 1.0.98 | pass, with user-level hooks | blocked (1.0.95) |
-| VS Code | 1.142.0 with Copilot Chat 0.70.0, Copilot harness | pass; the Local harness skips the hook and runs every tool | not checked |
+| VS Code | 1.142.0 with Copilot Chat 0.70.0 | Copilot harness: pass. Local harness: pass (`run_in_terminal` denied, `read_file` approved); with the earlier hook it ran every tool | not checked |
 | Goose CLI | 1.54.0 | pass | blocked with `on_failure: block`, also on a timeout; runs without it |
 | Droid | 0.244.0, `droid exec` with a bring-your-own-key model (no Factory plan); also against production Mezmo | pass | blocked with the guard |
 | Windsurf | 1.126.0 (Devin Desktop 3.10.67); also against production Mezmo | pass, started from a shell or from the Dock after `launchctl setenv`; a plain Dock launch passes no settings, so every call is denied | blocked with the guard |

@@ -50,6 +50,23 @@ def hook_event(name: str) -> dict[str, Any]:
     return event
 
 
+def vscode_event(name: str = "PreToolUse") -> dict[str, Any]:
+    """What VS Code Local sends: VS Code 1.142.0, Copilot Chat 0.70.0 (ChatHookService.executeHook)."""
+    event: dict[str, Any] = {
+        "timestamp": "2026-10-17T23:55:43.634Z",
+        "hook_event_name": name,
+        "session_id": "session-1",
+        "transcript_path": "/tmp/demo/transcript.jsonl",
+        "cwd": "/tmp/demo",
+        "tool_name": "run_in_terminal",
+        "tool_input": {"command": "touch marker", "explanation": "Create a marker", "isBackground": False},
+        "tool_use_id": "toolu_01",
+    }
+    if name == "PostToolUse":
+        event["tool_response"] = "marker created"
+    return event
+
+
 class FakeHttp:
     def __init__(
         self,
@@ -137,6 +154,44 @@ class CopilotGovernanceHookTests(unittest.TestCase):
 
         self.assertNotEqual(first["decision_id"], second["decision_id"])
         self.assertTrue(first["request_id"].startswith("copilot:session-1:run-"))
+
+    def test_reads_the_vs_code_local_payload(self) -> None:
+        normalized = hook.normalize_tool_call(vscode_event())
+
+        self.assertEqual(normalized.namespace, "copilot")
+        self.assertEqual(normalized.name, "run_in_terminal")
+        self.assertEqual(normalized.arguments["command"], "touch marker")
+
+    def test_a_vs_code_local_call_id_keeps_the_request_id_stable(self) -> None:
+        first = hook.approval_payload(vscode_event(), "PreToolUse")
+        second = hook.approval_payload(vscode_event(), "PreToolUse")
+
+        self.assertEqual(first["decision_id"], second["decision_id"])
+        self.assertTrue(first["request_id"].startswith("copilot:session-1:toolu_01#"))
+        self.assertEqual(first["scope"]["session_id"], "session-1")
+
+    def test_a_vs_code_payload_without_a_call_id_opens_a_new_decision(self) -> None:
+        # Copilot CLI 1.0.98 sends this payload, with no tool_use_id, to a PascalCase entry.
+        event = vscode_event()
+        del event["tool_use_id"]
+        first = hook.approval_payload(event, "PreToolUse")
+        second = hook.approval_payload(event, "PreToolUse")
+
+        self.assertNotEqual(first["decision_id"], second["decision_id"])
+        self.assertTrue(first["request_id"].startswith("copilot:session-1:run-"))
+
+    @patch.dict(os.environ, ENV)
+    def test_a_vs_code_local_denial_sets_the_field_local_reads(self) -> None:
+        # Local reads only hookSpecificOutput; it ran the tool on the top-level deny alone.
+        http = FakeHttp([(200, {"approved": False, "reason": "Use a canary first."})])
+
+        output = hook.handle_event(vscode_event(), "preToolUse", http=http)
+
+        specific = output["hookSpecificOutput"]
+        self.assertEqual(specific["hookEventName"], "PreToolUse")
+        self.assertEqual(specific["permissionDecision"], "deny")
+        self.assertIn("Use a canary first.", specific["permissionDecisionReason"])
+        self.assertEqual(http.calls[0][2]["items"][0]["tool_name"], "run_in_terminal")
 
     def test_approval_payload_identifies_copilot(self) -> None:
         payload = hook.approval_payload(hook_event("preToolUse"), "preToolUse")
@@ -230,6 +285,27 @@ class CopilotGovernanceHookTests(unittest.TestCase):
 
         self.assertEqual(record["status"], "failed")
         self.assertIn("permission denied", record["result_preview"])
+
+    def test_a_vs_code_local_post_record_joins_its_decision(self) -> None:
+        record = self.audit("postToolUse", vscode_event("PostToolUse"))
+        decision = hook.approval_payload(vscode_event(), "PreToolUse")
+
+        self.assertEqual(record["tool_name"], "run_in_terminal")
+        self.assertEqual(record["status"], "observed")
+        self.assertIn("marker created", record["result_preview"])
+        self.assertEqual(record["decision_id"], decision["decision_id"])
+        self.assertEqual(record["request_id"], decision["request_id"])
+
+    def test_a_copilot_pascal_case_post_reads_its_tool_result(self) -> None:
+        event = vscode_event("PostToolUse")
+        del event["tool_use_id"], event["tool_response"]
+        event["tool_result"] = {"result_type": "failure", "text_result_for_llm": "no such file"}
+
+        record = self.audit("PostToolUse", event)
+
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("no such file", record["result_preview"])
+        self.assertIsNone(record["decision_id"])
 
     @patch.dict(os.environ, ENV)
     def test_audit_failure_does_not_block(self) -> None:
@@ -419,17 +495,49 @@ class HookConfigTests(unittest.TestCase):
 
         self.assertEqual(config["version"], 1)
         hooks = config["hooks"]
-        self.assertEqual(set(hooks), hook.PRE_EVENTS | hook.POST_EVENTS)
+        # No PascalCase entries: Copilot CLI 1.0.98 runs both spellings, so it
+        # would ask Mezmo twice. VS Code Local runs the camelCase ones.
+        self.assertEqual(set(hooks), {"preToolUse", "postToolUse", "postToolUseFailure"})
         for event, handlers in hooks.items():
             for handler in handlers:
                 with self.subTest(event=event):
                     self.assertLessEqual(set(handler), COPILOT_HANDLER_KEYS)
                     for shell in ("bash", "powershell"):
                         self.assertIn("mezmo_governance_hook.py", handler[shell])
-                        self.assertTrue(handler[shell].endswith(f" {event}"))
+                    bash, powershell = handler["bash"], handler["powershell"]
+                    if event in hook.PRE_EVENTS:
+                        bash = bash.split(" || ")[0]
+                        # VS Code Local runs this through powershell.exe -Command, which
+                        # exits 1 for any failed command, and Local then runs the tool.
+                        guard = "; if ($LASTEXITCODE -ne 0) { exit 2 }"
+                        self.assertTrue(powershell.endswith(guard), powershell)
+                        powershell = powershell[: -len(guard)]
+                    self.assertTrue(bash.endswith(f" {event}"))
+                    self.assertTrue(powershell.endswith(f" {event}"))
                     if event in hook.PRE_EVENTS:
                         # Copilot lets a call run when its hook times out.
                         self.assertGreater(handler["timeoutSec"], hook.MAX_TIMEOUT_SECONDS)
+
+
+    def test_the_pre_tool_use_command_turns_any_failure_into_exit_2(self) -> None:
+        # VS Code Local runs the tool when the hook exits other than 0 or 2.
+        with (ADAPTER_DIR / "hooks.example.json").open(encoding="utf-8") as handle:
+            command = json.load(handle)["hooks"]["preToolUse"][0]["bash"]
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "fake_hook.py"
+            for code, want in ((0, 0), (1, 2), (2, 2), (139, 2)):
+                script.write_text(f"raise SystemExit({code})\n", encoding="utf-8")
+                with self.subTest(code=code):
+                    result = subprocess.run(
+                        ["sh", "-c", command],
+                        env={**os.environ, "MEZMO_GOVERNANCE_HOOK": str(script)},
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, want, result.stderr)
+                    self.assertEqual("hook failed" in result.stderr, code not in (0, 2))
 
 
 HOOK_PATH = Path(__file__).resolve().with_name("mezmo_governance_hook.py")
@@ -515,7 +623,8 @@ ORIGIN_KIND = "copilot_hook"
 
 
 def deny_schema(reason: str) -> dict[str, Any]:
-    return {"permissionDecision": "deny", "permissionDecisionReason": reason}
+    decision = {"permissionDecision": "deny", "permissionDecisionReason": reason}
+    return {**decision, "hookSpecificOutput": {"hookEventName": "PreToolUse", **decision}}
 
 
 class StubGovernance(ThreadingHTTPServer):
@@ -675,6 +784,32 @@ class EndToEndTests(unittest.TestCase):
             stdout_json(result),
             deny_schema("Mezmo Governance denied this exact tool call: No."),
         )
+
+    def test_vs_code_local_runs_the_camel_case_entry_and_gets_a_deny_it_obeys(self) -> None:
+        # VS Code 1.142.0 maps preToolUse to PreToolUse, runs the bash command,
+        # and sends its own payload. Before, the hook denied on the missing
+        # toolName at the top level only, and Local ran the tool.
+        for answers, reason in (
+            ([(200, {"approved": False, "reason": "No."})], "denied this exact tool call: No."),
+            ([], "MEZMO_GOVERNANCE_URL must be a non-empty string"),
+        ):
+            with self.subTest(reason=reason), StubGovernance(answers) as stub:
+                result = self.run_hook(vscode_event(), stub.url if answers else None, "preToolUse")
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                specific = stdout_json(result)["hookSpecificOutput"]
+                self.assertEqual(specific["permissionDecision"], "deny")
+                self.assertIn(reason, specific["permissionDecisionReason"])
+
+    def test_vs_code_local_approved_call_runs_under_its_call_id(self) -> None:
+        with StubGovernance([(200, {"approved": True})]) as stub:
+            result = self.run_hook(vscode_event(), stub.url, "preToolUse")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(stdout_json(result), ALLOW_OUTPUT)
+        body = stub.requests[0]["body"]
+        self.assertTrue(body["request_id"].startswith("copilot:session-1:toolu_01#"))
+        self.assertEqual(body["origin"], {"kind": ORIGIN_KIND, "reason": "PreToolUse"})
 
     def test_a_redirect_denies_and_never_sends_the_key_elsewhere(self) -> None:
         cases = [
