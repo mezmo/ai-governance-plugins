@@ -109,9 +109,9 @@ Local hooks on. Local reads `timeoutSec` as its timeout and, like Copilot,
 runs the tool when the hook times out, so the 590 second deadline must end
 first. Local has no `postToolUseFailure` event, so it logs no failed calls.
 
-Not verified: a live Local session with this hook, and Local's tool names. The
-VS Code 1.142.0 code names `run_in_terminal` for shell commands and `read_file`
-for reads. On Windows, Local runs the `powershell` command through Windows
+Seen live with this hook in VS Code 1.142.0 on 2026-10-17: a Local session's
+`touch marker` was denied (`mock policy: copilot:run_in_terminal is denied`, no
+file written), and `read_file` was approved. Not verified: on Windows, Local runs the `powershell` command through Windows
 PowerShell `-Command`; that is not checked.
 
 ## Cloud agent
