@@ -6,10 +6,6 @@ config uses `preToolUse` so every tool type is gated once (`Shell`, `Read`,
 `beforeMCPExecution` on the same script unless you want a second authorize call
 for those tools.
 
-Keep `failClosed: true` on the gating hook. Without it, Cursor lets the action
-through when the hook crashes, times out, exits with a code other than 0 or 2,
-or prints nothing.
-
 Official docs: https://cursor.com/docs/hooks
 
 The script needs Python 3.9 or later and uses only the standard library.
@@ -18,38 +14,56 @@ Tested version: Cursor CLI (`cursor-agent`) 2026.10.14, run live against
 `tools/mock_governance.py`: a shell call was denied, a read was approved, and
 a hook crash blocked the call. The Cursor editor was not run.
 
+## Fail behavior
+
+Keep `failClosed: true` on the gating hook. Without it, Cursor lets the action
+through when the hook crashes, times out, exits with a code other than 0 or 2,
+or prints nothing.
+
+Cursor still runs tools ungoverned when:
+
+- `failClosed` is missing from the `preToolUse` entry;
+- a cloud agent runs in a project without the hook in `.cursor/hooks.json`:
+  cloud agents do not load `~/.cursor/hooks.json`.
+
 ## Install
 
 `./mezmo-governance install cursor` from the repository root does this for you, and `uninstall` undoes it. The steps below are the manual way.
 Run them from the repository root. Cursor has no override for the
 `~/.cursor` folder.
 
+1. Copy the hook:
+
 ```bash
 mkdir -p ~/.cursor/hooks
 cp cursor/mezmo_governance_hook.py ~/.cursor/hooks/
 ```
 
-Merge [hooks.example.json](hooks.example.json) into `~/.cursor/hooks.json` or
-`.cursor/hooks.json`. The example path starts at `$HOME`, so it works from any
-directory. Cursor runs user hooks from `~/.cursor/` and project hooks from the
-project root, so a relative path points at different files. To keep the script
-elsewhere, set `MEZMO_GOVERNANCE_HOOK` to its absolute path. To run the script
-without `python3` in front, run `chmod +x` on it first. Then:
+2. Merge [hooks.example.json](hooks.example.json) into `~/.cursor/hooks.json`
+   or `.cursor/hooks.json`. The example path starts at `$HOME`, so it works
+   from any directory. Cursor runs user hooks from `~/.cursor/` and project
+   hooks from the project root, so a relative path points at different files.
+   To keep the script elsewhere, set `MEZMO_GOVERNANCE_HOOK` to its absolute
+   path. To run the script without `python3` in front, run `chmod +x` on it
+   first.
+
+3. Export the settings in the shell that starts Cursor:
 
 ```bash
 export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
 export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
-Start Cursor from a shell that exports the variables (`cursor-agent`, or
-`cursor .` for the editor). Windsurf, another VS Code-based editor, passed no
-variables to the hook when started from the Dock, so every call was denied
-with `MEZMO_GOVERNANCE_URL must be a non-empty string`. The Cursor editor may
-do the same; this is not verified.
+   Start Cursor from that shell (`cursor-agent`, or `cursor .` for the
+   editor). Windsurf, another VS Code-based editor, passed no variables to the
+   hook when started from the Dock, so every call was denied with
+   `MEZMO_GOVERNANCE_URL must be a non-empty string`. The Cursor editor may do
+   the same; this is not verified.
 
-Optional matchers: `Shell`, `Read`, `Write`, `MCP:<tool_name>`. Cloud agents
-load project `.cursor/hooks.json` only, not `~/.cursor/hooks.json`. MCP
-lifecycle hooks are deferred in cloud agents; `preToolUse` is the safer gate.
+4. Run the checks in [Verify](#verify), then one tool call your policy denies.
+
+Optional matchers: `Shell`, `Read`, `Write`, `MCP:<tool_name>`. MCP lifecycle
+hooks are deferred in cloud agents; `preToolUse` is the safer gate.
 
 If you prefer the MCP-specific events, the script also handles
 `beforeMCPExecution` / `afterMCPExecution` (`tool_input` may be a JSON string,

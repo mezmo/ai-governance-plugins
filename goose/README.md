@@ -36,6 +36,11 @@ the tool run. Goose still runs the tool when:
 - `hooks.json` does not parse or has an invalid field. Goose skips the whole
   file with a warning. `on_failure` does not cover load errors.
 
+The hook denies every Code Mode (`execute_typescript`, `execute_bash`) and
+`delegate` call without asking Mezmo: their inner tool calls fire no
+`PreToolUse`. To use Goose with this hook, turn Code Mode off in
+`goose configure`. See [Tool names in policy](#tool-names-in-policy).
+
 The `timeout` is in seconds. The example sets `600`, so the script's own 590
 second deadline ends first and returns a clear deny.
 

@@ -38,7 +38,8 @@ Blocked`). A wrong path or a missing `python3` also exits non-zero, so the
 guard blocks those too. Codex still runs the tool when:
 
 - the hook reaches its `timeout`;
-- Codex skips the hook because it is new or changed and not yet trusted.
+- Codex skips the hook because it is new or changed and not yet trusted;
+- the tool is hosted, such as `WebSearch`: it fires no hook.
 
 The example sets the `PreToolUse` `timeout` to `600` seconds, so the script's own
 590 second deadline ends first and returns a clear deny. Keep the `timeout` at
@@ -46,8 +47,7 @@ least 10 seconds above `MEZMO_GOVERNANCE_TIMEOUT_SECONDS`: if you lower one,
 lower the other too, or a call still pending runs the tool.
 
 Keep the guard on `PreToolUse` only. Run the [smoke test](#smoke-test) after
-each install, and check `/hooks` after each config change. Hosted tools such
-as `WebSearch` never fire hooks.
+each install, and check `/hooks` after each config change.
 
 ## Install
 

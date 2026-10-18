@@ -45,8 +45,6 @@ Install the hook at user level, in `~/.copilot/hooks/` or
 `copilot -p` the hook did not run, and `ls` ran ungoverned. The user-level
 file ran in the same folder.
 
-To confirm the hook runs, see [Verify](#verify).
-
 Run these steps from the repository root.
 
 1. Copy the hook:
@@ -76,6 +74,9 @@ Use the camelCase event names only. Copilot CLI 1.0.98 runs a `PreToolUse`
 entry as well as a `preToolUse` one from the same file, so it would ask Mezmo
 twice for each call, and a `PreToolUse` entry gets Claude's tool names (`Bash`,
 not `bash`). The hook reads that payload, but `doctor` flags the entry.
+
+4. Run the checks in [Verify](#verify) to confirm the hook runs, then one tool
+   call your policy denies.
 
 ### As a Copilot CLI plugin
 
