@@ -346,16 +346,17 @@ one shell call (expected: denied) and one file read (expected: approved):
 
 | Agent | Version | Deny and allow | Hook crash |
 | --- | --- | --- | --- |
-| Claude Code | 2.1.301 with the Mezmo plugin (2.1.296 with the earlier hook) | pass | blocked |
-| Codex CLI | 0.162.1 | pass | blocked with the guard; runs without it |
-| Cursor CLI | 2026.10.14 | pass | blocked |
+| Claude Code | 2.1.301 with the Mezmo plugin (2.1.296 with the earlier hook) | pass | blocked, also on a timeout (2.1.301) |
+| Codex CLI | 0.162.1 | pass | blocked with the guard; runs without it; runs on a timeout, guard or not (0.163.0) |
+| Cursor CLI | 2026.10.14 | pass | blocked, also on a timeout |
+| Cursor editor | 3.25.9, started from the Dock, project `.cursor/hooks.json`, against production Mezmo | pass: the hook read the settings from the login shell | not checked |
 | Gemini CLI | 0.64.0 | pass | blocked with the guard; runs without it |
-| Copilot CLI | 1.0.95, 1.0.98 | pass, with user-level hooks | blocked (1.0.95) |
-| VS Code | 1.142.0 with Copilot Chat 0.70.0 | Copilot harness: pass. Local harness: pass (`run_in_terminal` denied, `read_file` approved); with the earlier hook it ran every tool | not checked |
+| Copilot CLI | 1.0.95, 1.0.98 | pass, with user-level hooks | blocked (1.0.95); runs on a timeout (1.0.98) |
+| VS Code | 1.142.0 with Copilot Chat 0.70.0 | Copilot harness: pass. Local harness: pass (`run_in_terminal` denied, `read_file` approved); with the earlier hook it ran every tool. Started from the Dock with workspace `.github/hooks`, against production Mezmo: pass | not checked |
 | Goose CLI | 1.54.0 | pass | blocked with `on_failure: block`, also on a timeout; runs without it |
 | Claude Code in Zed | claude-agent-acp 0.93.0 in Zed 1.24.2, `CLAUDE_CODE_EXECUTABLE` set to Claude Code 2.1.301, Zed started from a shell | pass | not checked |
 | Codex in Zed | codex-acp 2.2.2 in Zed 1.24.2, `CODEX_PATH` set to Codex 0.163.0, hooks trusted first in `codex` `/hooks`, Zed started from a shell | pass (`Bash` denied, `apply_patch` approved) | not checked |
-| Goose in Zed | Goose 1.55.0 over ACP in Zed 1.24.2, plugin in the project's `.agents/plugins`, Zed started from a shell | pass | not checked |
+| Goose in Zed | Goose 1.55.0 over ACP in Zed 1.24.2, plugin in the project's `.agents/plugins`; started from a shell, and from the Dock against production Mezmo | pass, both ways | blocked |
 | Droid | 0.244.0, `droid exec` with a bring-your-own-key model (no Factory plan); also against production Mezmo | pass | blocked with the guard |
 | Windsurf | 1.126.0 (Devin Desktop 3.10.67); also against production Mezmo | pass, started from a shell or from the Dock after `launchctl setenv`; a plain Dock launch passes no settings, so every call is denied | blocked with the guard |
 | Antigravity CLI | 1.4.0, `agy -p` with a workspace `.agents/hooks.json`; 1.4.1 with `~/.gemini/config/hooks.json` against production Mezmo | pass | blocked, also on exit 1, output that is not JSON, a missing script and a timeout |

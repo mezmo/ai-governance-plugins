@@ -55,10 +55,9 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
    Start Cursor from that shell (`cursor-agent`, or `cursor .` for the
-   editor). Windsurf, another VS Code-based editor, passed no variables to the
-   hook when started from the Dock, so every call was denied with
-   `MEZMO_GOVERNANCE_URL must be a non-empty string`. The Cursor editor may do
-   the same; this is not verified.
+   editor). Started from the Dock, the Cursor editor 3.25.9 read the variables
+   from the login shell (verified live), so exporting them in your shell
+   profile is enough.
 
 4. Run the checks in [Verify](#verify), then one tool call your policy denies.
 

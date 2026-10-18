@@ -21,7 +21,8 @@ Tested versions: Copilot CLI 1.0.95, and 1.0.98 for deny and allow, also with
 
 Copilot fails closed for a `preToolUse` command hook that crashes, cannot
 start, or exits non-zero: the tool does not run. A crash was verified live
-("hook errored"). It fails open on a timeout:
+("hook errored"). It fails open on a timeout, verified live in 1.0.98: the
+`|| exit 2` guard cannot run once Copilot kills the hook, and
 the call goes on to the normal permission flow. The example sets
 `timeoutSec` to `600`, so the script's own 590 second deadline ends first and
 returns a clear deny. Keep `timeoutSec` at least 10 seconds above
@@ -148,8 +149,9 @@ VS Code reads `~/.copilot/hooks/*.json` for both harnesses. Pick one with the
 
 Start VS Code from a shell that exports the variables (`code <folder>`): the
 hook reads them from VS Code's environment. Both harnesses passed live on
-2026-10-17 with a terminal-launched `code`. A Dock launch was not tested; it
-may pass no variables, so every call would be denied.
+2026-10-17 with a terminal-launched `code`. Started from the Dock, VS Code
+1.142.0 read the variables from the login shell and passed live on 2026-10-18,
+so exporting them in your shell profile is enough.
 
 - The Copilot harness runs the hook as Copilot CLI does. Seen live in VS Code
   1.142.0 with Copilot Chat 0.70.0: the mock logged `copilot:bash` and

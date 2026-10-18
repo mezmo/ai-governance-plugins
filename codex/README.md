@@ -37,7 +37,7 @@ With the guard, a crash blocks the call (verified live: `hook: PreToolUse
 Blocked`). A wrong path or a missing `python3` also exits non-zero, so the
 guard blocks those too. Codex still runs the tool when:
 
-- the hook reaches its `timeout`;
+- the hook reaches its `timeout`, guard or not (verified live in 0.163.0);
 - Codex skips the hook because it is new or changed and not yet trusted;
 - the tool is hosted, such as `WebSearch`: it fires no hook.
 
