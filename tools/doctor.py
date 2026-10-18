@@ -1125,7 +1125,7 @@ class Agent(NamedTuple):
     read: Optional[str]  # None where the agent has no read-only tool: Codex's apply_patch writes files
 
 
-# Tested versions come from the README's hand-check table; tool names from each adapter README.
+# Tested versions come from the live-run table in docs/live-testing.md; tool names from each adapter README.
 AGENTS = (
     Agent("Claude Code", "claude", ("2.1.301",), "2.1.295", "claude-code", check_claude_code, "claude_code", "Bash", "Read"),
     Agent("Codex", "codex", ("0.162.1",), None, "codex", check_codex, "codex", "Bash", None),
