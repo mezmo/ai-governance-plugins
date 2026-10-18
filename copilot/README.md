@@ -111,8 +111,8 @@ first. Local has no `postToolUseFailure` event, so it logs no failed calls.
 
 Not verified: a live Local session with this hook, and Local's tool names. The
 VS Code 1.142.0 code names `run_in_terminal` for shell commands and `read_file`
-for reads. On Windows, Local runs the `powershell` command, which has no guard;
-that is not checked.
+for reads. On Windows, Local runs the `powershell` command through Windows
+PowerShell `-Command`; that is not checked.
 
 ## Cloud agent
 
@@ -143,7 +143,9 @@ policy keyed on the MCP server name does not match. This is not verified.
 ## Windows
 
 The example has a `powershell` command that uses `py -3` and `$HOME`. It was
-not run on Windows. In PowerShell, set the variables with
+not run on Windows. VS Code Local runs it with `powershell.exe -Command`, which
+exits 1 for any failed command, even the hook's own exit 2, and Local then runs
+the tool. So the `preToolUse` command ends with `if ($LASTEXITCODE -ne 0) { exit 2 }`. In PowerShell, set the variables with
 `$env:MEZMO_GOVERNANCE_URL = "..."` and `$env:MEZMO_GOVERNANCE_TOKEN = "..."`
 before you start Copilot.
 

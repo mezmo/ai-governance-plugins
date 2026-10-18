@@ -5,7 +5,7 @@
       {
         "type": "command",
         "bash": "python3 \"${PLUGIN_ROOT}/mezmo_governance_hook.py\" preToolUse || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }",
-        "powershell": "py -3 \"$env:PLUGIN_ROOT/mezmo_governance_hook.py\" preToolUse",
+        "powershell": "py -3 \"$env:PLUGIN_ROOT/mezmo_governance_hook.py\" preToolUse; if ($LASTEXITCODE -ne 0) { exit 2 }",
         "timeoutSec": 600
       }
     ],

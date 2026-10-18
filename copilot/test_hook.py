@@ -504,9 +504,16 @@ class HookConfigTests(unittest.TestCase):
                     self.assertLessEqual(set(handler), COPILOT_HANDLER_KEYS)
                     for shell in ("bash", "powershell"):
                         self.assertIn("mezmo_governance_hook.py", handler[shell])
-                    bash = handler["bash"].split(" || ")[0] if event in hook.PRE_EVENTS else handler["bash"]
+                    bash, powershell = handler["bash"], handler["powershell"]
+                    if event in hook.PRE_EVENTS:
+                        bash = bash.split(" || ")[0]
+                        # VS Code Local runs this through powershell.exe -Command, which
+                        # exits 1 for any failed command, and Local then runs the tool.
+                        guard = "; if ($LASTEXITCODE -ne 0) { exit 2 }"
+                        self.assertTrue(powershell.endswith(guard), powershell)
+                        powershell = powershell[: -len(guard)]
                     self.assertTrue(bash.endswith(f" {event}"))
-                    self.assertTrue(handler["powershell"].endswith(f" {event}"))
+                    self.assertTrue(powershell.endswith(f" {event}"))
                     if event in hook.PRE_EVENTS:
                         # Copilot lets a call run when its hook times out.
                         self.assertGreater(handler["timeoutSec"], hook.MAX_TIMEOUT_SECONDS)
