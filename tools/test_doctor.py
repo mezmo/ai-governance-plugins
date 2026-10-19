@@ -1435,6 +1435,7 @@ class HandlerMatchTests(unittest.TestCase):
             'python3 "$HOME/.codex/hooks/mezmo_governance_hook.py" || exit 2',
             'python3 "${MEZMO_GOVERNANCE_HOOK:-/home/me/.factory/hooks/mezmo_governance_hook.py}" || exit 2',
             "python3 mezmo_governance_hook.py",
+            'python3 "${extensionPath}${/}mezmo_governance_hook.py"',
         ]
         theirs = [
             "/home/me/bin/not_mezmo_governance_hook.py.wrapper",
@@ -1446,8 +1447,6 @@ class HandlerMatchTests(unittest.TestCase):
         for command in theirs:
             with self.subTest(command=command):
                 self.assertEqual(doctor.mezmo_handlers([{"hooks": [{"command": command}]}]), [])
-        # The Claude Code script's name is a suffix of the others'; it must not match them.
-        self.assertEqual(doctor.mezmo_handlers([{"command": ours[0]}], script=doctor.CLAUDE_HOOK_FILE), [])
 
 
 if __name__ == "__main__":

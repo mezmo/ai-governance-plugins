@@ -215,7 +215,7 @@ def mezmo_handlers(groups: Any, field: str = "command", script: str = HOOK_FILE)
         for h, handler in enumerate(as_list(group["hooks"]) if nested else [group]):
             handler = as_dict(handler)
             # The script name as a whole path part, so a user's `not_mezmo_governance_hook.py.wrapper` is not ours.
-            if re.search(rf"(?:^|[\s/\\\"'=]){re.escape(script)}(?=$|[\s\"'}}])", str(handler.get(field, ""))):
+            if re.search(rf"(?:^|[\s/\\\"'=}}]){re.escape(script)}(?=$|[\s\"'}}])", str(handler.get(field, ""))):
                 found.append((g, h, group, handler))
     return found
 
@@ -553,7 +553,8 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
         else:
             report.line("FAIL", "Claude Code plugin", f"{key} is installed but not enabled, {UNGOVERNED}", "enable it in /plugin")
         hooks = as_dict(as_dict(read_json(folder / "hooks" / "hooks.json")).get("hooks"))
-        found = mezmo_handlers(hooks.get("PreToolUse"), script=CLAUDE_HOOK_FILE)
+        # The older plugin ran mezmo_governance_hook.py, the current one governance_hook.py.
+        found = mezmo_handlers(hooks.get("PreToolUse"), script=CLAUDE_HOOK_FILE) or mezmo_handlers(hooks.get("PreToolUse"))
         if not found:
             report.line("FAIL", "Claude Code plugin", f"no PreToolUse hook in {shown(folder)}", "reinstall the plugin")
             continue

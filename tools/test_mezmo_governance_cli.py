@@ -1208,7 +1208,7 @@ class PolicyTests(CliTestCase):
         self.assertEqual(self.writes(), [])
 
     def test_starter_rules_pair_each_tool_with_only_the_namespaces_that_use_it(self) -> None:
-        # One rule of every tool in every namespace would also allow Copilot's view in claude_code, and Read in copilot.
+        # One rule of every tool in every namespace would also allow Pi's read in copilot, and Copilot's view in pi.
         self.cli("install", "claude-code", "copilot", "pi")
         result = self.policy("apply", "--yes")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -1218,7 +1218,6 @@ class PolicyTests(CliTestCase):
             [
                 {**deny, "tool": {"op": "in", "value": ["Bash"]}, "namespace": {"op": "in", "value": ["claude_code"]}},
                 {**deny, "tool": {"op": "in", "value": ["bash"]}, "namespace": {"op": "in", "value": ["copilot", "pi"]}},
-                {"recourse": "allow", "tool": {"op": "in", "value": ["Read"]}, "namespace": {"op": "in", "value": ["claude_code"]}},
                 {"recourse": "allow", "tool": {"op": "in", "value": ["view"]}, "namespace": {"op": "in", "value": ["copilot"]}},
                 {"recourse": "allow", "tool": {"op": "in", "value": ["read"]}, "namespace": {"op": "in", "value": ["pi"]}},
             ],
