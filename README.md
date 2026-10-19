@@ -264,8 +264,9 @@ and copies back one that is missing.
 Claude Code and Gemini CLI keep their own copy, so for them run `uninstall`,
 then `install`. `uninstall` removes the entries and
 files `install` added, then each key or file that leaves empty, such as an
-empty `hooks` object, a Cursor `hooks.json` with only `version`, or Claude
-Code's empty `enabledPlugins`, even one that was empty before the install. Codex keys hook trust by position, so where
+empty `hooks` object or Claude Code's empty `enabledPlugins`, even one that
+was empty before the install. It keeps a Cursor `hooks.json` with only
+`version`: Cursor may have written that file itself. Codex keys hook trust by position, so where
 other groups follow the Mezmo group in `hooks.json`, `uninstall` leaves an empty
 group in its place and those hooks stay trusted. Where a Mezmo handler sits
 ahead of your own handler in one group, `uninstall` changes no Codex file,

@@ -362,7 +362,7 @@ def example(adapter: str, name: str, folder: Path, default: Path) -> dict:
 
 
 def file_hook_agent(
-    adapter: str, folder: Callable[[], Path], event: str, next_step: str, leftover: tuple = (), trust_by_position: bool = False,
+    adapter: str, folder: Callable[[], Path], event: str, next_step: str, trust_by_position: bool = False,
     default: str = "", gates: tuple = (),
 ) -> Installer:
     """Codex, Cursor and Windsurf: a hook script plus entries merged into hooks.json; default is the folder under HOME.
@@ -396,7 +396,7 @@ def file_hook_agent(
                 f" that runs {HOOK_FILE} from {shown(path)}, run this command again to delete the hook script,"
                 f" then start {adapter}, run /hooks and trust the moved hooks again"
             )
-        return unmerge_steps(path, heads, leftover=leftover) + hook_removal(folder() / "hooks" / HOOK_FILE, folder())
+        return unmerge_steps(path, heads) + hook_removal(folder() / "hooks" / HOOK_FILE, folder())
 
     return Installer(installed, install, uninstall, next_step)
 
@@ -850,7 +850,8 @@ INSTALLERS = {
         "Start codex, run /hooks, and trust the Mezmo hook entries: Codex skips a hook until you trust it.",
         trust_by_position=True,
     ),
-    "cursor": file_hook_agent("cursor", doctor.cursor_dir, "preToolUse", "", leftover=("version",)),
+    # Cursor's own hooks.json may hold only its version, so uninstall keeps what is left: it cannot tell who wrote the file.
+    "cursor": file_hook_agent("cursor", doctor.cursor_dir, "preToolUse", ""),
     "gemini-cli": gemini_cli(),
     "copilot": copilot(),
     "goose": goose(),

@@ -371,6 +371,19 @@ class InstallTests(CliTestCase):
         self.assertEqual(self.cli("uninstall", "codex").returncode, 0)
         self.assertEqual(json.loads(path.read_text()), ORIGINALS["codex"]["codex/hooks.json"])
 
+    def test_cursor_uninstall_keeps_a_hooks_json_the_user_had(self) -> None:
+        # Cursor's own hooks.json can hold only its version; install cannot tell that file from one it wrote.
+        self.write({"home/.cursor/hooks.json": {"version": 1}})
+        self.assertEqual(self.cli("install", "cursor").returncode, 0)
+
+        result = self.cli("uninstall", "cursor")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        path = self.tmp / "home/.cursor/hooks.json"
+        self.assertTrue(path.is_file(), result.stdout)
+        self.assertEqual(json.loads(path.read_text()), {"version": 1})
+        self.assertIn("installed: no", self.status("cursor"))
+
     def test_install_and_uninstall_keep_the_users_json_formatting(self) -> None:
         # Each user writes a different indent and line ending, non-ASCII text and no final newline.
         texts = {}
