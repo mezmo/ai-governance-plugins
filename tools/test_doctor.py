@@ -370,6 +370,54 @@ class ClaudeCodeTests(DoctorTestCase):
         self.write(".claude/settings.json", {"enabledPlugins": {f"{name}@mezmo": enabled}})
         return folder
 
+    def fake_claude(self, key_set: bool = True, enabled: bool = True) -> None:
+        """A claude whose `plugin configure --json` answers as the real one: option names, never the key."""
+        options = {"configured": ["governance_access_key"] if key_set else [], "inputs": {"governance_enabled": enabled}}
+        fake = self.bin / "claude"
+        fake.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = --version ]; then echo "2.1.300 (Claude Code)"; exit 0; fi\n'
+            'if [ "$1 $2 $3 $4" = "plugin configure mezmo@mezmo --json" ]; then\n'
+            f"  echo '{json.dumps(options)}'; exit 0\n"
+            "fi\n"
+            "exit 1\n"
+        )
+        fake.chmod(0o755)
+
+    def test_a_plugin_that_no_key_reaches_does_not_fail_closed(self) -> None:
+        # governance_hook.py allows every call when no key reaches it, unless MEZMO_GOVERNANCE_REQUIRED=1.
+        no_shell = {"MEZMO_GOVERNANCE_TOKEN": None}
+        cases = [
+            ({"key_set": False}, no_shell, {}, "FAIL", "no key is saved"),
+            ({"enabled": False}, no_shell, {}, "FAIL", "governance switch is off"),
+            ({"key_set": False}, {}, {}, "warn", "only in this shell"),
+            (None, no_shell, {}, "warn", "could not read the plugin options"),
+            ({"key_set": False}, no_shell, {"MEZMO_GOVERNANCE_REQUIRED": "1"}, "ok", "MEZMO_GOVERNANCE_REQUIRED=1"),
+            ({"key_set": False}, no_shell, {"MEZMO_GOVERNANCE_ACCESS_KEY": CANARY}, "ok", "a key is set under env"),
+            ({}, no_shell, {}, "ok", "a key is saved in the plugin options"),
+        ]
+        for options, shell, env, status, words in cases:
+            with self.subTest(options=options, shell=shell, env=env):
+                shutil.rmtree(self.home / ".claude", ignore_errors=True)
+                if options is None:
+                    self.agent("claude", "2.1.300 (Claude Code)")
+                else:
+                    self.fake_claude(**options)
+                self.install_plugin()
+                self.write(".claude/settings.json", {"enabledPlugins": {"mezmo@mezmo": True}, "env": env})
+
+                result = self.doctor(**shell)
+
+                closed = [line for line in self.lines(result, "Claude Code plugin") if "fails closed" in line]
+                self.assertEqual(bool(closed and closed[0].startswith("ok")), status == "ok", result.stdout)
+                line = self.assertStatus(result, "Claude Code key", status)
+                self.assertIn(words, line)
+                if status == "FAIL":
+                    self.assertIn("so every tool call runs ungoverned", line)
+                if status != "ok":
+                    self.assertIn('"MEZMO_GOVERNANCE_REQUIRED": "1"', line)
+                    self.assertIn("Dock", line)
+
     def test_an_agent_without_the_plugin_warns(self) -> None:
         self.agent("claude", "2.1.301 (Claude Code)")
 
@@ -434,7 +482,7 @@ class ClaudeCodeTests(DoctorTestCase):
         self.assertIn("~/elsewhere/mezmo_governance_hook.py", self.assertStatus(result, "Claude Code smoke", "ok"))
 
     def test_plugin_install_passes_and_a_disabled_plugin_fails(self) -> None:
-        self.agent("claude", "2.1.300 (Claude Code)")
+        self.fake_claude()
         self.install_plugin()
 
         result = self.doctor()

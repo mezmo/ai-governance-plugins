@@ -454,6 +454,72 @@ def old_guard(report: Report, subject: str, command: str, fix: str) -> None:
         report.line("warn", subject, 'the || exit 2 guard is the old one: a deliberate block also prints "hook failed"', fix)
 
 
+CLAUDE_KEYS = ("MEZMO_GOVERNANCE_ACCESS_KEY", "MEZMO_GOVERNANCE_TOKEN")
+CLAUDE_REQUIRED = "MEZMO_GOVERNANCE_REQUIRED"
+
+
+def required(value: Any) -> bool:
+    """MEZMO_GOVERNANCE_REQUIRED as governance_hook.py reads it."""
+    return str(value or "").strip().lower() in ("1", "true", "yes")
+
+
+def claude_options(plugin: str) -> Optional[dict]:
+    """The plugin's saved option names and its governance switch, from `claude plugin configure --json`, or None when unknown.
+
+    Its JSON holds no sensitive value: the key stays in the keychain (claude-code/scripts/governance_config.py).
+    """
+    binary = shutil.which("claude")
+    if binary is None:
+        return None
+    try:
+        result = subprocess.run(
+            [binary, "plugin", "configure", plugin, "--json"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20, check=False,
+        )
+        data = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    enabled = as_dict(data.get("inputs")).get("governance_enabled", True)
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() not in ("0", "false", "no", "off")
+    return {"key": "governance_access_key" in as_list(data.get("configured")), "enabled": bool(enabled)}
+
+
+def claude_key(report: Report, plugin: str, settings: dict, path: Path) -> bool:
+    """Whether a call with no key is blocked: governance_hook.py allows it unless MEZMO_GOVERNANCE_REQUIRED=1.
+
+    The hook takes its key from the env of settings.json or the shell, else the plugin options while governance_enabled is on.
+    """
+    env = as_dict(settings.get("env"))
+    if required(env.get(CLAUDE_REQUIRED)):
+        report.line("ok", "Claude Code key", f"{CLAUDE_REQUIRED}=1 under env in {shown(path)}, so a call with no key is denied")
+        return True
+    if any(str(env.get(name) or "").strip() for name in CLAUDE_KEYS):
+        report.line("ok", "Claude Code key", f"a key is set under env in {shown(path)} (not shown)")
+        return True
+    options = claude_options(plugin)
+    if options is not None and options["key"] and options["enabled"]:
+        report.line("ok", "Claude Code key", "a key is saved in the plugin options (not shown)")
+        return True
+    fix = (
+        f'add "{CLAUDE_REQUIRED}": "1" under env in {shown(path)}, so a call with no key is denied,'
+        " then run /mezmo:setup governance; an export in your shell does not reach Claude Code started from the Dock or another app"
+    )
+    shell = required(os.environ.get(CLAUDE_REQUIRED)) or any((os.environ.get(name) or "").strip() for name in CLAUDE_KEYS)
+    if shell:
+        detail = f"a key or {CLAUDE_REQUIRED} is set only in this shell; Claude Code started without it lets every call run"
+        report.line("warn", "Claude Code key", detail, fix)
+    elif options is None:
+        detail = "could not read the plugin options (claude plugin configure); with no key the plugin lets every call run"
+        report.line("warn", "Claude Code key", detail, fix)
+    else:
+        why = "the plugin's governance switch is off" if options["key"] else "no key is saved in the plugin options or settings"
+        report.line("FAIL", "Claude Code key", f"{why}, so the plugin lets every call run, {UNGOVERNED}", fix)
+    return False
+
+
 def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list]:
     root = claude_dir()
     settings = as_dict(read_json(root / "settings.json"))
@@ -463,7 +529,8 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
     for key in plugins:
         install = as_dict((as_list(registry["plugins"][key]) or [None])[0])
         folder = Path(str(install.get("installPath") or ""))
-        if as_dict(settings.get("enabledPlugins")).get(key) is True:
+        enabled = as_dict(settings.get("enabledPlugins")).get(key) is True
+        if enabled:
             report.line("ok", "Claude Code plugin", f"{key} is installed and enabled")
         else:
             report.line("FAIL", "Claude Code plugin", f"{key} is installed but not enabled, {UNGOVERNED}", "enable it in /plugin")
@@ -472,16 +539,18 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
         if not found:
             report.line("FAIL", "Claude Code plugin", f"no PreToolUse hook in {shown(folder)}", "reinstall the plugin")
             continue
-        fail_closed(
-            report,
-            "Claude Code plugin",
-            all(handler.get("onFailure") == "block" for *_, handler in found),
-            'onFailure: "block"',
-            "claude-code/hooks/hooks.json",
-        )
+        scripts = []
         for *_, handler in found:
             command = str(handler.get("command")).replace("${CLAUDE_PLUGIN_ROOT}", str(folder))
-            smokes.append(Smoke("Claude Code", hook_path(command, CLAUDE_HOOK_FILE), CLAUDE_EVENT))
+            scripts.append(hook_path(command, CLAUDE_HOOK_FILE))
+            smokes.append(Smoke("Claude Code", scripts[-1], CLAUDE_EVENT))
+        blocks = all(handler.get("onFailure") == "block" for *_, handler in found)
+        # The older mezmo-governance plugin's mezmo_governance_hook.py denies with no key; governance_hook.py allows.
+        keyed = not blocks or not enabled or all(script.name != CLAUDE_HOOK_FILE for script in scripts)
+        if keyed or claude_key(report, key, settings, root / "settings.json"):
+            fail_closed(report, "Claude Code plugin", blocks, 'onFailure: "block"', "claude-code/hooks/hooks.json")
+        else:
+            report.line("warn", "Claude Code plugin", 'onFailure: "block" blocks a hook crash only once a key reaches the hook')
     found = mezmo_handlers(as_dict(settings.get("hooks")).get("PreToolUse"))
     for *_, handler in found:
         report.line("ok", "Claude Code settings", f"PreToolUse hook in {shown(root / 'settings.json')}")
