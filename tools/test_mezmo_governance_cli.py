@@ -289,7 +289,12 @@ class InstallTests(CliTestCase):
                 fresh = self.files()
                 for name in names:
                     path = self.tmp / name
-                    if path.suffix == ".json":
+                    if path.name == "mezmo-governance.json":
+                        # Copilot's config may hold the user's own handlers too, so an older release differs in Mezmo's handler.
+                        older = json.loads(path.read_text())
+                        older["hooks"]["preToolUse"][0]["bash"] = older["hooks"]["preToolUse"][0]["bash"].split(" || ")[0]
+                        path.write_text(json.dumps(older))
+                    elif path.suffix == ".json":
                         path.write_text(json.dumps({**json.loads(path.read_text()), "older": True}))
                     else:
                         path.write_bytes(path.read_bytes() + b"\n// an older release\n")
@@ -308,6 +313,76 @@ class InstallTests(CliTestCase):
                 again = self.cli("install", agent)
                 self.assertIn(f"{agent}: already installed, nothing to change", again.stdout)
                 self.assertFalse(list(self.tmp.rglob("*.mezmo-partial")))
+
+    def test_reinstall_copies_back_a_deleted_hook_script(self) -> None:
+        # The config still runs the hook, so the agent blocks every call until the script is back.
+        scripts = {
+            "codex": "codex/hooks/mezmo_governance_hook.py",
+            "cursor": "home/.cursor/hooks/mezmo_governance_hook.py",
+            "droid": "factory/.factory/hooks/mezmo_governance_hook.py",
+            "windsurf": "home/.codeium/windsurf/hooks/mezmo_governance_hook.py",
+            "antigravity": "home/.gemini/config/hooks/mezmo_governance_hook.py",
+        }
+        for agent, name in scripts.items():
+            with self.subTest(agent=agent):
+                self.assertEqual(self.cli("install", agent).returncode, 0)
+                installed = self.files()
+                (self.tmp / name).unlink()
+
+                result = self.cli("install", agent)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("nothing to change", result.stdout)
+                self.assertEqual(self.files(), installed)
+
+    def test_uninstall_keeps_a_users_handler_that_only_names_the_script(self) -> None:
+        # The user's own command names mezmo_governance_hook.py, but install never wrote it.
+        wrapper = "/home/me/bin/not_mezmo_governance_hook.py.wrapper"
+        nested = {"matcher": "*", "hooks": [{"type": "command", "command": wrapper}]}
+        configs = {
+            "codex": ("codex/hooks.json", lambda config: config["hooks"]["PreToolUse"].append(nested)),
+            "cursor": ("home/.cursor/hooks.json", lambda config: config["hooks"]["preToolUse"].append({"command": wrapper})),
+            "windsurf": ("home/.codeium/windsurf/hooks.json", lambda config: config["hooks"]["pre_run_command"].append({"command": wrapper})),
+            "droid": ("factory/.factory/hooks.json", lambda config: config["PreToolUse"].append(nested)),
+            "antigravity": ("home/.gemini/config/hooks.json", lambda config: config.update(wrapper={"PreToolUse": [nested]})),
+        }
+        for agent, (name, add) in configs.items():
+            with self.subTest(agent=agent):
+                self.assertEqual(self.cli("install", agent).returncode, 0)
+                path = self.tmp / name
+                config = json.loads(path.read_text())
+                add(config)
+                path.write_text(json.dumps(config, indent=2))
+
+                result = self.cli("uninstall", agent)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue(path.is_file(), f"uninstall deleted {name} with the user's handler in it")
+                self.assertIn(wrapper, path.read_text(), result.stdout)
+                self.assertNotIn("MEZMO_GOVERNANCE_HOOK:-", path.read_text())
+        # An older release wrote another guard after ||, or none; uninstall still removes its handlers.
+        self.write(ORIGINALS["codex"])
+        self.assertEqual(self.cli("install", "codex").returncode, 0)
+        path = self.tmp / "codex/hooks.json"
+        config = json.loads(path.read_text())
+        pre = config["hooks"]["PreToolUse"][1]["hooks"][0]
+        pre["command"] = pre["command"].split(" || ")[0] + " || { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
+        path.write_text(json.dumps(config, indent=2))
+        self.assertEqual(self.cli("uninstall", "codex").returncode, 0)
+        self.assertEqual(json.loads(path.read_text()), ORIGINALS["codex"]["codex/hooks.json"])
+
+    def test_cursor_uninstall_keeps_a_hooks_json_the_user_had(self) -> None:
+        # Cursor's own hooks.json can hold only its version; install cannot tell that file from one it wrote.
+        self.write({"home/.cursor/hooks.json": {"version": 1}})
+        self.assertEqual(self.cli("install", "cursor").returncode, 0)
+
+        result = self.cli("uninstall", "cursor")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        path = self.tmp / "home/.cursor/hooks.json"
+        self.assertTrue(path.is_file(), result.stdout)
+        self.assertEqual(json.loads(path.read_text()), {"version": 1})
+        self.assertIn("installed: no", self.status("cursor"))
 
     def test_install_and_uninstall_keep_the_users_json_formatting(self) -> None:
         # Each user writes a different indent and line ending, non-ASCII text and no final newline.
@@ -398,6 +473,39 @@ class InstallTests(CliTestCase):
         registry = json.loads((self.tmp / "claude/plugins/installed_plugins.json").read_text())
         self.assertEqual(list(registry["plugins"]), ["mezmo@mezmo"])
         self.assertIn("installed: yes", self.status("claude-code"))
+
+    def test_copilot_reinstall_without_the_script_keeps_the_users_handlers(self) -> None:
+        # The hook script is gone, and the user added a handler of their own to mezmo-governance.json.
+        self.assertEqual(self.cli("install", "copilot").returncode, 0)
+        config = self.tmp / "copilot/hooks/mezmo-governance.json"
+        own = {"type": "command", "bash": "other-hook", "timeoutSec": 5}
+        edited = json.loads(config.read_text())
+        edited["hooks"]["preToolUse"].insert(0, own)
+        edited["hooks"]["sessionStart"] = [own]
+        config.write_text(json.dumps(edited, indent=2))
+        (self.tmp / "copilot/hooks/mezmo_governance_hook.py").unlink()
+
+        result = self.cli("install", "copilot")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(config.read_text()), edited)
+        self.assertTrue((self.tmp / "copilot/hooks/mezmo_governance_hook.py").is_file())
+        self.assertIn("installed: yes", self.status("copilot"))
+        # An older file's handler is replaced, the user's stay, and the file is backed up first.
+        older = json.loads(config.read_text())
+        older["hooks"]["preToolUse"][1]["bash"] = older["hooks"]["preToolUse"][1]["bash"].split(" || ")[0]
+        config.write_text(json.dumps(older, indent=2))
+        result = self.cli("install", "copilot")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(config.read_text()), edited)
+        (backup,) = self.tmp.glob("copilot/hooks/mezmo-governance.json.mezmo-backup-*")
+        self.assertEqual(json.loads(backup.read_text()), older)
+        self.assertIn(f"backup: {backup}", result.stdout)
+        # Uninstall takes out Mezmo's handlers and keeps the user's.
+        result = self.cli("uninstall", "copilot")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(config.read_text()), {"version": 1, "hooks": {"preToolUse": [own], "sessionStart": [own]}})
+        self.assertFalse((self.tmp / "copilot/hooks/mezmo_governance_hook.py").exists())
 
     def test_reinstalling_copilot_adds_the_guard_to_a_file_without_it(self) -> None:
         # An older file lacks the guard, and VS Code Local runs the tool when the hook crashes.
@@ -531,6 +639,11 @@ class InstallTests(CliTestCase):
         self.write({"gemini/.gemini/settings.json": gemini, "codex/hooks.json": codex, "factory/.factory/hooks.json": droid,
                     "home/.codeium/windsurf/hooks.json": windsurf, "home/.gemini/config/hooks.json": antigravity})
         shutil.copytree(REPO / "pi", self.tmp / "pi/extensions/mezmo-governance")
+        # Each README's first step copies the hook script.
+        for adapter, folder in (("codex", "codex"), ("droid", "factory/.factory"), ("windsurf", "home/.codeium/windsurf"),
+                                ("antigravity", "home/.gemini/config")):
+            (self.tmp / folder / "hooks").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO / adapter / "mezmo_governance_hook.py", self.tmp / folder / "hooks")
         before = self.files()
         result = self.cli("install", "gemini-cli", "codex", "pi", "droid", "windsurf", "antigravity")
         self.assertEqual(result.returncode, 0, result.stdout)
@@ -559,6 +672,32 @@ class InstallTests(CliTestCase):
         self.assertIn("ok    OpenCode options: MEZMO_GOVERNANCE_URL is set (local mock)", doctor.stdout)
         result = self.cli("install", "opencode", "--dry-run", MEZMO_GOVERNANCE_URL="https://api.example.test/governance/workflow/authorize")
         self.assertNotIn("warn", result.stdout)
+
+    def test_opencode_reinstall_keeps_the_users_entry_options(self) -> None:
+        # The plugin folder is gone but opencode.json names it, with an EU URL, a key file of the user's and a timeout.
+        own = {
+            "package": "./mezmo-governance",
+            "options": {
+                "MEZMO_GOVERNANCE_URL": "https://api.eu.example.test/governance/workflow/authorize",
+                "MEZMO_GOVERNANCE_TOKEN": "{file:/srv/keys/mezmo}",
+                "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": 30,
+            },
+        }
+        self.write({"xdg/opencode/opencode.json": {"plugins": ["other-plugin", own]}})
+
+        result = self.cli("install", "opencode")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.tmp / "xdg/opencode/mezmo-governance/index.ts").is_file())
+        plugins = json.loads((self.tmp / "xdg/opencode/opencode.json").read_text())["plugins"]
+        self.assertEqual(plugins, ["other-plugin", own])
+        self.assertIn("URL https://api.eu.example.test/", result.stdout)
+        # An entry without options gets each one install would write.
+        self.write({"xdg/opencode/opencode.json": {"plugins": ["./mezmo-governance"]}})
+        shutil.rmtree(self.tmp / "xdg/opencode/mezmo-governance")
+        self.assertEqual(self.cli("install", "opencode").returncode, 0)
+        (entry,) = json.loads((self.tmp / "xdg/opencode/opencode.json").read_text())["plugins"]
+        self.assertEqual(sorted(entry["options"]), ["MEZMO_GOVERNANCE_TOKEN", "MEZMO_GOVERNANCE_URL"])
 
     def test_opencode_1_is_refused(self) -> None:
         self.fake("opencode", "1.19.0")
@@ -1030,8 +1169,10 @@ class PolicyTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"policy  Mock policy ({self.mock_policy['policy_id']}) for claude-code, cursor, copilot:", result.stdout)
         self.assertIn(f"  keep     allow doctor tool eq probe: - (rule_id {self.seeded['rule_id']})", result.stdout)
-        self.assertIn("  would add deny in claude_code, cursor, copilot tool in Bash, Shell, bash: Shell blocked by Mezmo policy", result.stdout)
-        self.assertIn("  would add allow in cursor, copilot tool in Read, view: -", result.stdout)
+        for space, tool in (("claude_code", "Bash"), ("cursor", "Shell"), ("copilot", "bash")):
+            self.assertIn(f"  would add deny in {space} tool in {tool}: Shell blocked by Mezmo policy", result.stdout)
+        self.assertIn("  would add allow in cursor tool in Read: -", result.stdout)
+        self.assertIn("  would add allow in copilot tool in view: -", result.stdout)
         self.assertIn("--yes", result.stdout)
         self.assertEqual(json.dumps(self.governance["policies"]), before)
         self.assertEqual(self.writes(), [])
@@ -1065,6 +1206,25 @@ class PolicyTests(CliTestCase):
         self.assertEqual(again.returncode, 0, again.stdout)
         self.assertIn("nothing to add", again.stdout)
         self.assertEqual(self.writes(), [])
+
+    def test_starter_rules_pair_each_tool_with_only_the_namespaces_that_use_it(self) -> None:
+        # One rule of every tool in every namespace would also allow Copilot's view in claude_code, and Read in copilot.
+        self.cli("install", "claude-code", "copilot", "pi")
+        result = self.policy("apply", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        deny = {"recourse": "deny", "code": "FORBIDDEN_TOOL", "error_message": "Shell blocked by Mezmo policy"}
+        self.assertEqual(
+            [rule["definition"] for rule in self.mock_policy["rules"][1:]],
+            [
+                {**deny, "tool": {"op": "in", "value": ["Bash"]}, "namespace": {"op": "in", "value": ["claude_code"]}},
+                {**deny, "tool": {"op": "in", "value": ["bash"]}, "namespace": {"op": "in", "value": ["copilot", "pi"]}},
+                {"recourse": "allow", "tool": {"op": "in", "value": ["Read"]}, "namespace": {"op": "in", "value": ["claude_code"]}},
+                {"recourse": "allow", "tool": {"op": "in", "value": ["view"]}, "namespace": {"op": "in", "value": ["copilot"]}},
+                {"recourse": "allow", "tool": {"op": "in", "value": ["read"]}, "namespace": {"op": "in", "value": ["pi"]}},
+            ],
+        )
+        show = self.policy("show")
+        self.assertNotIn("not covered", show.stdout)
 
     def test_starter_rules_name_the_agents_namespaces_and_never_allow_codex_edits(self) -> None:
         # Codex's apply_patch writes files, so no allow rule may name it; each rule names only its agents' namespaces.

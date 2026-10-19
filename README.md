@@ -228,11 +228,11 @@ the agent's space and it checks no arguments. Mezmo decides from every
 matching rule, not the first, so `show` prints the most restrictive one: deny,
 then approval_required, then allow.
 
-`policy apply [agent...]` plans two rules for the named agents, or for every
+`policy apply [agent...]` plans rules for the named agents, or for every
 installed agent: deny their shell tools with `FORBIDDEN_TOOL` and the message
 `Shell blocked by Mezmo policy`, and allow their read tools. Each rule names
-the tool spaces of the agents it lists, so it leaves MCP tools and other
-agents alone. Codex has no read-only tool (`apply_patch` writes files), so it
+one tool and the tool spaces of the agents that have it, so it leaves MCP
+tools, other agents and other agents' tools alone. Codex has no read-only tool (`apply_patch` writes files), so it
 gets the deny rule only, and `smoke --live` sends it the shell call only. It leaves out
 each tool a rule already covers and prints every rule it keeps, with its
 `rule_id`. Without `--yes` it stops there. With `--yes` it opens a draft,
@@ -262,12 +262,14 @@ own override: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`,
 as `<name>.mezmo-backup-<time>` and prints the path. It writes through a
 symlink and keeps the file's mode, such as `0600`. It never writes the
 token. Running it twice changes nothing. Over an older install, it replaces
-each copied file that differs from this checkout and prints `update <file>`.
+each copied file that differs from this checkout and prints `update <file>`,
+and copies back one that is missing.
 Claude Code and Gemini CLI keep their own copy, so for them run `uninstall`,
 then `install`. `uninstall` removes the entries and
 files `install` added, then each key or file that leaves empty, such as an
-empty `hooks` object, a Cursor `hooks.json` with only `version`, or Claude
-Code's empty `enabledPlugins`, even one that was empty before the install. Codex keys hook trust by position, so where
+empty `hooks` object or Claude Code's empty `enabledPlugins`, even one that
+was empty before the install. It keeps a Cursor `hooks.json` with only
+`version`: Cursor may have written that file itself. Codex keys hook trust by position, so where
 other groups follow the Mezmo group in `hooks.json`, `uninstall` leaves an empty
 group in its place and those hooks stay trusted. Where a Mezmo handler sits
 ahead of your own handler in one group, `uninstall` changes no Codex file,

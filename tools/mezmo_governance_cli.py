@@ -65,7 +65,7 @@ Commands:
                            --live sends the shell and read call to Mezmo and prints what the policy decided
   policy show              print the Mezmo agents, policies and rules, and which rule covers each
                            installed agent's shell and read tool
-  policy apply [agent...]  add a deny rule for the shell tools and an allow rule for the read tools
+  policy apply [agent...]  add a deny rule for each shell tool and an allow rule for each read tool
                            that no rule covers; --yes writes them through a Mezmo draft
                            Both take --agent NAME|ID: the Mezmo agent whose policy applies to every
                            installed agent. Without it, the only Mezmo agent, else the one whose
@@ -216,8 +216,33 @@ def need(binary: str) -> str:
 # --- hook entries in JSON configs ---------------------------------------------
 
 
-def runs_hook(handler: Any, field: str) -> bool:
-    return HOOK_FILE in str(as_dict(handler).get(field, ""))
+def head(command: Any) -> str:
+    """The command up to its guard: releases changed only the guard after ||, never the part that runs the script."""
+    return str(command).split(" || ", 1)[0]
+
+
+def commands_in(data: Any, field: str) -> list:
+    """Every field value in the data, at any depth."""
+    if isinstance(data, dict):
+        found = [data[field]] if isinstance(data.get(field), str) else []
+        return found + [command for value in data.values() for command in commands_in(value, field)]
+    return [command for value in data for command in commands_in(value, field)] if isinstance(data, list) else []
+
+
+def written(adapter: str, folder: Path, default: Path, field: str = "command") -> frozenset:
+    """The head of each hook command install writes, in the folder in use, and as the README's manual steps write it."""
+    raw = json.loads((REPO / adapter / "hooks.example.json").read_text(encoding="utf-8"))
+    try:
+        data = example(adapter, "hooks.example.json", folder, default)
+    except Failure:
+        data = {}  # install refuses such a folder, so it wrote no command there
+    return frozenset(head(command) for command in commands_in(data, field) + commands_in(raw, field))
+
+
+def runs_hook(handler: Any, field: str, heads: frozenset) -> bool:
+    """Whether the handler runs a command install writes; a user's command that only names the script is not ours."""
+    command = as_dict(handler).get(field)
+    return isinstance(command, str) and head(command) in heads
 
 
 def merged(config: dict, example: dict, field: str) -> dict:
@@ -233,7 +258,7 @@ def merged(config: dict, example: dict, field: str) -> dict:
     return result
 
 
-def without_hook(config: dict, field: str) -> dict:
+def without_hook(config: dict, field: str, heads: frozenset) -> dict:
     """The config with every entry that runs the hook taken out.
 
     Codex keys hook trust by group index, so a removed group that has groups after it
@@ -245,12 +270,12 @@ def without_hook(config: dict, field: str) -> dict:
         kept = []
         for group in as_list(hooks[event]):
             if isinstance(group, dict) and isinstance(group.get("hooks"), list):
-                inner = [handler for handler in group["hooks"] if not runs_hook(handler, field)]
+                inner = [handler for handler in group["hooks"] if not runs_hook(handler, field, heads)]
                 if inner or not group["hooks"]:
                     kept.append({**group, "hooks": inner})
                 else:
                     kept.append(None)
-            elif not runs_hook(group, field):
+            elif not runs_hook(group, field, heads):
                 kept.append(group)
         while kept and kept[-1] is None:
             kept.pop()
@@ -264,7 +289,7 @@ def without_hook(config: dict, field: str) -> dict:
     return result
 
 
-def moved_handlers(config: dict, field: str) -> list:
+def moved_handlers(config: dict, field: str, heads: frozenset) -> list:
     """'<event> group <g> handler <h> (<command>)' for each other handler that without_hook moves up.
 
     Codex has no handler type that neither runs nor warns (codex-rs/hooks/src/engine/discovery.rs,
@@ -275,7 +300,7 @@ def moved_handlers(config: dict, field: str) -> list:
         for g, group in enumerate(as_list(groups)):
             kept = 0
             for h, handler in enumerate(as_list(as_dict(group).get("hooks"))):
-                if not runs_hook(handler, field):
+                if not runs_hook(handler, field, heads):
                     if kept != h:
                         moved.append(f"{event} group {g} handler {h} ({as_dict(handler).get(field)})")
                     kept += 1
@@ -290,13 +315,13 @@ def merge_steps(path: Path, example: dict, events: tuple, field: str = "command"
     return [Step(f"add the Mezmo hook entries to {shown(path)}", (path,), lambda: write_json(path, merged(load_object(path), example, field)))]
 
 
-def unmerge_steps(path: Path, field: str = "command", leftover: tuple = ()) -> list:
+def unmerge_steps(path: Path, heads: frozenset, field: str = "command", leftover: tuple = ()) -> list:
     config = load_object(path)
-    if without_hook(config, field) == config:
+    if without_hook(config, field, heads) == config:
         return []
 
     def run() -> None:
-        rest = without_hook(load_object(path), field)
+        rest = without_hook(load_object(path), field, heads)
         if set(rest) <= set(leftover):
             path.unlink()
         else:
@@ -310,7 +335,9 @@ def hook_copy(source: Path, target: Path) -> Step:
 
 
 def hook_refresh(source: Path, target: Path) -> list:
-    """A step to replace an installed copy that differs from this repository's file."""
+    """A step to copy the file where it is missing, or to replace an installed copy that differs from this repository's file."""
+    if not target.is_file():
+        return [hook_copy(source, target)]
     if not differs(target, source.read_bytes()):
         return []
     return [Step(f"update {shown(target)} from {source.relative_to(REPO)}", (), lambda: copy_file(source, target))]
@@ -335,7 +362,7 @@ def example(adapter: str, name: str, folder: Path, default: Path) -> dict:
 
 
 def file_hook_agent(
-    adapter: str, folder: Callable[[], Path], event: str, next_step: str, leftover: tuple = (), trust_by_position: bool = False,
+    adapter: str, folder: Callable[[], Path], event: str, next_step: str, trust_by_position: bool = False,
     default: str = "", gates: tuple = (),
 ) -> Installer:
     """Codex, Cursor and Windsurf: a hook script plus entries merged into hooks.json; default is the folder under HOME.
@@ -344,6 +371,9 @@ def file_hook_agent(
     """
     events = gates or (event,)
 
+    def home_folder() -> Path:
+        return doctor.home() / (default or f".{adapter}")
+
     def installed() -> Optional[str]:
         path = folder() / "hooks.json"
         hooks = as_dict(load_object(path).get("hooks"))
@@ -351,13 +381,14 @@ def file_hook_agent(
 
     def install() -> list:
         source, target = REPO / adapter / HOOK_FILE, folder() / "hooks" / HOOK_FILE
-        steps = hook_refresh(source, target) if installed() else [hook_copy(source, target)]
-        data = example(adapter, "hooks.example.json", folder(), doctor.home() / (default or f".{adapter}"))
+        steps = hook_refresh(source, target)
+        data = example(adapter, "hooks.example.json", folder(), home_folder())
         return steps + merge_steps(folder() / "hooks.json", data, events)
 
     def uninstall() -> list:
         path = folder() / "hooks.json"
-        moved = moved_handlers(load_object(path), "command") if trust_by_position else []
+        heads = written(adapter, folder(), home_folder())
+        moved = moved_handlers(load_object(path), "command", heads) if trust_by_position else []
         if moved:
             raise Failure(
                 f"removing the Mezmo handler from {shown(path)} would give a lower handler index to"
@@ -365,7 +396,7 @@ def file_hook_agent(
                 f" that runs {HOOK_FILE} from {shown(path)}, run this command again to delete the hook script,"
                 f" then start {adapter}, run /hooks and trust the moved hooks again"
             )
-        return unmerge_steps(path, leftover=leftover) + hook_removal(folder() / "hooks" / HOOK_FILE, folder())
+        return unmerge_steps(path, heads) + hook_removal(folder() / "hooks" / HOOK_FILE, folder())
 
     return Installer(installed, install, uninstall, next_step)
 
@@ -383,19 +414,24 @@ def copilot() -> Installer:
         script, config = files()
         default = doctor.home() / ".copilot"
         data = example("copilot", "hooks.example.json", doctor.copilot_dir(), default)
-        if installed():
-            steps = hook_refresh(REPO / "copilot" / HOOK_FILE, script)
-            if load_object(config) != data:
-                steps.append(Step(f"update {shown(config)} from copilot/hooks.example.json", (config,), lambda: write_json(config, data)))
-            return steps
-        return [
-            hook_copy(REPO / "copilot" / HOOK_FILE, script),
-            Step(f"write {shown(config)}", (), lambda: write_json(config, data)),
-        ]
+        steps = hook_refresh(REPO / "copilot" / HOOK_FILE, script)
+        if not config.is_file():
+            return steps + [Step(f"write {shown(config)}", (), lambda: write_json(config, data))]
+        heads = written("copilot", doctor.copilot_dir(), default, "bash")
+
+        def fresh() -> dict:
+            """The file with each handler install wrote replaced by this release's, and the user's own kept."""
+            return merged(without_hook(load_object(config), "bash", heads), data, "bash")
+
+        if fresh() != load_object(config):
+            steps.append(Step(f"update {shown(config)} from copilot/hooks.example.json", (config,), lambda: write_json(config, fresh())))
+        return steps
 
     def uninstall() -> list:
         script, config = files()
-        return hook_removal(config, doctor.copilot_dir()) + hook_removal(script, doctor.copilot_dir())
+        heads = written("copilot", doctor.copilot_dir(), doctor.home() / ".copilot", "bash")
+        # The file is install's own, so it goes once only its version is left; the user's own handlers stay.
+        return unmerge_steps(config, heads, "bash", leftover=("version",)) + hook_removal(script, doctor.copilot_dir())
 
     return Installer(installed, install, uninstall, "")
 
@@ -446,27 +482,34 @@ def opencode() -> Installer:
             for path in sorted(source.rglob("*")):
                 target = folder / path.relative_to(source)
                 if path.is_file() and not {"test", "node_modules", "README.md"} & set(path.relative_to(source).parts):
-                    steps += hook_refresh(path, target) if target.is_file() else [hook_copy(path, target)]
+                    steps += hook_refresh(path, target)
             return steps
         version = doctor.binary_version(shutil.which("opencode") or "opencode")
         if version is not None and version[0] < 2:
             raise Failure("install does not handle OpenCode 1.x; follow 'Install on 1.x' in opencode/README.md")
         config, folder, key_file = paths()
-        url = os.environ.get("MEZMO_GOVERNANCE_URL") or doctor.DEFAULT_URL
+        # An entry the user already has keeps its options, such as an EU URL, their own key file or a timeout.
+        mine = next((as_dict(item) for item in as_list(load_object(config).get("plugins")) if ours(item)), {})
+        options = {
+            "MEZMO_GOVERNANCE_URL": os.environ.get("MEZMO_GOVERNANCE_URL") or doctor.DEFAULT_URL,
+            "MEZMO_GOVERNANCE_TOKEN": f"{{file:{key_file}}}",
+            **as_dict(mine.get("options")),
+        }
+        url = str(options["MEZMO_GOVERNANCE_URL"])
         if doctor.local_url(url):
             print(
                 f"warn  opencode: MEZMO_GOVERNANCE_URL {doctor.shown_url(url)} is a local mock, and opencode.json keeps it"
                 " after the mock stops; set MEZMO_GOVERNANCE_URL in opencode.json to Mezmo's when you are done",
                 flush=True,
             )
-        entry = {
-            "package": "./mezmo-governance",
-            "options": {"MEZMO_GOVERNANCE_URL": url, "MEZMO_GOVERNANCE_TOKEN": f"{{file:{key_file}}}"},
-        }
+        entry = {**mine, "package": "./mezmo-governance", "options": options}
 
         def add_entry() -> None:
             data = load_object(config)
-            data["plugins"] = [item for item in as_list(data.get("plugins")) if not ours(item)] + [entry]
+            plugins = as_list(data.get("plugins"))
+            # The entry keeps its place in the list.
+            first = next((index for index, item in enumerate(plugins) if ours(item)), len(plugins))
+            data["plugins"] = plugins[:first] + [entry] + [item for item in plugins[first:] if not ours(item)]
             write_json(config, data)
 
         def copy() -> None:
@@ -637,6 +680,9 @@ def droid() -> Installer:
     def events(config: dict) -> dict:
         return {key: value for key, value in config.items() if isinstance(value, list)}
 
+    def home_folder() -> Path:
+        return doctor.home() / ".factory"
+
     def installed() -> Optional[str]:
         path, _ = paths()
         return shown(path) if doctor.mezmo_handlers(load_object(path).get("PreToolUse")) else None
@@ -662,7 +708,7 @@ def droid() -> Installer:
                 f"Droid reads {shown(legacy)} only while {shown(path)} is absent, so a new {path.name} would turn its hooks off."
                 f" Nothing changed. Start droid, run /hooks and save once to move it to {shown(path)}, then run this command again"
             )
-        data = example("droid", "hooks.example.json", doctor.droid_dir(), doctor.home() / ".factory")
+        data = example("droid", "hooks.example.json", doctor.droid_dir(), home_folder())
         lost = hidden(data)
         if lost:
             raise Failure(
@@ -677,7 +723,8 @@ def droid() -> Installer:
         return [hook_copy(source, script), Step(f"add the Mezmo hook entries to {shown(path)}", (path,), add)]
 
     def without(config: dict) -> dict:
-        rest = as_dict(without_hook({"hooks": events(config)}, "command").get("hooks"))
+        heads = written("droid", doctor.droid_dir(), home_folder())
+        rest = as_dict(without_hook({"hooks": events(config)}, "command", heads).get("hooks"))
         return {key: rest.get(key, value) for key, value in config.items() if key in rest or not isinstance(value, list)}
 
     def uninstall() -> list:
@@ -731,6 +778,9 @@ def antigravity() -> Installer:
     def paths() -> tuple:
         return doctor.antigravity_dir() / "hooks.json", doctor.antigravity_dir() / "hooks" / HOOK_FILE
 
+    def home_folder() -> Path:
+        return doctor.home() / ".gemini" / "config"
+
     def installed() -> Optional[str]:
         path, _ = paths()
         return shown(path) if doctor.antigravity_hooks(load_object(path)) else None
@@ -752,7 +802,7 @@ def antigravity() -> Installer:
                 f"{shown(path)} already has a hook named {name}, and it does not run {HOOK_FILE}."
                 f" Nothing changed. Rename or remove it, then run this command again"
             )
-        data = example("antigravity", "hooks.example.json", doctor.antigravity_dir(), doctor.home() / ".gemini" / "config")
+        data = example("antigravity", "hooks.example.json", doctor.antigravity_dir(), home_folder())
 
         def add() -> None:
             write_json(path, {**load_object(path), **data})
@@ -762,10 +812,11 @@ def antigravity() -> Installer:
     def without(config: dict) -> dict:
         """The config with each handler that runs the hook taken out, and each named hook that held only those."""
         rest = {}
+        heads = written("antigravity", doctor.antigravity_dir(), home_folder())
         for key, spec in config.items():
             if isinstance(spec, dict):
                 events = {"hooks": {event: value for event, value in spec.items() if isinstance(value, list)}}
-                left = without_hook(events, "command")
+                left = without_hook(events, "command", heads)
                 if left != events:
                     kept = as_dict(left.get("hooks"))
                     if not kept:
@@ -799,7 +850,8 @@ INSTALLERS = {
         "Start codex, run /hooks, and trust the Mezmo hook entries: Codex skips a hook until you trust it.",
         trust_by_position=True,
     ),
-    "cursor": file_hook_agent("cursor", doctor.cursor_dir, "preToolUse", "", leftover=("version",)),
+    # Cursor's own hooks.json may hold only its version, so uninstall keeps what is left: it cannot tell who wrote the file.
+    "cursor": file_hook_agent("cursor", doctor.cursor_dir, "preToolUse", ""),
     "gemini-cli": gemini_cli(),
     "copilot": copilot(),
     "goose": goose(),
@@ -1306,15 +1358,17 @@ def assigned(name: str, records: list, policies: list, fixed: Optional[dict]) ->
 
 
 def starter_rules(rules: list, names: list) -> list:
-    """The starter rules, each listing the agents' tools that no rule covers yet, in those agents' namespaces only."""
+    """The starter rules: one for each agent tool no rule covers yet, in the namespaces of the agents that have that tool.
+
+    A rule naming several tools and several namespaces would match each tool in every namespace, such as view in claude_code.
+    """
     added = []
     for kind, fields in STARTER.items():
         agents = [AGENTS[name] for name in names if getattr(AGENTS[name], kind)]
         agents = [agent for agent in agents if not covering(rules, agent.namespace, getattr(agent, kind))]
-        if agents:
-            tools = list(dict.fromkeys(getattr(agent, kind) for agent in agents))
-            spaces = list(dict.fromkeys(agent.namespace for agent in agents))
-            added.append({**fields, "tool": {"op": "in", "value": tools}, "namespace": {"op": "in", "value": spaces}})
+        for tool in dict.fromkeys(getattr(agent, kind) for agent in agents):
+            spaces = list(dict.fromkeys(agent.namespace for agent in agents if getattr(agent, kind) == tool))
+            added.append({**fields, "tool": {"op": "in", "value": [tool]}, "namespace": {"op": "in", "value": spaces}})
     return added
 
 
