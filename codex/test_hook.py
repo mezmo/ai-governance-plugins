@@ -771,6 +771,31 @@ SHARED_DEFINITIONS = (
     "append_audit",
 )
 SIBLING_ADAPTERS = ("cursor", "gemini-cli", "copilot", "goose", "droid", "windsurf", "antigravity")
+# The Claude Code hook is its own port (typing spellings, its own config and status file),
+# so only these shared parts must match it word for word.
+CLAUDE_CODE_HOOK = Path("claude-code") / "scripts" / "governance_hook.py"
+CLAUDE_CODE_SHARED_DEFINITIONS = (
+    "DEFAULT_TIMEOUT_SECONDS",
+    "MAX_TIMEOUT_SECONDS",
+    "DEFAULT_POLL_INTERVAL_SECONDS",
+    "MIN_POLL_INTERVAL_SECONDS",
+    "DEFAULT_AUDIT_LOG",
+    "MAX_RESULT_PREVIEW_CHARACTERS",
+    "HookContractError",
+    "required_string",
+    "call_digest",
+    "MAX_REQUEST_ID_CHARACTERS",
+    "bounded_request_id",
+    "timeout_seconds",
+    "poll_interval_seconds",
+    "audit_log_path",
+    "MAX_ERROR_DETAIL_CHARACTERS",
+    "error_detail",
+    "http_failure",
+    "decision_from_post_body",
+    "result_preview",
+    "append_audit",
+)
 
 
 def top_level_definitions(path: Path) -> dict[str, str]:
@@ -805,6 +830,17 @@ class SharedCoreDriftTests(unittest.TestCase):
                     self.assertEqual(sibling.get(name), reference[name])
             with self.subTest(adapter=path.parent.name, definition="call_identity"):
                 self.assertIn("bounded_request_id", sibling["call_identity"])
+
+    def test_shared_core_matches_the_claude_code_hook(self) -> None:
+        self.assertTrue(set(CLAUDE_CODE_SHARED_DEFINITIONS) <= set(SHARED_DEFINITIONS))
+        reference = top_level_definitions(HOOK_PATH)
+        path = HOOK_PATH.parent.parent / CLAUDE_CODE_HOOK
+        if not path.is_file():
+            self.skipTest("the Claude Code hook is not checked out next to this one")
+        claude_code = top_level_definitions(path)
+        for name in CLAUDE_CODE_SHARED_DEFINITIONS:
+            with self.subTest(definition=name):
+                self.assertEqual(claude_code.get(name), reference[name])
 
 
 PRE_EVENT = "PreToolUse"
