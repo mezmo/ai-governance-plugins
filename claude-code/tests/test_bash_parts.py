@@ -4,11 +4,11 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
-import bash_parts  # noqa: E402
+import governance_hook as hook  # noqa: E402
 
 
 def read(command):
-    parts = bash_parts.split_command(command)
+    parts = hook.split_command(command)
     return None if parts is None else [(p.text, p.program, list(p.args), p.after) for p in parts]
 
 
@@ -86,7 +86,7 @@ class SplitTests(unittest.TestCase):
 
 def flags(command):
     """The flags of the command's first part, as {name: value}."""
-    return dict(bash_parts.split_command(command)[0].flags)
+    return dict(hook.split_command(command)[0].flags)
 
 
 class FlagTests(unittest.TestCase):
@@ -115,7 +115,7 @@ class FlagTests(unittest.TestCase):
     def test_what_is_not_a_flag(self):
         self.assertEqual(flags("rm -- -f"), {})
         self.assertEqual(flags("cat -"), {})
-        self.assertEqual(dict(bash_parts.split_command("rm -rf $DIR")[0].flags), {})
+        self.assertEqual(dict(hook.split_command("rm -rf $DIR")[0].flags), {})
 
 
 class UnreadableTests(unittest.TestCase):
@@ -148,7 +148,7 @@ class WholeCommandTests(unittest.TestCase):
             "diff <(ls a) <(ls b)", "tee >(gzip > out.gz)", "cat <<EOF\nrm -rf /\nEOF", "", "   ", "# only a comment",
         ):
             with self.subTest(command=command):
-                self.assertIsNone(bash_parts.split_command(command))
+                self.assertIsNone(hook.split_command(command))
 
 
 if __name__ == "__main__":

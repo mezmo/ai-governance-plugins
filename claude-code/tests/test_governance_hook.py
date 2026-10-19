@@ -907,7 +907,7 @@ class BashPartsTests(unittest.TestCase):
 
     def test_a_parser_failure_never_blocks_the_call(self) -> None:
         http = FakeHttp([(200, {"approved": True})])
-        with patch.object(hook.bash_parts, "split_command", side_effect=RecursionError("deep")):
+        with patch.object(hook, "split_command", side_effect=RecursionError("deep")):
             self.assertIsNone(hook.handle_event(bash_event("ls && pwd"), http=http))
         self.assertEqual(http.calls[0][2]["items"], [{"id": 0, "tool_namespace": "claude_code", "tool_name": "Bash", "arguments": {"command": "ls && pwd"}}])
 
