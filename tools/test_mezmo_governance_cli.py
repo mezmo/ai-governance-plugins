@@ -1155,8 +1155,10 @@ class PolicyTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(f"policy  Mock policy ({self.mock_policy['policy_id']}) for claude-code, cursor, copilot:", result.stdout)
         self.assertIn(f"  keep     allow doctor tool eq probe: - (rule_id {self.seeded['rule_id']})", result.stdout)
-        self.assertIn("  would add deny in claude_code, cursor, copilot tool in Bash, Shell, bash: Shell blocked by Mezmo policy", result.stdout)
-        self.assertIn("  would add allow in claude_code, cursor, copilot tool in Read, view: -", result.stdout)
+        for space, tool in (("claude_code", "Bash"), ("cursor", "Shell"), ("copilot", "bash")):
+            self.assertIn(f"  would add deny in {space} tool in {tool}: Shell blocked by Mezmo policy", result.stdout)
+        self.assertIn("  would add allow in claude_code, cursor tool in Read: -", result.stdout)
+        self.assertIn("  would add allow in copilot tool in view: -", result.stdout)
         self.assertIn("--yes", result.stdout)
         self.assertEqual(json.dumps(self.governance["policies"]), before)
         self.assertEqual(self.writes(), [])
@@ -1191,6 +1193,25 @@ class PolicyTests(CliTestCase):
         self.assertEqual(again.returncode, 0, again.stdout)
         self.assertIn("nothing to add", again.stdout)
         self.assertEqual(self.writes(), [])
+
+    def test_starter_rules_pair_each_tool_with_only_the_namespaces_that_use_it(self) -> None:
+        # One rule of every tool in every namespace would also allow Copilot's view in claude_code, and Read in copilot.
+        self.cli("install", "claude-code", "copilot", "pi")
+        result = self.policy("apply", "--yes")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        deny = {"recourse": "deny", "code": "FORBIDDEN_TOOL", "error_message": "Shell blocked by Mezmo policy"}
+        self.assertEqual(
+            [rule["definition"] for rule in self.mock_policy["rules"][1:]],
+            [
+                {**deny, "tool": {"op": "in", "value": ["Bash"]}, "namespace": {"op": "in", "value": ["claude_code"]}},
+                {**deny, "tool": {"op": "in", "value": ["bash"]}, "namespace": {"op": "in", "value": ["copilot", "pi"]}},
+                {"recourse": "allow", "tool": {"op": "in", "value": ["Read"]}, "namespace": {"op": "in", "value": ["claude_code"]}},
+                {"recourse": "allow", "tool": {"op": "in", "value": ["view"]}, "namespace": {"op": "in", "value": ["copilot"]}},
+                {"recourse": "allow", "tool": {"op": "in", "value": ["read"]}, "namespace": {"op": "in", "value": ["pi"]}},
+            ],
+        )
+        show = self.policy("show")
+        self.assertNotIn("not covered", show.stdout)
 
     def test_starter_rules_name_the_agents_namespaces_and_never_allow_codex_edits(self) -> None:
         # Codex's apply_patch writes files, so no allow rule may name it; each rule names only its agents' namespaces.

@@ -225,11 +225,11 @@ the agent's space and it checks no arguments. Mezmo decides from every
 matching rule, not the first, so `show` prints the most restrictive one: deny,
 then approval_required, then allow.
 
-`policy apply [agent...]` plans two rules for the named agents, or for every
+`policy apply [agent...]` plans rules for the named agents, or for every
 installed agent: deny their shell tools with `FORBIDDEN_TOOL` and the message
 `Shell blocked by Mezmo policy`, and allow their read tools. Each rule names
-the tool spaces of the agents it lists, so it leaves MCP tools and other
-agents alone. Codex has no read-only tool (`apply_patch` writes files), so it
+one tool and the tool spaces of the agents that have it, so it leaves MCP
+tools, other agents and other agents' tools alone. Codex has no read-only tool (`apply_patch` writes files), so it
 gets the deny rule only, and `smoke --live` sends it the shell call only. It leaves out
 each tool a rule already covers and prints every rule it keeps, with its
 `rule_id`. Without `--yes` it stops there. With `--yes` it opens a draft,

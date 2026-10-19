@@ -65,7 +65,7 @@ Commands:
                            --live sends the shell and read call to Mezmo and prints what the policy decided
   policy show              print the Mezmo agents, policies and rules, and which rule covers each
                            installed agent's shell and read tool
-  policy apply [agent...]  add a deny rule for the shell tools and an allow rule for the read tools
+  policy apply [agent...]  add a deny rule for each shell tool and an allow rule for each read tool
                            that no rule covers; --yes writes them through a Mezmo draft
                            Both take --agent NAME|ID: the Mezmo agent whose policy applies to every
                            installed agent. Without it, the only Mezmo agent, else the one whose
@@ -1357,15 +1357,17 @@ def assigned(name: str, records: list, policies: list, fixed: Optional[dict]) ->
 
 
 def starter_rules(rules: list, names: list) -> list:
-    """The starter rules, each listing the agents' tools that no rule covers yet, in those agents' namespaces only."""
+    """The starter rules: one for each agent tool no rule covers yet, in the namespaces of the agents that have that tool.
+
+    A rule naming several tools and several namespaces would match each tool in every namespace, such as view in claude_code.
+    """
     added = []
     for kind, fields in STARTER.items():
         agents = [AGENTS[name] for name in names if getattr(AGENTS[name], kind)]
         agents = [agent for agent in agents if not covering(rules, agent.namespace, getattr(agent, kind))]
-        if agents:
-            tools = list(dict.fromkeys(getattr(agent, kind) for agent in agents))
-            spaces = list(dict.fromkeys(agent.namespace for agent in agents))
-            added.append({**fields, "tool": {"op": "in", "value": tools}, "namespace": {"op": "in", "value": spaces}})
+        for tool in dict.fromkeys(getattr(agent, kind) for agent in agents):
+            spaces = list(dict.fromkeys(agent.namespace for agent in agents if getattr(agent, kind) == tool))
+            added.append({**fields, "tool": {"op": "in", "value": [tool]}, "namespace": {"op": "in", "value": spaces}})
     return added
 
 
