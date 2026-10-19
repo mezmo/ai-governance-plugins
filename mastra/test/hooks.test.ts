@@ -7,6 +7,7 @@ import test from "node:test";
 import { AGENT, callIdentity } from "../client.ts";
 import {
   createMezmoGovernanceHooks,
+  governTools,
   sessionFromHook,
   toolCallIdFromHook,
 } from "../mezmo-governance.ts";
@@ -220,6 +221,49 @@ test(
         await hooks.afterToolCall({ ...hook, output: { temperatureCelsius: 21 } });
         const line = JSON.parse((await readFile(path, "utf8")).trim());
         assert.equal(line.request_id, requestId);
+      });
+    }),
+);
+
+// A stand-in for Mastra's Tool class: governTools must keep the prototype.
+class FakeTool {
+  calls: unknown[] = [];
+  execute = async (input: unknown, context: unknown) => {
+    this.calls.push([input, context]);
+    return { ok: true };
+  };
+}
+
+test(
+  "governTools asks Mezmo before a per-step tool and skips a denied one",
+  () =>
+    withEnv(ENV, async () => {
+      const dir = await mkdtemp(join(tmpdir(), "mezmo-gov-"));
+      await withEnv({ MEZMO_GOVERNANCE_AUDIT_LOG: join(dir, "audit.jsonl") }, async () => {
+        const asked: string[] = [];
+        const hooks = createMezmoGovernanceHooks({
+          fetchImpl: async (_url, init) => {
+            const name = JSON.parse(String(init?.body)).items[0].tool_name;
+            asked.push(name);
+            return jsonResponse(200, { approved: name !== "delete_note" });
+          },
+        });
+        const remove = new FakeTool();
+        const read = new FakeTool();
+        const plain = { description: "no execute" };
+        const tools = governTools({ delete_note: remove, read_note: read, plain }, hooks);
+        const context = { agent: { threadId: "thread-1", toolCallId: "call-1" } };
+
+        assert.ok(tools.delete_note instanceof FakeTool);
+        assert.equal(tools.plain, plain);
+        const denied = await tools.delete_note.execute({ id: 1 }, context);
+        assert.match(String(denied), /Mezmo Governance denied this exact tool call/);
+        assert.deepEqual(remove.calls, []);
+
+        assert.deepEqual(await tools.read_note.execute({ id: 1 }, context), { ok: true });
+        assert.deepEqual(read.calls, [[{ id: 1 }, context]]);
+        assert.deepEqual(asked, ["delete_note", "read_note"]);
+        assert.match(await readFile(join(dir, "audit.jsonl"), "utf8"), /"tool_name":"read_note"/);
       });
     }),
 );

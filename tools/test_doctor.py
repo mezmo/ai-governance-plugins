@@ -97,8 +97,10 @@ class DoctorTestCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         self.home = self.tmp / "home"
         self.bin = self.tmp / "bin"
-        self.home.mkdir()
-        self.bin.mkdir()
+        self.managed = self.tmp / "managed"
+        self.project = self.tmp / "project"
+        for folder in (self.home, self.bin, self.managed, self.project):
+            folder.mkdir()
         (self.bin / "python3").symlink_to(sys.executable)
         self.stub = StubMezmo()
         self.addCleanup(self.stub.close)
@@ -166,8 +168,14 @@ class DoctorTestCase(unittest.TestCase):
                 base.pop(key, None)
             else:
                 base[key] = value
+        # The managed settings folder moves into the temp folder, so this machine's own policy stays out.
+        runner = (
+            "import sys; from pathlib import Path; sys.path.insert(0, sys.argv[1]); import doctor;"
+            " doctor.claude_managed_dir = lambda: Path(sys.argv[2]); sys.exit(doctor.main(sys.argv[3:]))"
+        )
         result = subprocess.run(
-            [sys.executable, str(DOCTOR), *args],
+            [sys.executable, "-c", runner, str(DOCTOR.parent), str(self.managed), *args],
+            cwd=self.project,
             env=base,
             capture_output=True,
             text=True,
@@ -521,6 +529,58 @@ class ClaudeCodeTests(DoctorTestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 line = self.assertStatus(result, "Claude Code hooks", "FAIL")
                 self.assertIn("sets disableAllHooks, so every tool call runs ungoverned", line)
+
+    def test_managed_and_project_settings_that_drop_the_hook_fail(self) -> None:
+        self.agent("claude", "2.1.300 (Claude Code)")
+        project = self.project / ".claude"
+        cases = [
+            (self.install_plugin, self.managed / "managed-settings.json", {"disableAllHooks": True}, "Claude Code hooks"),
+            (self.install_plugin, self.managed / "managed-settings.d" / "10-hooks.json", {"disableAllHooks": True}, "Claude Code hooks"),
+            (self.install_plugin, project / "settings.json", {"disableAllHooks": True}, "Claude Code hooks"),
+            (self.install_plugin, project / "settings.local.json", {"enabledPlugins": {"mezmo@mezmo": False}}, "Claude Code plugin"),
+            (self.install_plugin, self.managed / "managed-settings.json", {"allowManagedHooksOnly": True}, "Claude Code plugin"),
+            (self.install_settings, self.managed / "managed-settings.json", {"allowManagedHooksOnly": True}, "Claude Code settings"),
+            (self.install_settings, self.managed / "managed-settings.json", {"strictPluginOnlyCustomization": ["hooks"]}, "Claude Code settings"),
+        ]
+        for install, path, content, subject in cases:
+            with self.subTest(path=path.name, content=content):
+                for folder in (self.home / ".claude", self.managed, project):
+                    shutil.rmtree(folder, ignore_errors=True)
+                self.managed.mkdir()
+                install()
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(content))
+
+                result = self.doctor()
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                failed = [line for line in self.lines(result, subject) if line.startswith("FAIL")]
+                self.assertTrue(failed and path.name in failed[-1], result.stdout)
+
+    def test_a_plugin_managed_settings_force_on_survives_their_switches(self) -> None:
+        self.agent("claude", "2.1.300 (Claude Code)")
+        self.install_plugin()
+        forced = {"enabledPlugins": {"mezmo@mezmo": True}, "allowManagedHooksOnly": True}
+        (self.managed / "managed-settings.json").write_text(json.dumps(forced))
+        (self.project / ".claude").mkdir()
+        (self.project / ".claude" / "settings.json").write_text(json.dumps({"disableAllHooks": True}))
+
+        result = self.doctor()
+
+        self.assertEqual(self.lines(result, "Claude Code hooks"), [], result.stdout)
+        self.assertFalse(any(line.startswith("FAIL") for line in self.lines(result, "Claude Code plugin")), result.stdout)
+
+    def test_a_later_managed_drop_in_overrides_managed_settings_json(self) -> None:
+        # Claude Code merges managed-settings.json first, then managed-settings.d/ A to Z; the later file wins.
+        self.agent("claude", "2.1.300 (Claude Code)")
+        self.install_plugin()
+        (self.managed / "managed-settings.json").write_text(json.dumps({"enabledPlugins": {"mezmo@mezmo": True}}))
+        (self.managed / "managed-settings.d").mkdir()
+        (self.managed / "managed-settings.d" / "90-plugins.json").write_text(json.dumps({"enabledPlugins": {"mezmo@mezmo": False}}))
+
+        result = self.doctor()
+
+        self.assertIn("90-plugins.json turns mezmo@mezmo off", self.lines(result, "Claude Code plugin")[0])
 
     def test_the_older_mezmo_governance_plugin_is_still_checked(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")
@@ -1015,6 +1075,28 @@ class OtherHookAgentTests(DoctorTestCase):
                 self.write(".copilot/hooks/mezmo-governance.json", {"version": 1, "hooks": {"preToolUse": [{**good, "bash": command}]}})
                 lines = self.lines(self.doctor(), "Copilot hook")
                 self.assertTrue(any(line.startswith(status) and "exit 2 guard" in line for line in lines), lines)
+
+    def test_copilot_powershell_command_is_checked(self) -> None:
+        # Copilot on Windows runs the powershell field; a powershell-only entry is still our hook.
+        self.agent("copilot", "GitHub Copilot CLI 1.0.98.")
+        self.copy_hook("copilot", ".copilot/hooks/mezmo_governance_hook.py")
+        good = json.loads((REPO / "copilot/hooks.example.json").read_text())["hooks"]["preToolUse"][0]
+        powershell = good["powershell"]
+        cases = [
+            ({**good}, "ok", "exit 2 guard"),
+            ({**good, "powershell": powershell.split(";")[0]}, "FAIL", "exit 2 guard"),
+            ({**good, "powershell": powershell.replace(" preToolUse", "")}, "FAIL", "event name preToolUse"),
+            ({key: value for key, value in good.items() if key != "bash"}, "ok", "preToolUse hook in"),
+        ]
+        for handler, status, words in cases:
+            with self.subTest(handler=handler):
+                self.write(".copilot/hooks/mezmo-governance.json", {"version": 1, "hooks": {"preToolUse": [handler]}})
+                result = self.doctor()
+                lines = self.lines(result, "Copilot hook (PowerShell)")
+                self.assertTrue(any(line.startswith(status) and words in line for line in lines), lines)
+                # Off Windows, Copilot runs the bash field: a handler without one runs no hook here.
+                missing = [line for line in self.lines(result, "Copilot hook") if "has no bash command" in line]
+                self.assertEqual(bool(missing), "bash" not in handler, result.stdout)
 
     def test_copilot_home_moves_the_hook_folder(self) -> None:
         self.agent("copilot", "GitHub Copilot CLI 1.0.95.")

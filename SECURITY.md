@@ -29,7 +29,8 @@ Known limits, not vulnerabilities:
   ungoverned unless the project has the hook in `.cursor/hooks.json`.
 - OpenCode runs tools ungated when the plugin fails to load.
 - Mastra tools that `prepareStep` or an input processor returns per step run
-  without the hooks. Declare every tool on the agent.
+  without the hooks, even tools declared on the agent, unless you pass them
+  through `governTools` (`mastra/README.md`).
 - Windsurf has no hook for grep and find, `write_to_file`, web search, URL
   reads, git commit, deploy or subagents, and loads no hook in Restricted Mode.
 - Goose runs the tool calls inside Code Mode scripts and `delegate` subagents

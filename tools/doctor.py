@@ -125,6 +125,45 @@ def claude_dir() -> Path:
     return env_dir("CLAUDE_CONFIG_DIR", home() / ".claude")
 
 
+def claude_managed_dir() -> Path:
+    """Where Claude Code reads managed-settings.json and managed-settings.d/ (code.claude.com/docs/en/managed-settings)."""
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/ClaudeCode")
+    if os.name == "nt":
+        return Path(r"C:\Program Files\ClaudeCode")
+    return Path("/etc/claude-code")
+
+
+class ClaudeSettings(NamedTuple):
+    path: Path
+    data: dict
+    managed: bool
+
+
+def claude_settings() -> list:
+    """Each settings file Claude Code reads in this folder, highest precedence first.
+
+    MDM and server-managed policy never reach the disk, so doctor cannot see them.
+    """
+    managed = claude_managed_dir()
+    drop_ins = managed / "managed-settings.d"
+    project = Path.cwd() / ".claude"
+    # Claude Code merges managed-settings.json first, then the drop-ins A to Z, skipping hidden ones; a later file wins.
+    later = sorted((p for p in drop_ins.glob("*.json") if not p.name.startswith(".")), reverse=True) if drop_ins.is_dir() else []
+    paths = [(path, True) for path in later] + [(managed / "managed-settings.json", True)]
+    paths += [(project / "settings.local.json", False), (project / "settings.json", False), (claude_dir() / "settings.json", False)]
+    found, seen = [], set()
+    for path, is_managed in paths:
+        # Run from the home folder, the project settings are the user settings.
+        if path.resolve() in seen:
+            continue
+        seen.add(path.resolve())
+        data = read_json(path)
+        if isinstance(data, dict):
+            found.append(ClaudeSettings(path, data, is_managed))
+    return found
+
+
 def codex_dir() -> Path:
     return env_dir("CODEX_HOME", home() / ".codex")
 
@@ -541,17 +580,43 @@ def claude_key(report: Report, plugin: str, settings: dict, path: Path) -> bool:
 def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list]:
     root = claude_dir()
     settings = as_dict(read_json(root / "settings.json"))
+    sources = claude_settings()
+    managed = [source for source in sources if source.managed]
+    # Managed allowManagedHooksOnly runs only managed hooks and plugins managed enabledPlugins forces on;
+    # strictPluginOnlyCustomization with hooks drops user and project hooks but keeps plugin ones.
+    only_managed = next((s.path for s in managed if s.data.get("allowManagedHooksOnly") is True), None)
+    strict = next(
+        (s.path for s in managed if s.data.get("strictPluginOnlyCustomization") is True
+         or "hooks" in as_list(s.data.get("strictPluginOnlyCustomization"))),
+        None,
+    )
     registry = as_dict(read_json(root / "plugins" / "installed_plugins.json"))
     smokes = []
     plugins = [key for key in as_dict(registry.get("plugins")) if key.startswith(CLAUDE_PLUGINS)]
+    forced = {
+        key for key in plugins
+        if next((s.data["enabledPlugins"][key] for s in managed if key in as_dict(s.data.get("enabledPlugins"))), None) is True
+    }
     for key in plugins:
         install = as_dict((as_list(registry["plugins"][key]) or [None])[0])
         folder = Path(str(install.get("installPath") or ""))
-        enabled = as_dict(settings.get("enabledPlugins")).get(key) is True
+        # The highest settings file that names the plugin decides.
+        decider = next((s for s in sources if key in as_dict(s.data.get("enabledPlugins"))), None)
+        enabled = decider is not None and decider.data["enabledPlugins"][key] is True
         if enabled:
             report.line("ok", "Claude Code plugin", f"{key} is installed and enabled")
+        elif decider is not None and decider.path != root / "settings.json":
+            report.line(
+                "FAIL", "Claude Code plugin", f"{shown(decider.path)} turns {key} off, {UNGOVERNED}", f"remove {key} from enabledPlugins there",
+            )
         else:
             report.line("FAIL", "Claude Code plugin", f"{key} is installed but not enabled, {UNGOVERNED}", "enable it in /plugin")
+        if only_managed and key not in forced:
+            report.line(
+                "FAIL", "Claude Code plugin",
+                f"{shown(only_managed)} sets allowManagedHooksOnly and does not force {key} on, {UNGOVERNED}",
+                f'ask your administrator to set "{key}": true under enabledPlugins in managed settings',
+            )
         hooks = as_dict(as_dict(read_json(folder / "hooks" / "hooks.json")).get("hooks"))
         # The older plugin ran mezmo_governance_hook.py, the current one governance_hook.py.
         found = mezmo_handlers(hooks.get("PreToolUse"), script=CLAUDE_HOOK_FILE) or mezmo_handlers(hooks.get("PreToolUse"))
@@ -581,12 +646,21 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
             "claude-code/hooks/hooks.json",
         )
         smokes.append(Smoke("Claude Code", hook_path(str(handler["command"])), CLAUDE_EVENT))
+        if only_managed or strict:
+            switch = "allowManagedHooksOnly" if only_managed else "strictPluginOnlyCustomization"
+            report.line(
+                "FAIL", "Claude Code settings", f"{shown(only_managed or strict)} sets {switch}, which drops this hook, {UNGOVERNED}",
+                "install the mezmo plugin instead (claude-code/README.md)",
+            )
     if not plugins and not found:
         return None
-    if settings.get("disableAllHooks") is True:
-        report.line(
-            "FAIL", "Claude Code hooks", f"{shown(root / 'settings.json')} sets disableAllHooks, {UNGOVERNED}", "remove disableAllHooks",
-        )
+    for source in sources:
+        if source.data.get("disableAllHooks") is not True:
+            continue
+        # Outside managed settings, disableAllHooks spares plugins that managed enabledPlugins forces on.
+        if not source.managed and not found and plugins and set(plugins) <= forced:
+            continue
+        report.line("FAIL", "Claude Code hooks", f"{shown(source.path)} sets disableAllHooks, {UNGOVERNED}", "remove disableAllHooks")
     return smokes
 
 
@@ -837,19 +911,31 @@ def check_copilot(report: Report, version: Optional[tuple]) -> Optional[list]:
                 " and next to preToolUse it asks Mezmo twice for each call",
                 "use the camelCase preToolUse, as in copilot/hooks.example.json; VS Code Local reads it too",
             )
-        for *_, handler in mezmo_handlers(hooks.get("preToolUse"), "bash"):
+        # Copilot runs bash on macOS and Linux and powershell on Windows; a handler may carry either or both.
+        handlers = {(g, h): handler for field in ("bash", "powershell") for g, h, _, handler in mezmo_handlers(hooks.get("preToolUse"), field)}
+        runs = "powershell" if os.name == "nt" else "bash"
+        for handler in handlers.values():
             installed = True
-            command = str(handler["bash"])
-            if re.search(r"\spreToolUse\s*(\|\||$)", command):
-                report.line("ok", "Copilot hook", f"preToolUse hook in {shown(path)}")
-            else:
+            if not isinstance(handler.get(runs), str):
                 report.line(
-                    "FAIL", "Copilot hook", "the command does not end with the event name preToolUse, so every call is denied",
-                    "copy the command from copilot/hooks.example.json",
+                    "FAIL", "Copilot hook", f"a handler in {shown(path)} has no {runs} command, which Copilot runs here, {UNGOVERNED}",
+                    "copy the handler from copilot/hooks.example.json",
                 )
-            # VS Code Local runs the tool when the hook exits other than 0 or 2; Copilot blocks it.
-            fail_closed(report, "Copilot hook", guarded(command), GUARD, "copilot/hooks.example.json")
-            smokes.append(Smoke("Copilot", hook_path(command), event, ("preToolUse",)))
+            for field, subject in (("bash", "Copilot hook"), ("powershell", "Copilot hook (PowerShell)")):
+                command = handler.get(field)
+                if not isinstance(command, str) or not mezmo_handlers([handler], field):
+                    continue
+                if re.search(r"\spreToolUse\s*(\|\||;|$)", command):
+                    report.line("ok", subject, f"preToolUse hook in {shown(path)}")
+                else:
+                    report.line(
+                        "FAIL", subject, f"the {field} command does not pass the event name preToolUse, so every call is denied",
+                        "copy the command from copilot/hooks.example.json",
+                    )
+                # VS Code Local runs the tool when the hook exits other than 0 or 2; Copilot blocks it.
+                fail_closed(report, subject, guarded(command), GUARD, "copilot/hooks.example.json")
+                if field == runs:
+                    smokes.append(Smoke("Copilot", hook_path(command), event, ("preToolUse",)))
     return smokes if installed else None
 
 
