@@ -96,8 +96,9 @@ before it runs:
 | Ask a person | The call waits while someone approves or denies it in Mezmo, for up to 590 seconds. If nobody decides, it's blocked |
 | Nothing: the service is unreachable, or rejects the key | The tool is blocked |
 
-Bash calls show up in Mezmo under namespace `claude_code`, with `command` and `description` as
-arguments. MCP calls show up under the server's name, such as `mezmo`. Other built-in tools, such
+Bash calls show up in Mezmo under namespace `claude_code`, one call per part of the command (see
+[Bash commands](#bash-commands)). MCP calls show up under the server's name, such as `mezmo`, with
+the tool's own arguments. Other built-in tools, such
 as Read, Edit and Write, don't go to Mezmo. Neither do the MCP servers the Claude desktop app adds
 for its own task list, panes and sessions (`ccd_turn`, `ccd_session` and the like).
 
@@ -117,6 +118,64 @@ settings file.
 
 The service only accepts plain identifiers as argument names, so an MCP tool with an argument
 such as `max-results` gets blocked, and the message says which argument.
+
+### Bash commands
+
+Claude often runs several commands in one Bash call, such as `cd /repo && git push origin main`.
+The plugin splits the command where Claude Code splits it for its own permission rules (`&&`,
+`||`, `;`, `|`, `|&`, `&` and new lines) and sends each part to Mezmo as its own call. Mezmo
+decides every part and goes with the strictest answer, so an allowed `cd` can't carry a
+`git push` through. A part that runs once another has finished (after `&&`, `||` or `;`) names it
+in `dependencies`.
+
+Each part carries fields a rule can match:
+
+| Field | For `git push --force origin main` |
+| --- | --- |
+| `command` | `git push --force origin main` |
+| `program` | `git` |
+| `arg_1`, `arg_2`, … | `push`, `origin`, `main`: flags left out, and only the first 10 |
+| `flag_<name>` | `flag_force`: `true` |
+
+Flags are read the common ways, without knowing the tool:
+
+| Written | Fields |
+| --- | --- |
+| `--force` | `flag_force`: `true` |
+| `--force-with-lease=main` | `flag_force_with_lease`: `"main"` |
+| `-f` | `flag_f`: `true` |
+| `-rf` | `flag_r` and `flag_f`, each `true` |
+| `-delete`, a one-dash word of 3 letters or more | `flag_d`, `flag_e`, `flag_l`, `flag_t` and `flag_delete`, since `find`, `go` and `java` take long options after one dash |
+| `-n5` | `flag_n`: `"5"` |
+| `-9` | `flag_9`: `true` |
+
+So a policy that sends force pushes to a person needs a rule for each spelling: `program eq git`,
+`arg_1 eq push` and `flag_force eq true`, then the same with `flag_f`, and with
+`flag_force_with_lease`. Rules can't say "either". A push of `+main` forces without any flag.
+
+The first part also carries `full_command`, the whole command as Claude wrote it, and the call's
+`description`. The wrappers Claude Code skips (`timeout`, `time`, `nice`, `nohup`, `stdbuf`,
+`command`, `builtin` and a bare `xargs`) are skipped here too, so `timeout 60 npm test` has
+`program` `npm`.
+
+A part the plugin can't fully read gets no `program`, `arg_` or `flag_` fields: one with a variable
+(`$HOME`), a redirect to a file, a subshell, an assignment such as `PATH=/tmp ls`, or a shell
+keyword. A rule that allows by `program` can't match it, so it falls to your other rules or the
+policy's default. Write those allow rules with `eq` or `in`, because `neq` and `nin` also match a
+part with no `program`. A command the plugin can't split at all (a `$(...)` substitution,
+backticks or a heredoc) goes as one call with only Claude's input, as before.
+
+These fields are a guardrail, not a boundary. `git -C . push`, `bash -c "…"`, a script or a
+Makefile gets past a rule that sends `git push` to a person, and an option's value lands among the
+arguments: `kubectl -n prod delete` has `arg_1` `prod`. So list what may run, such as
+`program in [ls, cat, rg]` with an allow rule, and send everything else to a person.
+
+### Auto mode
+
+When Mezmo Governance allows a call, the hook doesn't approve it on Claude Code's behalf, so in
+auto mode Claude Code's classifier still checks it. When the classifier blocks one of these
+calls, the hook counts it and adds a `blocked_by_auto_mode` line with the classifier's reason to
+the audit log, and `/mezmo` shows the count. Mezmo itself doesn't hear about these blocks yet.
 
 ## Telemetry
 

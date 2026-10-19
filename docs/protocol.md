@@ -69,10 +69,18 @@ Rules:
 - `scope.kind` is `single` for these plugins. Optional `session_id` is the
   runtime's session, conversation, or thread id.
 - `origin.kind` names the plugin. `origin.reason` is the event name. Optional
-  `matched_pattern` is included when the runtime supplies a matcher.
+  `matched_pattern` is included when the runtime supplies a matcher. Mezmo drops
+  any other `origin` field without an error.
 - Each item needs `tool_name`. Plugins always send `tool_namespace`. If you omit
   it, Mezmo treats it as `"default"`. `arguments` is the JSON object the tool will
   receive. `id` is `0` for the single-item requests these plugins send.
+- The Claude Code plugin sends a Bash call as one item per part of the command,
+  with ids from `0`, up to 50 parts (Mezmo takes 100 items). Each item's
+  `arguments` hold the part's `command` and, when the plugin could read it,
+  `program`, `arg_1` to `arg_10`, and a `flag_<name>` field per flag. The first item also holds `full_command`
+  and the call's other input. An item that runs after the one before it lists
+  that id in `dependencies`. Mezmo decides each item and answers with the
+  strictest decision. See [claude-code/README.md](../claude-code/README.md#bash-commands).
 - Length limits: `decision_id`, `request_id` and `scope.session_id` 128
   characters, `tool_name` and `tool_namespace` 128, `tool_call_intent` 2048.
   Top-level argument names must match `^[a-zA-Z_][a-zA-Z0-9_]*$`, 64 characters
