@@ -570,6 +570,18 @@ class ClaudeCodeTests(DoctorTestCase):
         self.assertEqual(self.lines(result, "Claude Code hooks"), [], result.stdout)
         self.assertFalse(any(line.startswith("FAIL") for line in self.lines(result, "Claude Code plugin")), result.stdout)
 
+    def test_a_later_managed_drop_in_overrides_managed_settings_json(self) -> None:
+        # Claude Code merges managed-settings.json first, then managed-settings.d/ A to Z; the later file wins.
+        self.agent("claude", "2.1.300 (Claude Code)")
+        self.install_plugin()
+        (self.managed / "managed-settings.json").write_text(json.dumps({"enabledPlugins": {"mezmo@mezmo": True}}))
+        (self.managed / "managed-settings.d").mkdir()
+        (self.managed / "managed-settings.d" / "90-plugins.json").write_text(json.dumps({"enabledPlugins": {"mezmo@mezmo": False}}))
+
+        result = self.doctor()
+
+        self.assertIn("90-plugins.json turns mezmo@mezmo off", self.lines(result, "Claude Code plugin")[0])
+
     def test_the_older_mezmo_governance_plugin_is_still_checked(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")
         folder = self.install_plugin(name="mezmo-governance")
@@ -1079,8 +1091,12 @@ class OtherHookAgentTests(DoctorTestCase):
         for handler, status, words in cases:
             with self.subTest(handler=handler):
                 self.write(".copilot/hooks/mezmo-governance.json", {"version": 1, "hooks": {"preToolUse": [handler]}})
-                lines = self.lines(self.doctor(), "Copilot hook (PowerShell)")
+                result = self.doctor()
+                lines = self.lines(result, "Copilot hook (PowerShell)")
                 self.assertTrue(any(line.startswith(status) and words in line for line in lines), lines)
+                # Off Windows, Copilot runs the bash field: a handler without one runs no hook here.
+                missing = [line for line in self.lines(result, "Copilot hook") if "has no bash command" in line]
+                self.assertEqual(bool(missing), "bash" not in handler, result.stdout)
 
     def test_copilot_home_moves_the_hook_folder(self) -> None:
         self.agent("copilot", "GitHub Copilot CLI 1.0.95.")

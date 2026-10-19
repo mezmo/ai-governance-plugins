@@ -148,8 +148,9 @@ def claude_settings() -> list:
     managed = claude_managed_dir()
     drop_ins = managed / "managed-settings.d"
     project = Path.cwd() / ".claude"
-    paths = [(managed / "managed-settings.json", True)]
-    paths += [(path, True) for path in (sorted(drop_ins.glob("*.json")) if drop_ins.is_dir() else [])]
+    # Claude Code merges managed-settings.json first, then the drop-ins A to Z, skipping hidden ones; a later file wins.
+    later = sorted((p for p in drop_ins.glob("*.json") if not p.name.startswith(".")), reverse=True) if drop_ins.is_dir() else []
+    paths = [(path, True) for path in later] + [(managed / "managed-settings.json", True)]
     paths += [(project / "settings.local.json", False), (project / "settings.json", False), (claude_dir() / "settings.json", False)]
     found, seen = [], set()
     for path, is_managed in paths:
@@ -592,7 +593,10 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
     registry = as_dict(read_json(root / "plugins" / "installed_plugins.json"))
     smokes = []
     plugins = [key for key in as_dict(registry.get("plugins")) if key.startswith(CLAUDE_PLUGINS)]
-    forced = {key for key in plugins if any(as_dict(s.data.get("enabledPlugins")).get(key) is True for s in managed)}
+    forced = {
+        key for key in plugins
+        if next((s.data["enabledPlugins"][key] for s in managed if key in as_dict(s.data.get("enabledPlugins"))), None) is True
+    }
     for key in plugins:
         install = as_dict((as_list(registry["plugins"][key]) or [None])[0])
         folder = Path(str(install.get("installPath") or ""))
@@ -909,8 +913,14 @@ def check_copilot(report: Report, version: Optional[tuple]) -> Optional[list]:
             )
         # Copilot runs bash on macOS and Linux and powershell on Windows; a handler may carry either or both.
         handlers = {(g, h): handler for field in ("bash", "powershell") for g, h, _, handler in mezmo_handlers(hooks.get("preToolUse"), field)}
+        runs = "powershell" if os.name == "nt" else "bash"
         for handler in handlers.values():
             installed = True
+            if not isinstance(handler.get(runs), str):
+                report.line(
+                    "FAIL", "Copilot hook", f"a handler in {shown(path)} has no {runs} command, which Copilot runs here, {UNGOVERNED}",
+                    "copy the handler from copilot/hooks.example.json",
+                )
             for field, subject in (("bash", "Copilot hook"), ("powershell", "Copilot hook (PowerShell)")):
                 command = handler.get(field)
                 if not isinstance(command, str) or not mezmo_handlers([handler], field):
@@ -924,7 +934,7 @@ def check_copilot(report: Report, version: Optional[tuple]) -> Optional[list]:
                     )
                 # VS Code Local runs the tool when the hook exits other than 0 or 2; Copilot blocks it.
                 fail_closed(report, subject, guarded(command), GUARD, "copilot/hooks.example.json")
-                if field == ("powershell" if os.name == "nt" else "bash"):
+                if field == runs:
                     smokes.append(Smoke("Copilot", hook_path(command), event, ("preToolUse",)))
     return smokes if installed else None
 
