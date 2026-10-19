@@ -1064,6 +1064,24 @@ class OtherHookAgentTests(DoctorTestCase):
                 lines = self.lines(self.doctor(), "Copilot hook")
                 self.assertTrue(any(line.startswith(status) and "exit 2 guard" in line for line in lines), lines)
 
+    def test_copilot_powershell_command_is_checked(self) -> None:
+        # Copilot on Windows runs the powershell field; a powershell-only entry is still our hook.
+        self.agent("copilot", "GitHub Copilot CLI 1.0.98.")
+        self.copy_hook("copilot", ".copilot/hooks/mezmo_governance_hook.py")
+        good = json.loads((REPO / "copilot/hooks.example.json").read_text())["hooks"]["preToolUse"][0]
+        powershell = good["powershell"]
+        cases = [
+            ({**good}, "ok", "exit 2 guard"),
+            ({**good, "powershell": powershell.split(";")[0]}, "FAIL", "exit 2 guard"),
+            ({**good, "powershell": powershell.replace(" preToolUse", "")}, "FAIL", "event name preToolUse"),
+            ({key: value for key, value in good.items() if key != "bash"}, "ok", "preToolUse hook in"),
+        ]
+        for handler, status, words in cases:
+            with self.subTest(handler=handler):
+                self.write(".copilot/hooks/mezmo-governance.json", {"version": 1, "hooks": {"preToolUse": [handler]}})
+                lines = self.lines(self.doctor(), "Copilot hook (PowerShell)")
+                self.assertTrue(any(line.startswith(status) and words in line for line in lines), lines)
+
     def test_copilot_home_moves_the_hook_folder(self) -> None:
         self.agent("copilot", "GitHub Copilot CLI 1.0.95.")
         example = json.loads((REPO / "copilot/hooks.example.json").read_text())

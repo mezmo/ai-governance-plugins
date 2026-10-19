@@ -907,19 +907,25 @@ def check_copilot(report: Report, version: Optional[tuple]) -> Optional[list]:
                 " and next to preToolUse it asks Mezmo twice for each call",
                 "use the camelCase preToolUse, as in copilot/hooks.example.json; VS Code Local reads it too",
             )
-        for *_, handler in mezmo_handlers(hooks.get("preToolUse"), "bash"):
+        # Copilot runs bash on macOS and Linux and powershell on Windows; a handler may carry either or both.
+        handlers = {(g, h): handler for field in ("bash", "powershell") for g, h, _, handler in mezmo_handlers(hooks.get("preToolUse"), field)}
+        for handler in handlers.values():
             installed = True
-            command = str(handler["bash"])
-            if re.search(r"\spreToolUse\s*(\|\||$)", command):
-                report.line("ok", "Copilot hook", f"preToolUse hook in {shown(path)}")
-            else:
-                report.line(
-                    "FAIL", "Copilot hook", "the command does not end with the event name preToolUse, so every call is denied",
-                    "copy the command from copilot/hooks.example.json",
-                )
-            # VS Code Local runs the tool when the hook exits other than 0 or 2; Copilot blocks it.
-            fail_closed(report, "Copilot hook", guarded(command), GUARD, "copilot/hooks.example.json")
-            smokes.append(Smoke("Copilot", hook_path(command), event, ("preToolUse",)))
+            for field, subject in (("bash", "Copilot hook"), ("powershell", "Copilot hook (PowerShell)")):
+                command = handler.get(field)
+                if not isinstance(command, str) or not mezmo_handlers([handler], field):
+                    continue
+                if re.search(r"\spreToolUse\s*(\|\||;|$)", command):
+                    report.line("ok", subject, f"preToolUse hook in {shown(path)}")
+                else:
+                    report.line(
+                        "FAIL", subject, f"the {field} command does not pass the event name preToolUse, so every call is denied",
+                        "copy the command from copilot/hooks.example.json",
+                    )
+                # VS Code Local runs the tool when the hook exits other than 0 or 2; Copilot blocks it.
+                fail_closed(report, subject, guarded(command), GUARD, "copilot/hooks.example.json")
+                if field == ("powershell" if os.name == "nt" else "bash"):
+                    smokes.append(Smoke("Copilot", hook_path(command), event, ("preToolUse",)))
     return smokes if installed else None
 
 
