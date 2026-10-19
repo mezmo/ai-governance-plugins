@@ -310,7 +310,9 @@ def hook_copy(source: Path, target: Path) -> Step:
 
 
 def hook_refresh(source: Path, target: Path) -> list:
-    """A step to replace an installed copy that differs from this repository's file."""
+    """A step to copy the file where it is missing, or to replace an installed copy that differs from this repository's file."""
+    if not target.is_file():
+        return [hook_copy(source, target)]
     if not differs(target, source.read_bytes()):
         return []
     return [Step(f"update {shown(target)} from {source.relative_to(REPO)}", (), lambda: copy_file(source, target))]
@@ -351,7 +353,7 @@ def file_hook_agent(
 
     def install() -> list:
         source, target = REPO / adapter / HOOK_FILE, folder() / "hooks" / HOOK_FILE
-        steps = hook_refresh(source, target) if installed() else [hook_copy(source, target)]
+        steps = hook_refresh(source, target)
         data = example(adapter, "hooks.example.json", folder(), doctor.home() / (default or f".{adapter}"))
         return steps + merge_steps(folder() / "hooks.json", data, events)
 
@@ -446,7 +448,7 @@ def opencode() -> Installer:
             for path in sorted(source.rglob("*")):
                 target = folder / path.relative_to(source)
                 if path.is_file() and not {"test", "node_modules", "README.md"} & set(path.relative_to(source).parts):
-                    steps += hook_refresh(path, target) if target.is_file() else [hook_copy(path, target)]
+                    steps += hook_refresh(path, target)
             return steps
         version = doctor.binary_version(shutil.which("opencode") or "opencode")
         if version is not None and version[0] < 2:

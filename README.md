@@ -259,7 +259,8 @@ own override: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `GEMINI_CLI_HOME`,
 as `<name>.mezmo-backup-<time>` and prints the path. It writes through a
 symlink and keeps the file's mode, such as `0600`. It never writes the
 token. Running it twice changes nothing. Over an older install, it replaces
-each copied file that differs from this checkout and prints `update <file>`.
+each copied file that differs from this checkout and prints `update <file>`,
+and copies back one that is missing.
 Claude Code and Gemini CLI keep their own copy, so for them run `uninstall`,
 then `install`. `uninstall` removes the entries and
 files `install` added, then each key or file that leaves empty, such as an

@@ -309,6 +309,27 @@ class InstallTests(CliTestCase):
                 self.assertIn(f"{agent}: already installed, nothing to change", again.stdout)
                 self.assertFalse(list(self.tmp.rglob("*.mezmo-partial")))
 
+    def test_reinstall_copies_back_a_deleted_hook_script(self) -> None:
+        # The config still runs the hook, so the agent blocks every call until the script is back.
+        scripts = {
+            "codex": "codex/hooks/mezmo_governance_hook.py",
+            "cursor": "home/.cursor/hooks/mezmo_governance_hook.py",
+            "droid": "factory/.factory/hooks/mezmo_governance_hook.py",
+            "windsurf": "home/.codeium/windsurf/hooks/mezmo_governance_hook.py",
+            "antigravity": "home/.gemini/config/hooks/mezmo_governance_hook.py",
+        }
+        for agent, name in scripts.items():
+            with self.subTest(agent=agent):
+                self.assertEqual(self.cli("install", agent).returncode, 0)
+                installed = self.files()
+                (self.tmp / name).unlink()
+
+                result = self.cli("install", agent)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotIn("nothing to change", result.stdout)
+                self.assertEqual(self.files(), installed)
+
     def test_install_and_uninstall_keep_the_users_json_formatting(self) -> None:
         # Each user writes a different indent and line ending, non-ASCII text and no final newline.
         texts = {}
@@ -531,6 +552,11 @@ class InstallTests(CliTestCase):
         self.write({"gemini/.gemini/settings.json": gemini, "codex/hooks.json": codex, "factory/.factory/hooks.json": droid,
                     "home/.codeium/windsurf/hooks.json": windsurf, "home/.gemini/config/hooks.json": antigravity})
         shutil.copytree(REPO / "pi", self.tmp / "pi/extensions/mezmo-governance")
+        # Each README's first step copies the hook script.
+        for adapter, folder in (("codex", "codex"), ("droid", "factory/.factory"), ("windsurf", "home/.codeium/windsurf"),
+                                ("antigravity", "home/.gemini/config")):
+            (self.tmp / folder / "hooks").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(REPO / adapter / "mezmo_governance_hook.py", self.tmp / folder / "hooks")
         before = self.files()
         result = self.cli("install", "gemini-cli", "codex", "pi", "droid", "windsurf", "antigravity")
         self.assertEqual(result.returncode, 0, result.stdout)
