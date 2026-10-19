@@ -372,16 +372,17 @@ does not fit your setup.
 
 | Agent | Hook | Fails closed? | Install |
 | --- | --- | --- | --- |
-| [Codex CLI](codex/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | copy the script, merge `hooks.example.json`, trust it in `/hooks` |
-| [Cursor](cursor/) | `preToolUse` hook | yes, with `failClosed: true` | copy the script, merge `hooks.example.json` |
+| [Claude Code](claude-code/) | `PreToolUse` command hook (plugin) | on a crash or timeout yes, with `onFailure: "block"`, on Claude Code 2.1.295 and later; with no key it lets every call run unless `MEZMO_GOVERNANCE_REQUIRED=1` (see [Fail behavior](claude-code/README.md#fail-behavior)) | `/plugin marketplace add mezmo/ai-governance-plugins`, then `/plugin install mezmo@mezmo` and `/mezmo:setup governance` |
+| [Codex CLI](codex/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no; an untrusted hook is skipped, also in headless `codex exec` | copy the script, merge `hooks.example.json`, trust it in `/hooks` |
+| [Cursor](cursor/) | `preToolUse` hook | yes, with `failClosed: true`; cloud agents do not load `~/.cursor/hooks.json` and run ungoverned (see [Fail behavior](cursor/README.md#fail-behavior)) | copy the script, merge `hooks.example.json` |
 | [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | `gemini extensions install ./gemini-cli`, or copy the script and merge `settings.example.json` |
 | [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code on the Copilot and Local harnesses) | on a crash yes (VS Code Local needs the `\|\| exit 2` guard); on a timeout no | copy the script, add `hooks.example.json` to `~/.copilot/hooks/` |
 | [Goose](goose/) | `PreToolUse` plugin hook | yes, with `on_failure: block` | copy the plugin to `~/.agents/plugins/mezmo-governance/` |
-| [Droid](droid/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | copy the script, merge `hooks.example.json` into `~/.factory/hooks.json` |
+| [Droid](droid/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no; an interactive session skips every hook in a folder you have not trusted | copy the script, merge `hooks.example.json` into `~/.factory/hooks.json` |
 | [Windsurf](windsurf/) | `pre_run_command`, `pre_read_code`, `pre_write_code` and `pre_mcp_tool_use` hooks. Partial coverage: grep/find, `write_to_file`, web search, URL reads, git commit, deploy and subagents run ungoverned, and Restricted Mode loads no hooks | on a crash yes (with the `\|\| exit 2` guard); Windsurf sets no hook timeout | copy the script, merge `hooks.example.json` into `~/.codeium/windsurf/hooks.json` |
 | [Antigravity CLI](antigravity/) | `PreToolUse` command hook | yes: a crash, a non-zero exit, output that is not JSON and a timeout all block | copy the script, add the `mezmo-governance` hook from `hooks.example.json` to `~/.gemini/config/hooks.json` |
 | [Pi](pi/) | `tool_call` extension | yes | `pi install ./pi`, or copy the folder to `~/.pi/agent/extensions/` |
-| [OpenCode](opencode/) 1.x and 2.x | `tool.execute.before` plugin | yes | 2.x: copy the folder, name it in `opencode.json` `plugins` with options; 1.x: copy to `~/.config/opencode/plugins/` |
+| [OpenCode](opencode/) 1.x and 2.x | `tool.execute.before` plugin | on a crash yes; a plugin that fails to load lets every tool run (on 2.x `opencode plugin list` shows `-` for it) | 2.x: copy the folder, name it in `opencode.json` `plugins` with options; 1.x: copy to `~/.config/opencode/plugins/` |
 | [LangChain](langchain/) v1 | `AgentMiddleware` (`wrap_tool_call` and `awrap_tool_call`) | yes | `pip install ./langchain` |
 | [OpenAI Agents SDK](openai-agents/) (Python) | tool input guardrail on function and MCP tools; refuses hosted MCP; other hosted tools are not gated | yes | `pip install ./openai-agents` |
 | [Mastra](mastra/) | agent `hooks.beforeToolCall` | yes | copy the files, pass `hooks` |
@@ -392,7 +393,10 @@ times out, or cannot start. Every plugin denies the call when Mezmo denies it,
 cannot be reached, or returns something it does not understand.
 
 Editors that run agents over ACP, such as Zed, run the agent's own hook:
-Claude Code, Codex and Goose are governed there. Gemini CLI is not. See
+Claude Code, Codex and Goose are governed there. Gemini CLI is not. Claude
+Code in Zed is governed only when its CLI is 2.1.295 or later: Zed's cached
+adapter can bundle an older CLI, which ignores `onFailure: "block"`. Point the
+adapter at your installed `claude` with `CLAUDE_CODE_EXECUTABLE`. See
 [docs/live-testing.md](docs/live-testing.md#zed).
 
 ## Settings
@@ -404,6 +408,11 @@ Claude Code, Codex and Goose are governed there. Gemini CLI is not. See
 | `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590`, the longest the plugin waits for a person to decide |
 | `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` |
 | `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` |
+
+The Claude Code plugin differs: `MEZMO_GOVERNANCE_URL` defaults to
+`https://api.mezmo.com/governance/workflow/authorize`, and it reads the key
+from `MEZMO_GOVERNANCE_ACCESS_KEY` first, then `MEZMO_GOVERNANCE_TOKEN`
+(see [claude-code/](claude-code/#governance)).
 
 The hook examples set a 600 second hook timeout, so the plugin's own deadline
 ends first and returns a clear deny. Windsurf has no hook timeout. Antigravity CLI
@@ -417,11 +426,21 @@ call), the plugin sends Mezmo the tool name and its full arguments: the shell co
 content. It also sends the session id and the tool call id (Gemini CLI, Antigravity CLI, Copilot, Droid and Windsurf send a fresh random id per call, because they expose none; VS Code Local exposes one). Tool results are
 not sent to Mezmo: post-tool hooks only append a line to a local file.
 
-One exception reaches past Mezmo: the LangChain middleware records each
-approved call as an OpenTelemetry span. With `trace_payloads=True` the span
-also carries the full arguments and up to 8,000 characters of the result. The
-span goes wherever the app's OpenTelemetry
-exporter sends it; see [langchain/README.md](langchain/README.md).
+Not every plugin sends only that, and not only to the Governance service:
+
+- The LangChain middleware records each approved call as an OpenTelemetry
+  span. With `trace_payloads=True` the span also carries the full arguments
+  and up to 8,000 characters of the result. The span goes wherever the app's
+  OpenTelemetry exporter sends it; see [langchain/README.md](langchain/README.md).
+  If you pass an `intent_provider`, its text also goes to Mezmo as
+  `tool_call_intent`.
+- Claude Code's telemetry is opt-in (`/mezmo:setup telemetry`). It sends
+  metrics, events and traces to Mezmo's OpenTelemetry endpoint, which is not
+  the Governance service. While your settings point it at Mezmo, the plugin's
+  status display also posts an empty body to that endpoint once per session
+  to check the ingestion key. See [claude-code/README.md](claude-code/README.md#telemetry).
+- Antigravity CLI sends its built-in tools' arguments as it gets them,
+  including the model's `toolAction` and `toolSummary` notes.
 
 Write policy on the assumption that Mezmo sees every argument, and keep secrets
 out of tool arguments.
@@ -435,13 +454,13 @@ or Mastra setup, which lives in app code; for those, run
 
 | You see | Cause | Fix |
 | --- | --- | --- |
-| Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: look for a `hook error` notice; Copilot: install in `~/.copilot/hooks/`, not `.github/hooks/`; Gemini CLI: use `~/.gemini/settings.json` or trust the folder; Goose: put the plugin in `~/.agents/plugins/` and use no `"*"` matcher; Droid: check the **Effective** tab of `/hooks` and trust the folder; Windsurf: trust the workspace, since no hook loads in Restricted Mode, and run `doctor`; Antigravity CLI: run `agy -p /hooks` and `doctor` |
+| Every call runs and the mock prints nothing | the hook never ran | check the path in the hook config; Codex: trust the hook in `/hooks`; Claude Code: with no key the hook returns silently, so the plugin never saw one (a Dock or GUI launch does not pass your shell's exports): run `/mezmo:setup governance`, or set `MEZMO_GOVERNANCE_REQUIRED=1` to deny until it has one; Copilot: install in `~/.copilot/hooks/`, not `.github/hooks/`; Gemini CLI: use `~/.gemini/settings.json` or trust the folder; Goose: put the plugin in `~/.agents/plugins/` and use no `"*"` matcher; Droid: check the **Effective** tab of `/hooks` and trust the folder; Windsurf: trust the workspace, since no hook loads in Restricted Mode, and run `doctor`; Antigravity CLI: run `agy -p /hooks` and `doctor` |
 | Every call is denied: `MEZMO_GOVERNANCE_URL must be a non-empty string` (Python) or `MEZMO_GOVERNANCE_URL is required` (TypeScript) | the agent did not inherit the variables | export them in the shell that starts the agent, or use the agent's own settings `env` block |
 | `Mezmo Governance returned HTTP 401 EAUTH` | wrong or revoked service account token, or a service account without Governance permissions | give the agent's service account Governance permissions, then copy a fresh token from the service account in Mezmo |
 | `Mezmo Governance returned HTTP 403 ENOAGENT: no agent is registered for these credentials` | Mezmo accepts the token, but no agent uses its service account | register an agent in Mezmo Governance and use the token of the service account that agent uses |
 | `Mezmo Governance returned HTTP 403 EPOLICYUNASSIGNED: this agent has no policy assigned` | the agent exists but has no policy | assign a policy to the agent in Mezmo Governance |
 | `Mezmo Governance returned HTTP 400 EINVAL: Bad Request` for one tool only | Mezmo accepts argument names made of letters, digits and `_` only, and the tool has one with `-` or `.` | none on the plugin side yet: the plugins send arguments exactly as the tool gets them; ask Mezmo to accept the name |
-| `approval still pending` | policy needs a person and nobody decided in time | decide in Mezmo, or raise `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` (max 590) |
+| `approval still pending` | policy needs a person and nobody decided in time | decide in Mezmo before the deadline. The default and the maximum of `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` is 590, so raising it does not help; a lower value only ends the wait sooner. If the runtime stops the hook first, raise the runtime's own hook timeout, and keep it above the plugin's |
 | `SyntaxError` or `TypeError` on start | `python3` is older than 3.9 | install a newer Python, or point the hook command at it |
 
 The protocol, including polling and request identity, is in
