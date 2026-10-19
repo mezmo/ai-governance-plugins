@@ -451,6 +451,22 @@ class ClaudeCodeTests(DoctorTestCase):
         self.assertIn("not enabled, so every tool call runs ungoverned", self.lines(result, "Claude Code plugin")[0])
         self.assertTrue(self.lines(result, "Claude Code plugin")[0].startswith("FAIL"))
 
+    def test_disable_all_hooks_fails_as_ungoverned(self) -> None:
+        # Claude Code runs no hook, plugin hooks too, while settings.json has "disableAllHooks": true.
+        self.agent("claude", "2.1.300 (Claude Code)")
+        for install in (self.install_plugin, self.install_settings):
+            with self.subTest(install=install.__name__):
+                shutil.rmtree(self.home / ".claude", ignore_errors=True)
+                install()
+                path = self.home / ".claude/settings.json"
+                self.write(".claude/settings.json", {**json.loads(path.read_text()), "disableAllHooks": True})
+
+                result = self.doctor()
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                line = self.assertStatus(result, "Claude Code hooks", "FAIL")
+                self.assertIn("sets disableAllHooks, so every tool call runs ungoverned", line)
+
     def test_the_older_mezmo_governance_plugin_is_still_checked(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")
         folder = self.install_plugin(name="mezmo-governance")

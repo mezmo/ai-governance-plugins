@@ -493,7 +493,13 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
             "claude-code/hooks/hooks.json",
         )
         smokes.append(Smoke("Claude Code", hook_path(str(handler["command"])), CLAUDE_EVENT))
-    return smokes if plugins or found else None
+    if not plugins and not found:
+        return None
+    if settings.get("disableAllHooks") is True:
+        report.line(
+            "FAIL", "Claude Code hooks", f"{shown(root / 'settings.json')} sets disableAllHooks, {UNGOVERNED}", "remove disableAllHooks",
+        )
+    return smokes
 
 
 def codex_hooks(binary: str) -> list:
