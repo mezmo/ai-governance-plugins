@@ -452,21 +452,28 @@ def opencode() -> Installer:
         if version is not None and version[0] < 2:
             raise Failure("install does not handle OpenCode 1.x; follow 'Install on 1.x' in opencode/README.md")
         config, folder, key_file = paths()
-        url = os.environ.get("MEZMO_GOVERNANCE_URL") or doctor.DEFAULT_URL
+        # An entry the user already has keeps its options, such as an EU URL, their own key file or a timeout.
+        mine = next((as_dict(item) for item in as_list(load_object(config).get("plugins")) if ours(item)), {})
+        options = {
+            "MEZMO_GOVERNANCE_URL": os.environ.get("MEZMO_GOVERNANCE_URL") or doctor.DEFAULT_URL,
+            "MEZMO_GOVERNANCE_TOKEN": f"{{file:{key_file}}}",
+            **as_dict(mine.get("options")),
+        }
+        url = str(options["MEZMO_GOVERNANCE_URL"])
         if doctor.local_url(url):
             print(
                 f"warn  opencode: MEZMO_GOVERNANCE_URL {doctor.shown_url(url)} is a local mock, and opencode.json keeps it"
                 " after the mock stops; set MEZMO_GOVERNANCE_URL in opencode.json to Mezmo's when you are done",
                 flush=True,
             )
-        entry = {
-            "package": "./mezmo-governance",
-            "options": {"MEZMO_GOVERNANCE_URL": url, "MEZMO_GOVERNANCE_TOKEN": f"{{file:{key_file}}}"},
-        }
+        entry = {**mine, "package": "./mezmo-governance", "options": options}
 
         def add_entry() -> None:
             data = load_object(config)
-            data["plugins"] = [item for item in as_list(data.get("plugins")) if not ours(item)] + [entry]
+            plugins = as_list(data.get("plugins"))
+            # The entry keeps its place in the list.
+            first = next((index for index, item in enumerate(plugins) if ours(item)), len(plugins))
+            data["plugins"] = plugins[:first] + [entry] + [item for item in plugins[first:] if not ours(item)]
             write_json(config, data)
 
         def copy() -> None:

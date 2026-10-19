@@ -560,6 +560,32 @@ class InstallTests(CliTestCase):
         result = self.cli("install", "opencode", "--dry-run", MEZMO_GOVERNANCE_URL="https://api.example.test/governance/workflow/authorize")
         self.assertNotIn("warn", result.stdout)
 
+    def test_opencode_reinstall_keeps_the_users_entry_options(self) -> None:
+        # The plugin folder is gone but opencode.json names it, with an EU URL, a key file of the user's and a timeout.
+        own = {
+            "package": "./mezmo-governance",
+            "options": {
+                "MEZMO_GOVERNANCE_URL": "https://api.eu.example.test/governance/workflow/authorize",
+                "MEZMO_GOVERNANCE_TOKEN": "{file:/srv/keys/mezmo}",
+                "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": 30,
+            },
+        }
+        self.write({"xdg/opencode/opencode.json": {"plugins": ["other-plugin", own]}})
+
+        result = self.cli("install", "opencode")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue((self.tmp / "xdg/opencode/mezmo-governance/index.ts").is_file())
+        plugins = json.loads((self.tmp / "xdg/opencode/opencode.json").read_text())["plugins"]
+        self.assertEqual(plugins, ["other-plugin", own])
+        self.assertIn("URL https://api.eu.example.test/", result.stdout)
+        # An entry without options gets each one install would write.
+        self.write({"xdg/opencode/opencode.json": {"plugins": ["./mezmo-governance"]}})
+        shutil.rmtree(self.tmp / "xdg/opencode/mezmo-governance")
+        self.assertEqual(self.cli("install", "opencode").returncode, 0)
+        (entry,) = json.loads((self.tmp / "xdg/opencode/opencode.json").read_text())["plugins"]
+        self.assertEqual(sorted(entry["options"]), ["MEZMO_GOVERNANCE_TOKEN", "MEZMO_GOVERNANCE_URL"])
+
     def test_opencode_1_is_refused(self) -> None:
         self.fake("opencode", "1.19.0")
         result = self.cli("install", "opencode")
