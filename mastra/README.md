@@ -124,12 +124,24 @@ These run without asking Mezmo:
 - A workflow step, or any other code, that calls a tool's `execute` directly:
   the hooks run only in an agent's tool loop.
 - Tools that `prepareStep` or an input processor's `processInputStep` returns
-  for a step: Mastra rebuilds them without the agent hooks (checked in
-  `@mastra/core` 1.77.0, where `makeCoreTool` runs without
-  `wrapToolsWithHooks`). Declare every tool on the agent instead.
+  for a step, even a tool also declared on the agent: Mastra rebuilds them
+  without the agent hooks (checked in `@mastra/core` 1.77.0, where
+  `makeCoreTool` runs without `wrapToolsWithHooks`).
 
-Keep such tools away from agents that need the gate, or gate them in your own
-code.
+Pass such tools through `governTools` to gate them. It wraps each `execute`
+as the agent hooks would, so a denied call returns the deny message instead
+of running, and the audit log gets its line:
+
+```typescript
+import { governTools } from "./mezmo-governance.ts";
+
+await agent.generate(prompt, {
+  prepareStep: () => ({ tools: governTools({ delete_note: deleteNote }) }),
+});
+```
+
+A workflow step that calls `execute` itself can call it on
+`governTools({ name: tool }).name` the same way.
 
 Do not use Mastra's `requireToolApproval` for this. That is Mastra's own
 approval UI. These hooks talk to Mezmo.

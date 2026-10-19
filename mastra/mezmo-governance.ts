@@ -153,3 +153,53 @@ export function createMezmoGovernanceHooks(options: { fetchImpl?: FetchLike } = 
 }
 
 export const mezmoGovernanceHooks = createMezmoGovernanceHooks();
+
+type GovernanceHooks = ReturnType<typeof createMezmoGovernanceHooks>;
+
+// Mastra's own wrapper (Agent.wrapToolWithHooks in @mastra/core 1.77.0), for
+// tools Mastra builds without it. The copy keeps the tool's prototype, so it
+// still passes Mastra's `instanceof Tool` check.
+function governTool(toolName: string, tool: unknown, hooks: GovernanceHooks): unknown {
+  const execute = asRecord(tool)?.execute;
+  if (typeof execute !== "function") {
+    return tool;
+  }
+  const copy = Object.create(
+    Object.getPrototypeOf(tool),
+    Object.getOwnPropertyDescriptors(tool),
+  );
+  Object.defineProperty(copy, "execute", {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    async value(input: unknown, context: unknown) {
+      const hook: HookContext = { toolName, input, context };
+      const before = await hooks.beforeToolCall(hook);
+      if (before?.proceed === false) {
+        return before.output;
+      }
+      let output: unknown;
+      try {
+        output = await execute.call(tool, input, context);
+      } catch (error) {
+        await hooks.afterToolCall({ ...hook, error });
+        throw error;
+      }
+      await hooks.afterToolCall({ ...hook, output });
+      return output;
+    },
+  });
+  return copy;
+}
+
+// Mastra rebuilds the tools that `prepareStep` or an input processor's
+// `processInputStep` returns without the agent hooks. Pass new tools through
+// this so each call still asks Mezmo first.
+export function governTools<T extends Record<string, unknown>>(
+  tools: T,
+  hooks: GovernanceHooks = mezmoGovernanceHooks,
+): T {
+  return Object.fromEntries(
+    Object.entries(tools).map(([name, tool]) => [name, governTool(name, tool, hooks)]),
+  ) as T;
+}
