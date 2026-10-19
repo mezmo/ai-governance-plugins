@@ -214,7 +214,8 @@ def mezmo_handlers(groups: Any, field: str = "command", script: str = HOOK_FILE)
         nested = "hooks" in group
         for h, handler in enumerate(as_list(group["hooks"]) if nested else [group]):
             handler = as_dict(handler)
-            if script in str(handler.get(field, "")):
+            # The script name as a whole path part, so a user's `not_mezmo_governance_hook.py.wrapper` is not ours.
+            if re.search(rf"(?:^|[\s/\\\"'=]){re.escape(script)}(?=$|[\s\"'}}])", str(handler.get(field, ""))):
                 found.append((g, h, group, handler))
     return found
 

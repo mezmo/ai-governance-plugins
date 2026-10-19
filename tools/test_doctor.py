@@ -1425,5 +1425,30 @@ class AntigravityProblemTests(unittest.TestCase):
                 self.assertIsNone(doctor.antigravity_problem(config))
 
 
+class HandlerMatchTests(unittest.TestCase):
+    def test_only_a_command_that_runs_the_script_counts_as_ours(self) -> None:
+        sys.path.insert(0, str(DOCTOR.parent))
+        self.addCleanup(sys.path.remove, str(DOCTOR.parent))
+        import doctor
+
+        ours = [
+            'python3 "$HOME/.codex/hooks/mezmo_governance_hook.py" || exit 2',
+            'python3 "${MEZMO_GOVERNANCE_HOOK:-/home/me/.factory/hooks/mezmo_governance_hook.py}" || exit 2',
+            "python3 mezmo_governance_hook.py",
+        ]
+        theirs = [
+            "/home/me/bin/not_mezmo_governance_hook.py.wrapper",
+            "python3 /home/me/bin/mezmo_governance_hook.py.bak",
+        ]
+        for command in ours:
+            with self.subTest(command=command):
+                self.assertEqual(len(doctor.mezmo_handlers([{"hooks": [{"command": command}]}])), 1)
+        for command in theirs:
+            with self.subTest(command=command):
+                self.assertEqual(doctor.mezmo_handlers([{"hooks": [{"command": command}]}]), [])
+        # The Claude Code script's name is a suffix of the others'; it must not match them.
+        self.assertEqual(doctor.mezmo_handlers([{"command": ours[0]}], script=doctor.CLAUDE_HOOK_FILE), [])
+
+
 if __name__ == "__main__":
     unittest.main()

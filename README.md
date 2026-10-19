@@ -372,7 +372,7 @@ does not fit your setup.
 
 | Agent | Hook | Fails closed? | Install |
 | --- | --- | --- | --- |
-| [Claude Code](claude-code/) | `PreToolUse` command hook (plugin) | on a crash or timeout yes, with `onFailure: "block"`, on Claude Code 2.1.295 and later; with no key it lets every call run unless `MEZMO_GOVERNANCE_REQUIRED=1` (see [Fail behavior](claude-code/README.md#fail-behavior)) | `/plugin marketplace add mezmo/ai-governance-plugins`, then `/plugin install mezmo@mezmo` and `/mezmo:setup governance` |
+| [Claude Code](claude-code/) | `PreToolUse` command hook (plugin), Bash and MCP calls only: Read, Edit, Write and other built-in tools run ungoverned | on a crash or timeout yes, with `onFailure: "block"`, on Claude Code 2.1.295 and later; with no key it lets every call run unless `MEZMO_GOVERNANCE_REQUIRED=1` (see [Fail behavior](claude-code/README.md#fail-behavior)) | `/plugin marketplace add mezmo/ai-governance-plugins`, then `/plugin install mezmo@mezmo` and `/mezmo:setup governance` |
 | [Codex CLI](codex/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no; an untrusted hook is skipped, also in headless `codex exec` | copy the script, merge `hooks.example.json`, trust it in `/hooks` |
 | [Cursor](cursor/) | `preToolUse` hook | yes, with `failClosed: true`; cloud agents do not load `~/.cursor/hooks.json` and run ungoverned (see [Fail behavior](cursor/README.md#fail-behavior)) | copy the script, merge `hooks.example.json` |
 | [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | `gemini extensions install ./gemini-cli`, or copy the script and merge `settings.example.json` |

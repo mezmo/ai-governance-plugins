@@ -16,7 +16,8 @@ Known limits, not vulnerabilities:
   times out (see their READMEs). In Codex, Gemini CLI, Droid, Windsurf and
   VS Code Local, a hook that crashes blocks the call only with the
   `|| exit 2` guard that the example configs carry.
-- The Claude Code plugin lets every call run until it has a key. Set
+- The Claude Code plugin governs only Bash and MCP tool calls; Read, Edit,
+  Write and the other built-in tools run without a check. It lets every call run until it has a key. Set
   `MEZMO_GOVERNANCE_REQUIRED=1` to make it deny instead. A crash or timeout
   blocks the call only on Claude Code 2.1.295 and later; Zed's cached adapter
   can bundle an older CLI.
