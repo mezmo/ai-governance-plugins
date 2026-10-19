@@ -330,6 +330,42 @@ class InstallTests(CliTestCase):
                 self.assertNotIn("nothing to change", result.stdout)
                 self.assertEqual(self.files(), installed)
 
+    def test_uninstall_keeps_a_users_handler_that_only_names_the_script(self) -> None:
+        # The user's own command names mezmo_governance_hook.py, but install never wrote it.
+        wrapper = "/home/me/bin/not_mezmo_governance_hook.py.wrapper"
+        nested = {"matcher": "*", "hooks": [{"type": "command", "command": wrapper}]}
+        configs = {
+            "codex": ("codex/hooks.json", lambda config: config["hooks"]["PreToolUse"].append(nested)),
+            "cursor": ("home/.cursor/hooks.json", lambda config: config["hooks"]["preToolUse"].append({"command": wrapper})),
+            "windsurf": ("home/.codeium/windsurf/hooks.json", lambda config: config["hooks"]["pre_run_command"].append({"command": wrapper})),
+            "droid": ("factory/.factory/hooks.json", lambda config: config["PreToolUse"].append(nested)),
+            "antigravity": ("home/.gemini/config/hooks.json", lambda config: config.update(wrapper={"PreToolUse": [nested]})),
+        }
+        for agent, (name, add) in configs.items():
+            with self.subTest(agent=agent):
+                self.assertEqual(self.cli("install", agent).returncode, 0)
+                path = self.tmp / name
+                config = json.loads(path.read_text())
+                add(config)
+                path.write_text(json.dumps(config, indent=2))
+
+                result = self.cli("uninstall", agent)
+
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertTrue(path.is_file(), f"uninstall deleted {name} with the user's handler in it")
+                self.assertIn(wrapper, path.read_text(), result.stdout)
+                self.assertNotIn("MEZMO_GOVERNANCE_HOOK:-", path.read_text())
+        # An older release wrote another guard after ||, or none; uninstall still removes its handlers.
+        self.write(ORIGINALS["codex"])
+        self.assertEqual(self.cli("install", "codex").returncode, 0)
+        path = self.tmp / "codex/hooks.json"
+        config = json.loads(path.read_text())
+        pre = config["hooks"]["PreToolUse"][1]["hooks"][0]
+        pre["command"] = pre["command"].split(" || ")[0] + " || { echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
+        path.write_text(json.dumps(config, indent=2))
+        self.assertEqual(self.cli("uninstall", "codex").returncode, 0)
+        self.assertEqual(json.loads(path.read_text()), ORIGINALS["codex"]["codex/hooks.json"])
+
     def test_install_and_uninstall_keep_the_users_json_formatting(self) -> None:
         # Each user writes a different indent and line ending, non-ASCII text and no final newline.
         texts = {}
