@@ -289,7 +289,12 @@ class InstallTests(CliTestCase):
                 fresh = self.files()
                 for name in names:
                     path = self.tmp / name
-                    if path.suffix == ".json":
+                    if path.name == "mezmo-governance.json":
+                        # Copilot's config may hold the user's own handlers too, so an older release differs in Mezmo's handler.
+                        older = json.loads(path.read_text())
+                        older["hooks"]["preToolUse"][0]["bash"] = older["hooks"]["preToolUse"][0]["bash"].split(" || ")[0]
+                        path.write_text(json.dumps(older))
+                    elif path.suffix == ".json":
                         path.write_text(json.dumps({**json.loads(path.read_text()), "older": True}))
                     else:
                         path.write_bytes(path.read_bytes() + b"\n// an older release\n")
@@ -455,6 +460,39 @@ class InstallTests(CliTestCase):
         registry = json.loads((self.tmp / "claude/plugins/installed_plugins.json").read_text())
         self.assertEqual(list(registry["plugins"]), ["mezmo@mezmo"])
         self.assertIn("installed: yes", self.status("claude-code"))
+
+    def test_copilot_reinstall_without_the_script_keeps_the_users_handlers(self) -> None:
+        # The hook script is gone, and the user added a handler of their own to mezmo-governance.json.
+        self.assertEqual(self.cli("install", "copilot").returncode, 0)
+        config = self.tmp / "copilot/hooks/mezmo-governance.json"
+        own = {"type": "command", "bash": "other-hook", "timeoutSec": 5}
+        edited = json.loads(config.read_text())
+        edited["hooks"]["preToolUse"].insert(0, own)
+        edited["hooks"]["sessionStart"] = [own]
+        config.write_text(json.dumps(edited, indent=2))
+        (self.tmp / "copilot/hooks/mezmo_governance_hook.py").unlink()
+
+        result = self.cli("install", "copilot")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(config.read_text()), edited)
+        self.assertTrue((self.tmp / "copilot/hooks/mezmo_governance_hook.py").is_file())
+        self.assertIn("installed: yes", self.status("copilot"))
+        # An older file's handler is replaced, the user's stay, and the file is backed up first.
+        older = json.loads(config.read_text())
+        older["hooks"]["preToolUse"][1]["bash"] = older["hooks"]["preToolUse"][1]["bash"].split(" || ")[0]
+        config.write_text(json.dumps(older, indent=2))
+        result = self.cli("install", "copilot")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(config.read_text()), edited)
+        (backup,) = self.tmp.glob("copilot/hooks/mezmo-governance.json.mezmo-backup-*")
+        self.assertEqual(json.loads(backup.read_text()), older)
+        self.assertIn(f"backup: {backup}", result.stdout)
+        # Uninstall takes out Mezmo's handlers and keeps the user's.
+        result = self.cli("uninstall", "copilot")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(config.read_text()), {"version": 1, "hooks": {"preToolUse": [own], "sessionStart": [own]}})
+        self.assertFalse((self.tmp / "copilot/hooks/mezmo_governance_hook.py").exists())
 
     def test_reinstalling_copilot_adds_the_guard_to_a_file_without_it(self) -> None:
         # An older file lacks the guard, and VS Code Local runs the tool when the hook crashes.

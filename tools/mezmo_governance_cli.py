@@ -414,19 +414,24 @@ def copilot() -> Installer:
         script, config = files()
         default = doctor.home() / ".copilot"
         data = example("copilot", "hooks.example.json", doctor.copilot_dir(), default)
-        if installed():
-            steps = hook_refresh(REPO / "copilot" / HOOK_FILE, script)
-            if load_object(config) != data:
-                steps.append(Step(f"update {shown(config)} from copilot/hooks.example.json", (config,), lambda: write_json(config, data)))
-            return steps
-        return [
-            hook_copy(REPO / "copilot" / HOOK_FILE, script),
-            Step(f"write {shown(config)}", (), lambda: write_json(config, data)),
-        ]
+        steps = hook_refresh(REPO / "copilot" / HOOK_FILE, script)
+        if not config.is_file():
+            return steps + [Step(f"write {shown(config)}", (), lambda: write_json(config, data))]
+        heads = written("copilot", doctor.copilot_dir(), default, "bash")
+
+        def fresh() -> dict:
+            """The file with each handler install wrote replaced by this release's, and the user's own kept."""
+            return merged(without_hook(load_object(config), "bash", heads), data, "bash")
+
+        if fresh() != load_object(config):
+            steps.append(Step(f"update {shown(config)} from copilot/hooks.example.json", (config,), lambda: write_json(config, fresh())))
+        return steps
 
     def uninstall() -> list:
         script, config = files()
-        return hook_removal(config, doctor.copilot_dir()) + hook_removal(script, doctor.copilot_dir())
+        heads = written("copilot", doctor.copilot_dir(), doctor.home() / ".copilot", "bash")
+        # The file is install's own, so it goes once only its version is left; the user's own handlers stay.
+        return unmerge_steps(config, heads, "bash", leftover=("version",)) + hook_removal(script, doctor.copilot_dir())
 
     return Installer(installed, install, uninstall, "")
 
