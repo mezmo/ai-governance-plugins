@@ -74,6 +74,29 @@ To try the plugin for one session without installing it, run
 
 ## Verify
 
+After installing, setup checks the runtime before requesting a service account token.
+A successful marketplace install does not establish compatibility: Claude's marketplace
+installer may accept an older CLI. `governance_config.py preflight` distinguishes an old
+runtime, a missing marketplace plugin, and an unreadable plugin configuration. Older
+versions must be upgraded; plaintext settings are not a workaround for their hook failure
+handling. The repository installer also refuses an unsupported Claude version.
+
+For an end-to-end check after setup:
+
+1. Start a new Claude session. Run `/mezmo:test`; it tests only configured signals.
+   Use `/mezmo:test --signals traces` to select traces explicitly, `--all-signals` to
+   deliberately test all three, or `--check-only` to probe without publishing records.
+2. Find the printed `test.run_id`, `service.name=mezmo-claude-plugin`, and `mezmo.test=true`
+   in the pipeline destination. The checker confirms endpoint acceptance, not arrival.
+3. Ask Claude to run `printf 'mezmo-onboarding-test\n'` using Bash, then confirm its
+   decision under the intended Governance agent. Read/Edit/Write are not governed.
+4. Separately look for actual Claude spans under `service.name=claude-code`.
+
+Keep prompt, response and tool-detail capture off for this test. Governance still sends
+Bash/MCP arguments for authorization, independently of telemetry content capture.
+Account selection, token use, policy assignment and pipeline changes require the user's
+or administrator's authorization; these checks do not perform them automatically.
+
 To check the setup from the repository root, run `./mezmo-governance doctor claude-code` and
 `./mezmo-governance smoke claude-code`. `doctor` reads `MEZMO_GOVERNANCE_URL` and
 `MEZMO_GOVERNANCE_TOKEN` from the shell, not the key that setup saved, so export them first.

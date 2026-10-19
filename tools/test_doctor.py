@@ -457,14 +457,14 @@ class ClaudeCodeTests(DoctorTestCase):
         self.assertIn(f'Instance ID "claude-code-{host}"', form)
         self.assertEqual(self.lines(result, "Mezmo agent form for Codex"), [])
 
-    def test_versions_below_tested_or_fail_closed_minimum_warn(self) -> None:
+    def test_versions_below_tested_warn_and_below_minimum_fail(self) -> None:
         cases = [("2.1.295 (Claude Code)", "tested 2.1.301"), ("2.1.200 (Claude Code)", "fail-closed setting needs")]
         for version, words in cases:
             with self.subTest(version=version):
                 self.agent("claude", version)
                 result = self.doctor()
                 self.assertIn(words, self.lines(result, "Claude Code")[0])
-                self.assertTrue(self.lines(result, "Claude Code")[0].startswith("warn"))
+                self.assertTrue(self.lines(result, "Claude Code")[0].startswith("FAIL" if "2.1.200" in version else "warn"))
 
     def test_settings_install_passes_with_a_hook_that_denies(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")

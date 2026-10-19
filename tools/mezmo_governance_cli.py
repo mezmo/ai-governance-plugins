@@ -579,6 +579,10 @@ def claude_code() -> Installer:
         ]
 
     def install() -> list:
+        version = doctor.binary_version(need("claude"))
+        minimum = next(agent.minimum for agent in doctor.AGENTS if agent.binary == "claude")
+        if version is None or version < doctor.version_tuple(minimum):
+            raise Failure(f"Claude Code {minimum}+ is required for fail-closed governance. Upgrade before installing; nothing changed.")
         if installed():
             return []
         # The older mezmo-governance plugin would check every call a second time.

@@ -6,6 +6,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -39,6 +40,8 @@ class FakeClaude:
 
     def __call__(self, args, stdin=None):
         self.calls.append({"args": list(args), "stdin": stdin})
+        if args == ["--version"]:
+            return 0, "2.1.301 (Claude Code)"
         if not self.installed:
             return 1, f'No installed plugin has the id "{args[2]}".'
         if "--values-stdin" in args:
@@ -113,6 +116,54 @@ class CliTest(unittest.TestCase):
             )
         return code, out.getvalue(), err.getvalue()
 
+    def test_preflight_failures_do_not_touch_tokens_network_or_settings(self):
+        cases = [
+            ((0, "2.1.212 (Claude Code)"), (0, "{}"), 5),
+            ((1, ""), (0, "{}"), 5),
+            ((127, "not on PATH"), (0, "{}"), 5),
+            ((0, "2.1.301"), (1, "error: unknown command 'configure'"), 5),
+            ((0, "2.1.301"), (1, 'No installed plugin has the id "mezmo@mezmo".'), 4),
+            ((0, "2.1.301"), (1, "configuration unavailable"), 1),
+            ((0, "2.1.301"), (0, "not-json"), 1),
+            ((0, "2.1.301"), (0, '{"inputs": ["bad"]}'), 1),
+        ]
+        for version, options, expected in cases:
+            def claude(args, stdin=None):
+                self.assertIsNone(stdin)
+                return version if args == ["--version"] else options
+            with self.subTest(version=version, options=options), \
+                    patch.object(gc, "_key_from", side_effect=AssertionError("read token")), \
+                    patch.object(gc.cco, "read_settings", side_effect=AssertionError("read settings")), \
+                    patch.object(gc.cco, "write_settings", side_effect=AssertionError("write settings")):
+                http = FakeHttp()
+                code, _, _ = self.run_cli("configure", "--key", KEY, claude=claude, http=http)
+                self.assertEqual(code, expected)
+                self.assertEqual(http.calls, [])
+                self.assertFalse(self.settings.exists())
+
+    def test_old_python_or_missing_claude_stops_before_token_access(self):
+        with patch.object(gc.sys, "version_info", (3, 8)), \
+                patch.object(gc, "_key_from", side_effect=AssertionError("read token")):
+            self.assertEqual(self.run_cli("configure", "--key", KEY)[0], 5)
+        def missing(args, stdin=None):
+            raise FileNotFoundError("claude")
+        self.assertEqual(self.run_cli("preflight", claude=missing)[0], 5)
+
+    def test_settings_fallback_does_not_bypass_runtime_minimum(self):
+        def old(args, stdin=None):
+            return 0, "2.1.212"
+        http = FakeHttp()
+        code, _, _ = self.run_cli("configure", "--store", "settings", "--key", KEY, claude=old, http=http)
+        self.assertEqual(code, 5)
+        self.assertEqual(http.calls, [])
+        self.assertFalse(self.settings.exists())
+
+    def test_supported_plugin_dir_can_explicitly_use_settings(self):
+        code, _, err = self.run_cli("configure", "--store", "settings", "--key", KEY,
+                                    claude=FakeClaude(installed=False))
+        self.assertEqual(code, 0, err)
+        self.assertTrue(self.settings.exists())
+
     def test_configure_checks_then_saves_to_the_plugin(self):
         claude = FakeClaude()
         code, out, err = self.run_cli("configure", "--key", KEY, "--url", OTHER_URL, claude=claude)
@@ -128,7 +179,7 @@ class CliTest(unittest.TestCase):
         claude = FakeClaude()
         code, _, err = self.run_cli("configure", "--key", KEY, http=FakeHttp(401, "{}"), claude=claude)
         self.assertEqual(code, 3)
-        self.assertEqual(claude.calls, [])
+        self.assertFalse(any("--values-stdin" in call["args"] for call in claude.calls))
         self.assertIn("rejected", err)
 
     def test_configure_production_url_saves_an_empty_url(self):

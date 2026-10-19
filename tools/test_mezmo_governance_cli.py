@@ -226,6 +226,15 @@ class CliTestCase(unittest.TestCase):
 
 
 class InstallTests(CliTestCase):
+    def test_old_claude_install_does_not_change_configuration(self) -> None:
+        self.fake("claude", "2.1.212 (Claude Code)")
+        before = self.files()
+        result = self.cli("install", "claude-code")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("2.1.295+", result.stdout)
+        self.assertEqual(self.files(), before)
+        self.assertFalse(self.log.exists())
+
     def test_each_agent_installs_once_and_uninstalls_to_the_original(self) -> None:
         for agent in AGENTS:
             with self.subTest(agent=agent):

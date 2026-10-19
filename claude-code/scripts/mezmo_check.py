@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check that Mezmo's OpenTelemetry endpoint accepts your ingestion key.
 
-For traces, logs and metrics it first sends Mezmo's connection check (an empty JSON
+For each selected signal it first sends Mezmo's connection check (an empty JSON
 object, answered with HTTP 207 and not published), then one small OTLP/JSON test record
 with service.name=mezmo-claude-plugin and mezmo.test=true (answered with HTTP 200).
 """
@@ -18,6 +18,7 @@ import sys
 import time
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
+import claude_code_otel as cco
 import mezmo_common as mc
 
 SERVICE_NAME = "mezmo-claude-plugin"
@@ -107,13 +108,16 @@ def _post(signal: str, key: str, payload: Mapping[str, Any], step: str, send: Tr
     return Result(signal, step, status, ok, explain(status, body))
 
 
-def run(key: str, check_only: bool = False, send: Transport = mc.http_request, run_id: Optional[str] = None) -> List[Result]:
+def run(key: str, check_only: bool = False, send: Transport = mc.http_request, run_id: Optional[str] = None, signals: Sequence[str] = mc.SIGNALS) -> List[Result]:
+    signals = tuple(dict.fromkeys(signals))
+    if not signals or any(signal not in mc.SIGNALS for signal in signals):
+        raise ValueError("Select at least one of traces, logs, metrics.")
     run_id = run_id or secrets.token_hex(4)
-    results = [_post(signal, key, {}, "connection", send) for signal in mc.SIGNALS]
+    results = [_post(signal, key, {}, "connection", send) for signal in signals]
     if check_only or not all(r.ok for r in results):
         return results
     now_ns = time.time_ns()
-    for signal in mc.SIGNALS:
+    for signal in signals:
         results.append(_post(signal, key, test_payload(signal, now_ns, run_id), "record", send))
     return results
 
@@ -129,6 +133,9 @@ def main(
     parser.add_argument("--settings-file", type=pathlib.Path, help="Claude Code settings file to read the key from")
     parser.add_argument("--check-only", action="store_true", help="Only run the connection check; publish nothing")
     parser.add_argument("--json", action="store_true", help="Print JSON")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--signals", nargs="+", choices=mc.SIGNALS, help="Test only these signals")
+    selection.add_argument("--all-signals", action="store_true", help="Explicitly test traces, logs and metrics")
     args = parser.parse_args(argv)
 
     key = mc.resolve_key(args.key, environ) or mc.key_from_settings(
@@ -143,8 +150,26 @@ def main(
         print(f"Error: {err}", file=sys.stderr)
         return 2
 
+    signals = args.signals or (mc.SIGNALS if args.all_signals else None)
+    if signals is None:
+        try:
+            settings = cco.read_settings(args.settings_file or mc.default_settings_path(environ))
+            # Startup environment can override the saved selection. Managed settings need an
+            # explicit selection: this script cannot reproduce every Claude policy source.
+            if cco.managed_settings_with_otel():
+                raise ValueError("Managed telemetry settings exist. Confirm their signals and pass --signals explicitly.")
+            effective = {**settings, "env": {**settings.get("env", {}), **environ}}
+            report = cco.status(effective)
+            if report["conflicts"] or report["warnings"]:
+                raise ValueError("Telemetry configuration is conflicting or incomplete. Resolve it or pass --signals explicitly for a synthetic endpoint test.")
+            signals = [name for name, enabled in report["signals"].items() if enabled]
+            if not signals or effective["env"].get(cco.ENABLE_KEY) not in ("1", "true"):
+                raise ValueError("No enabled Mezmo signals. Configure telemetry, pass --signals, or explicitly choose --all-signals.")
+        except (cco.SettingsError, ValueError) as err:
+            print(f"Error: {err}", file=sys.stderr)
+            return 2
     run_id = secrets.token_hex(4)
-    results = run(key, check_only=args.check_only, send=send, run_id=run_id)
+    results = run(key, check_only=args.check_only, send=send, run_id=run_id, signals=signals)
     passed = all(r.ok for r in results)
 
     if args.json:
@@ -153,6 +178,7 @@ def main(
             "key": mc.mask(key),
             "run_id": run_id,
             "passed": passed,
+            "verification": "endpoint acceptance only; destination arrival not verified",
             "results": [dataclasses.asdict(r) for r in results],
         }, indent=2))
         return 0 if passed else 1
@@ -168,8 +194,8 @@ def main(
     if args.check_only:
         print("All checks passed. Nothing was published.")
     else:
-        print(f"All checks passed. In Mezmo, look for service.name={SERVICE_NAME} and test.run_id={run_id}.")
-        print("Data shows up once a pipeline has an OpenTelemetry source.")
+        print(f"All checks passed: endpoint accepted the synthetic records. In Mezmo, look for service.name={SERVICE_NAME} and test.run_id={run_id}.")
+        print("Destination arrival is not verified. Confirm the run ID in your pipeline destination; actual Claude spans use service.name=claude-code.")
     return 0
 
 

@@ -23,7 +23,7 @@
   "userConfig": {
     "governance_access_key": {
       "type": "string",
-      "title": "Mezmo Governance access key",
+      "title": "Mezmo Governance service account token",
       "description": "Token of the service account that the Claude Code agent uses in Mezmo Governance, a standard Mezmo service key. Leave empty to keep governance off. With a key, every Bash and MCP tool call is checked before it runs.",
       "sensitive": true
     },
