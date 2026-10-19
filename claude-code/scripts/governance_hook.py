@@ -46,6 +46,7 @@ DEFAULT_TIMEOUT_SECONDS = 590.0
 # hooks.json gives the hook 600 seconds; deny before Claude Code stops it.
 MAX_TIMEOUT_SECONDS = 590.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+MIN_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_AUDIT_LOG = Path.home() / ".mezmo" / "governance-audit.jsonl"
 # One status file per session, which the plugin's status mod reads. The mod finds it by
 # $HOME and its session id, so the path must stay in step with hooks/governance.ts.
@@ -208,7 +209,10 @@ def timeout_seconds() -> float:
 
 
 def poll_interval_seconds() -> float:
-    return positive_seconds("MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS)
+    return max(
+        positive_seconds("MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS),
+        MIN_POLL_INTERVAL_SECONDS,
+    )
 
 
 def audit_log_path() -> Path:

@@ -616,6 +616,23 @@ class DeadlineBoundsTests(unittest.TestCase):
             hook.handle_event(hook_event("PreToolUse"), http=http, clock=FakeClock())
         self.assertLessEqual(http.calls[0][3], 590)
 
+    def test_poll_interval_has_a_one_second_floor(self) -> None:
+        # protocol.md: poll no more often than once a second, whatever the setting says.
+        for configured in ("5e-324", "0.001", "0.5"):
+            with self.subTest(configured=configured), \
+                    patch.dict(os.environ, {"MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": configured}):
+                self.assertEqual(hook.poll_interval_seconds(), 1.0)
+                clock = FakeClock()
+                slept: List[float] = []
+
+                def sleep(seconds: float) -> None:
+                    slept.append(seconds)
+                    clock.sleep(seconds)
+
+                http = FakeHttp([(207, {"approved": False, "reason": None}), (207, {}), (207, {}), (200, {"approved": True})])
+                hook.handle_event(hook_event("PreToolUse"), http=http, clock=clock, sleep=sleep)
+                self.assertEqual(slept, [1.0, 1.0])
+
 
 class HookConfigTests(unittest.TestCase):
     def test_a_pre_tool_hook_that_fails_blocks_the_tool(self) -> None:
