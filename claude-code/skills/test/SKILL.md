@@ -34,13 +34,13 @@ Arguments: $ARGUMENTS
 
    | What you see | What to tell the user |
    | --- | --- |
-   | Governance is off | Tool calls run without a check. Run `/mezmo:setup governance` to turn it on. |
+   | Governance is off | Bash and MCP tool calls run without a check. Run `/mezmo:setup governance` to turn it on. |
    | Off right after the plugin was reinstalled or its marketplace changed | Reinstalling deletes the saved access key. Run `/mezmo:setup governance` again. If tool calls are blocked with `HTTP 401` meanwhile, run `/reload-plugins` or start a new session first. |
-   | Required but not configured | Every tool call is blocked until governance is configured. Ask their administrator for the service account token. |
+   | Required but not configured | Every Bash and MCP tool call is blocked until governance is configured. Ask their administrator for the service account token. |
    | `HTTP 401` | Mezmo Governance rejected the access key. Rerun `/mezmo:setup governance` with a current key. |
    | `ENOAGENT`, `EAGENTINACTIVE` or `EPOLICYUNASSIGNED` | The key is valid, but no active agent with a policy is registered for it. An administrator fixes this in Mezmo Governance. |
    | `approval still pending` | The policy sent the call to a person, and nobody decided in time. The decision is in Mezmo Governance. Approving it there lets the same call through when Claude retries it. |
-   | `argument name '-i' isn't accepted` | The service only accepts plain identifiers as argument names. Calls with such names are blocked until the service accepts them. |
+   | `argument name 'max-results' isn't accepted` | The service only accepts plain identifiers as argument names. MCP tool calls with such names are blocked until the service accepts them. |
    | `Mezmo Governance is unavailable` | The machine can't reach the authorize URL. Check the URL, proxy, VPN or firewall. |
 
 ## Telemetry

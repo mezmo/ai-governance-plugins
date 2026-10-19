@@ -82,7 +82,8 @@ To check the setup from the repository root, run `./mezmo-governance doctor clau
 
 ## Governance
 
-With governance on, a `PreToolUse` hook sends each tool call to Mezmo Governance before it runs:
+With governance on, a `PreToolUse` hook sends each Bash and MCP tool call to Mezmo Governance
+before it runs:
 
 | Policy says | What happens |
 | --- | --- |
@@ -90,6 +91,11 @@ With governance on, a `PreToolUse` hook sends each tool call to Mezmo Governance
 | Deny | The tool is blocked, and Claude sees the policy's reason |
 | Ask a person | The call waits while someone approves or denies it in Mezmo, for up to 590 seconds. If nobody decides, it's blocked |
 | Nothing: the service is unreachable, or rejects the key | The tool is blocked |
+
+Bash calls show up in Mezmo under namespace `claude_code`, with `command` and `description` as
+arguments. MCP calls show up under the server's name, such as `mezmo`. Other built-in tools, such
+as Read, Edit and Write, don't go to Mezmo. Neither do the MCP servers the Claude desktop app adds
+for its own task list, panes and sessions (`ccd_turn`, `ccd_session` and the like).
 
 Governance stays off until you give it a key. Until then the hook lets every call through and
 sends nothing. Register an agent for Claude Code in Mezmo Governance, give it a service account
@@ -105,8 +111,8 @@ settings file.
 | Service account token | `governance_access_key` | `MEZMO_GOVERNANCE_ACCESS_KEY` or `MEZMO_GOVERNANCE_TOKEN` | none, so governance is off |
 | Required | | `MEZMO_GOVERNANCE_REQUIRED=1` | off |
 
-The service only accepts plain identifiers as argument names, so a Grep call with `-i` gets
-blocked, and the message says which argument.
+The service only accepts plain identifiers as argument names, so an MCP tool with an argument
+such as `max-results` gets blocked, and the message says which argument.
 
 ## Telemetry
 
@@ -188,8 +194,8 @@ read. It never writes tool arguments there.
 ## Rolling out to an organization
 
 Pick "My organization" in `/mezmo:setup`. It writes one managed-settings file with the governance
-and telemetry variables, plus `MEZMO_GOVERNANCE_REQUIRED=1` if you want every tool call blocked
-on machines where governance isn't set up. The file holds your keys, so treat it like a secret.
+and telemetry variables, plus `MEZMO_GOVERNANCE_REQUIRED=1` if you want every Bash and MCP tool
+call blocked on machines where governance isn't set up. The file holds your keys, so treat it like a secret.
 Deploy it one of three ways:
 
 - As a drop-in in `managed-settings.d/`, under `/Library/Application Support/ClaudeCode/` on

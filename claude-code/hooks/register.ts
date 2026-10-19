@@ -246,8 +246,8 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // Each tool call runs the governance hook inside next(). Track it, so the band can say
-  // which call is waiting, and read the status file once it's done.
+  // Bash and MCP tool calls run the governance hook inside next(). Track each call, so the
+  // band can say which one is waiting, and read the status file once it's done.
   on('tool.call', async ($, e, next) => {
     if (!governancePath) return next(e)
     const id = ++nextCallId

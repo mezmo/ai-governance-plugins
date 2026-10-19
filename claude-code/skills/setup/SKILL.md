@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Set up Mezmo for Claude Code - check every tool call with Mezmo Governance, send telemetry (metrics, events and traces) to Mezmo, or connect Claude to Mezmo's MCP server, in any combination - for this user or, for governance and telemetry, as a managed-settings file for an organization.
+description: Set up Mezmo for Claude Code - check Bash and MCP tool calls with Mezmo Governance, send telemetry (metrics, events and traces) to Mezmo, or connect Claude to Mezmo's MCP server, in any combination - for this user or, for governance and telemetry, as a managed-settings file for an organization.
 argument-hint: "[governance|telemetry|mcp|all]"
 disable-model-invocation: true
 allowed-tools:
@@ -14,7 +14,7 @@ allowed-tools:
 
 The plugin does three independent things:
 
-- **Governance**: before each tool call, a hook asks Mezmo Governance whether this exact call may run and blocks it when the answer is no. It uses a service account token, a standard Mezmo service key. Until one is configured, the hook does nothing.
+- **Governance**: before each Bash or MCP tool call, a hook asks Mezmo Governance whether this exact call may run and blocks it when the answer is no. It uses a service account token, a standard Mezmo service key. Until one is configured, the hook does nothing.
 - **Telemetry**: Claude Code exports OpenTelemetry metrics, events and traces to Mezmo's endpoint, `https://logs.mezmo.com/otel`, authenticated with an ingestion key in an `apikey` header.
 - **MCP**: Claude Code connects to Mezmo's MCP server, `https://mcp.mezmo.com/mcp`, with a service key, so Claude can query Mezmo logs and work on pipelines.
 
@@ -64,11 +64,11 @@ Ask which environment:
 
 Before saving, tell the user what changes:
 
-- Every tool call waits for Mezmo Governance before it runs.
+- Every Bash and MCP tool call waits for Mezmo Governance before it runs. Other built-in tools, such as Read and Edit, and the Claude desktop app's own servers aren't checked.
 - A call the policy denies is blocked with the policy's reason.
 - A call the policy sends to a person waits for their decision, up to about 10 minutes, and is blocked if nobody decides.
 - If Mezmo Governance can't be reached, calls are blocked.
-- Mezmo Governance rejects argument names that aren't plain identifiers, such as Grep's `-i` or `-C`, so those calls are blocked until the service accepts them.
+- Mezmo Governance rejects argument names that aren't plain identifiers, such as `max-results`, so an MCP tool with one is blocked until the service accepts it.
 
 ### Just me
 
@@ -87,7 +87,7 @@ What each exit code means:
 
 ### My organization
 
-Ask whether governance should be **required**. With `--required`, Claude Code blocks every tool call on a machine where governance isn't configured, instead of letting it run.
+Ask whether governance should be **required**. With `--required`, Claude Code blocks every Bash and MCP tool call on a machine where governance isn't configured, instead of letting it run.
 
 Write the managed-settings document to a file, not to the transcript:
 

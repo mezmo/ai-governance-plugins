@@ -32,7 +32,7 @@ def event(tool: str, call: str) -> dict:
 
 class MockGovernanceTests(unittest.TestCase):
     def setUp(self) -> None:
-        handler = mock_governance.make_handler(["Bash", "kubernetes:*"], ["Write"])
+        handler = mock_governance.make_handler(["Bash", "kubernetes:*"], ["Write", "create_issue"])
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         state = tempfile.TemporaryDirectory()
@@ -73,7 +73,7 @@ class MockGovernanceTests(unittest.TestCase):
         self.assertEqual(mock_governance.decide({"tool_name": "Read"}, ["Bash"], []), "approved")
 
     def test_hook_allows_unmatched_tool(self) -> None:
-        result = self.run_hook(event("Read", "c1"))
+        result = self.run_hook(event("mcp__github__list_issues", "c1"))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIsNone(self.decision(result))
 
@@ -87,7 +87,7 @@ class MockGovernanceTests(unittest.TestCase):
         self.assertEqual(self.decision(result), "deny")
 
     def test_held_call_times_out_and_denies(self) -> None:
-        result = self.run_hook(event("Write", "c4"))
+        result = self.run_hook(event("mcp__github__create_issue", "c4"))
         self.assertEqual(self.decision(result), "deny")
         self.assertIn("pending", result.stdout)
 
@@ -143,8 +143,8 @@ class MockGovernanceTests(unittest.TestCase):
 
         writes = Writes()
         with contextlib.redirect_stdout(writes):
-            self.run_hook(event("Read", "c7"))
-        self.assertEqual(writes.calls, ["approved claude_code:Read\n"])
+            self.run_hook(event("mcp__github__list_issues", "c7"))
+        self.assertEqual(writes.calls, ["approved github:list_issues\n"])
 
     def test_missing_key_is_rejected(self) -> None:
         self.env.pop("MEZMO_GOVERNANCE_TOKEN")
