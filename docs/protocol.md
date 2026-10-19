@@ -187,8 +187,8 @@ MCP tool names of the form `mcp__<server>__<tool>` split into namespace
 
 | Variable | Required | Default | Meaning |
 | --- | --- | --- | --- |
-| `MEZMO_GOVERNANCE_URL` | yes | — | Full authorize URL |
-| `MEZMO_GOVERNANCE_TOKEN` | yes | — | Service account token (plugins prefix `Token `) |
+| `MEZMO_GOVERNANCE_URL` | yes (Claude Code: no) | — | Full authorize URL. The Claude Code plugin defaults to `https://api.mezmo.com/governance/workflow/authorize` |
+| `MEZMO_GOVERNANCE_TOKEN` | yes (Claude Code: no; without a key it lets calls run unless `MEZMO_GOVERNANCE_REQUIRED=1`) | — | Service account token (plugins prefix `Token `). The Claude Code plugin also reads `MEZMO_GOVERNANCE_ACCESS_KEY`, which wins over this variable |
 | `MEZMO_GOVERNANCE_TIMEOUT_SECONDS` | no | `590` | Overall deadline, under the 600s hook timeout. Capped at 590; `nan`, `inf` and values ≤ 0 are refused |
 | `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` | Status poll spacing, at least 1 second |
 | `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` | Local post-tool log |
