@@ -427,7 +427,9 @@ A local HTTP server stands in for Mezmo. The tests confirm that:
 - the shared code is identical across the eight Python hook adapters, across the
   four `client.ts` copies, and between the LangChain Python client and its
   OpenAI Agents SDK and Claude Agent SDK copies; the Python hooks import on
-  Python 3.9.
+  Python 3.9;
+- the Claude Code hook matches the shared Python hook code in the definitions
+  `CLAUDE_CODE_SHARED_DEFINITIONS` names (`codex/test_hook.py`).
 
 ## What they do not confirm
 

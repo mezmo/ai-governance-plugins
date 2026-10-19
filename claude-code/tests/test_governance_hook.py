@@ -289,6 +289,45 @@ class ServiceProtocolTests(unittest.TestCase):
         self.assertIn("argument names", reason_of(output))
         self.assertNotIn("'pattern'", reason_of(output))
 
+    def test_a_server_error_shows_no_server_text(self) -> None:
+        # protocol.md rule 9: Mezmo's code and message only on a 4xx.
+        body = {"code": "EINTERNAL", "message": "stack trace at db.js:12"}
+        output = hook.handle_event(hook_event("PreToolUse"), http=FakeHttp([(500, body)]))
+        self.assertEqual(decision_of(output), "deny")
+        self.assertIn("Mezmo Governance returned HTTP 500", reason_of(output))
+        self.assertNotIn("EINTERNAL", reason_of(output))
+        self.assertNotIn("stack trace", reason_of(output))
+
+    def test_a_poll_server_error_shows_no_server_text(self) -> None:
+        clock = FakeClock()
+        http = FakeHttp([(207, {"approved": False}), (502, {"code": "EGATEWAY", "message": "upstream said no"})])
+        output = hook.handle_event(hook_event("PreToolUse"), http=http, clock=clock, sleep=clock.sleep)
+        self.assertIn("Mezmo Governance returned HTTP 502 while polling", reason_of(output))
+        self.assertNotIn("upstream said no", reason_of(output))
+
+    def test_code_and_message_are_one_bounded_line_each(self) -> None:
+        body = {"code": "EBAD\nCODE" + "C" * 300, "message": "first line\r\nsecond\tline " + "m" * 500}
+        output = hook.handle_event(hook_event("PreToolUse"), http=FakeHttp([(403, body)]))
+        reason = reason_of(output)
+        self.assertNotIn("\n", reason)
+        self.assertNotIn("\r", reason)
+        self.assertNotIn("\t", reason)
+        self.assertIn("EBAD CODE", reason)
+        self.assertIn("first line second line", reason)
+        self.assertNotIn("C" * 201, reason)
+        self.assertNotIn("m" * 200, reason)
+
+    def test_nested_error_detail_is_not_shown(self) -> None:
+        body = {
+            "code": "EINVAL", "message": "Bad Request",
+            "errors": [{"message": "must not hold secret-value", "instance_path": "/items/0/tool_name"}],
+        }
+        output = hook.handle_event(hook_event("PreToolUse"), http=FakeHttp([(400, body)]))
+        reason = reason_of(output)
+        self.assertIn("HTTP 400 EINVAL: Bad Request", reason)
+        self.assertNotIn("secret-value", reason)
+        self.assertNotIn("/items/0/tool_name", reason)
+
     def test_bearer_key_is_sent_unchanged(self) -> None:
         with patch.dict(os.environ, {"MEZMO_GOVERNANCE_ACCESS_KEY": "Bearer sts_test"}):
             self.assertEqual(hook.authorization_header(), "Bearer sts_test")
@@ -617,6 +656,23 @@ class DeadlineBoundsTests(unittest.TestCase):
             hook.handle_event(hook_event("PreToolUse"), http=http, clock=FakeClock())
         self.assertLessEqual(http.calls[0][3], 590)
 
+    def test_poll_interval_has_a_one_second_floor(self) -> None:
+        # protocol.md: poll no more often than once a second, whatever the setting says.
+        for configured in ("5e-324", "0.001", "0.5"):
+            with self.subTest(configured=configured), \
+                    patch.dict(os.environ, {"MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": configured}):
+                self.assertEqual(hook.poll_interval_seconds(), 1.0)
+                clock = FakeClock()
+                slept: List[float] = []
+
+                def sleep(seconds: float) -> None:
+                    slept.append(seconds)
+                    clock.sleep(seconds)
+
+                http = FakeHttp([(207, {"approved": False, "reason": None}), (207, {}), (207, {}), (200, {"approved": True})])
+                hook.handle_event(hook_event("PreToolUse"), http=http, clock=clock, sleep=sleep)
+                self.assertEqual(slept, [1.0, 1.0])
+
 
 class HookConfigTests(unittest.TestCase):
     def test_a_pre_tool_hook_that_fails_blocks_the_tool(self) -> None:
@@ -786,6 +842,42 @@ class WhichCallsAreGovernedTests(unittest.TestCase):
                     self.assertTrue(matcher.search(name), name)
                 for name in ("Read", "BashOutput", "ToolSearch", "Xmcp__a__b"):
                     self.assertFalse(matcher.search(name), name)
+
+
+class SlowHttp(FakeHttp):
+    """Each answer arrives `delay` seconds after the request, on the fake clock."""
+
+    def __init__(self, clock: FakeClock, delay: float, responses: List[Response]) -> None:
+        super().__init__(responses)
+        self.clock = clock
+        self.delay = delay
+
+    def __call__(
+        self, method: str, url: str, payload: Optional[Mapping[str, Any]], timeout: float
+    ) -> Tuple[int, Dict[str, Any]]:
+        self.clock.now += self.delay
+        return super().__call__(method, url, payload, timeout)
+
+
+@patch.dict(os.environ, environment(**{**ENV, "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "2"}), clear=True)
+class LateAnswerTests(unittest.TestCase):
+    """protocol.md rule 8: an answer that arrives after the deadline is a deny."""
+
+    def test_an_approval_posted_after_the_deadline_is_refused(self) -> None:
+        clock = FakeClock()
+        http = SlowHttp(clock, 5.0, [(200, {"approved": True})])
+        output = hook.handle_event(hook_event("PreToolUse"), http=http, clock=clock, sleep=clock.sleep)
+        self.assertIsNotNone(output)
+        self.assertEqual(decision_of(output), "deny")
+        self.assertIn("Mezmo Governance: approval still pending", reason_of(output))
+
+    def test_an_approval_polled_after_the_deadline_is_refused(self) -> None:
+        clock = FakeClock()
+        http = SlowHttp(clock, 1.5, [(207, {"approved": False, "reason": None}), (200, {"approved": True})])
+        output = hook.handle_event(hook_event("PreToolUse"), http=http, clock=clock, sleep=clock.sleep)
+        self.assertIsNotNone(output)
+        self.assertEqual(decision_of(output), "deny")
+        self.assertIn("Mezmo Governance: approval still pending", reason_of(output))
 
 
 if __name__ == "__main__":
