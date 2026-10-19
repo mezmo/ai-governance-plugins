@@ -232,6 +232,8 @@ class InstallTests(CliTestCase):
         result = self.cli("install", "claude-code")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("2.1.295+", result.stdout)
+        self.assertIn(str(self.bin / "claude"), result.stdout)
+        self.assertIn("2.1.212", result.stdout)
         self.assertEqual(self.files(), before)
         self.assertFalse(self.log.exists())
 

@@ -8,6 +8,7 @@ allowed-tools:
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" *)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" *)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" *)
+  - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_common.py" *)
 ---
 
 # Set up Mezmo for Claude Code
@@ -47,6 +48,32 @@ Unless the arguments already say, ask in one AskUserQuestion call:
 
 Never repeat a full key back to the user. Refer to keys by their first and last four characters, as the scripts do.
 
+### Pass new tokens through a private file
+
+Never put token text in a Bash command, including `--key`, `echo`, `printf`, a heredoc,
+inline environment assignment, or an expanded command substitution. Governance records
+Bash arguments. For each command that needs a new token:
+
+1. Finish prerequisite checks before requesting the token. Run
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_common.py" create-key-file`.
+   It prints only a path to an empty 0600 file inside a private 0700 directory.
+2. Have the user fill that file locally, or use Claude's Write file tool under its normal
+   permissions to write only the token to that exact existing file. Do not use Bash to
+   write the contents. Do not display or read the file back into the conversation.
+3. Pass the quoted path as `--key-file "<KEY_FILE>" --delete-key-file`. The script checks
+   ownership and permissions, rejects links, and removes the file after the action,
+   including an action failure. Use a fresh file for each command; the previous one is gone.
+4. If the command is interrupted, fails to parse, or reports cleanup failure, run
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_common.py" delete-key-file "<KEY_FILE>"`.
+   If that refuses, ask the user to remove it locally; never print its contents.
+
+This keeps the token out of governed Bash arguments. It does not remove tokens already
+shared in chat, secure every filesystem copy, or hide credentials in a child CLI's process
+arguments (notably `claude mcp add`). Prefer local user entry when avoiding transcript
+exposure matters. Existing environment variables and `--key` remain supported for other
+callers; the skill must use the file route for new tokens.
+
+
 ## 3. Governance
 
 Skip this section if the user didn't choose governance.
@@ -82,10 +109,10 @@ Before saving, tell the user what changes:
 ### Just me
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" configure --key <KEY> --url <URL>
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" configure --key-file "<KEY_FILE>" --delete-key-file --url <URL>
 ```
 
-Leave out `--url` for production. The script checks prerequisites, then the token, without recording anything, then saves it as a plugin option, which keeps the key in the system keychain.
+Leave out `--url` for production. The script checks prerequisites and validates the token without recording a decision. It then saves the token in the system keychain through plugin options.
 
 What each exit code means:
 
@@ -102,10 +129,10 @@ Ask whether governance should be **required**. With `--required`, Claude Code bl
 Write the managed-settings document to a file, not to the transcript:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" managed --key <KEY> --url <URL> [--required] --output ./mezmo-managed-settings.json
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" managed --key-file "<KEY_FILE>" --delete-key-file --url <URL> [--required] --output ./mezmo-managed-settings.json
 ```
 
-Check the key with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" check --key <KEY> --url <URL>`.
+Check the key with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" check --key-file "<KEY_FILE>" --delete-key-file --url <URL>`.
 
 For governance to be enforced, the plugin itself also has to be installed and enabled on each machine. An administrator can add the marketplace with `extraKnownMarketplaces` and turn the plugin on with `enabledPlugins` (`"mezmo@mezmo": true`) in the same managed settings.
 
@@ -140,7 +167,7 @@ Build the flags: `--no-metrics`, `--no-logs` or `--no-traces` for each signal le
 ### Just me
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" configure --key <KEY> <flags>
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" configure --key-file "<KEY_FILE>" --delete-key-file <flags>
 ```
 
 What each exit code means:
@@ -163,10 +190,10 @@ Pass only the selected signals (Events is `logs`). The check probes those endpoi
 Add telemetry to the same managed-settings file as governance. The script replaces only its own keys:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" managed --key <KEY> <flags> --output ./mezmo-managed-settings.json
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" managed --key-file "<KEY_FILE>" --delete-key-file <flags> --output ./mezmo-managed-settings.json
 ```
 
-Check the key with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" --key <KEY> --signals <selected signals>`.
+Check the key with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" --key-file "<KEY_FILE>" --delete-key-file --signals <selected signals>`.
 
 ## 5. Mezmo MCP
 
@@ -183,7 +210,7 @@ Before adding it, tell the user:
 - Some of the server's tools change pipelines: create, update, delete, pause and publish. Claude Code asks before each MCP tool call unless the user allows them. With governance on, these calls also go through Mezmo Governance, under namespace `mezmo`, so a policy can send them to a person.
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" add --key <KEY>
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" add --key-file "<KEY_FILE>" --delete-key-file
 ```
 
 What each exit code means:

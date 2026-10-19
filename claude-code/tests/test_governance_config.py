@@ -164,6 +164,55 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertTrue(self.settings.exists())
 
+    def test_unavailable_plugin_status_is_unknown_or_uses_readable_settings(self):
+        for message in ["Error: could not reach the keychain", "unknown command configure"]:
+            def unavailable(args, stdin=None):
+                return 1, message
+            code, out, err = self.run_cli("status", "--json", claude=unavailable)
+            self.assertEqual(code, 0, err)
+            report = json.loads(out)
+            self.assertIsNone(report["configured"])
+            self.assertIsNone(report["plugin_installed"])
+            self.assertIn("unknown", report["plugin_error"])
+            code, out, err = self.run_cli("status", claude=unavailable, environ={"MEZMO_GOVERNANCE_TOKEN": KEY})
+            self.assertEqual(code, 0, err)
+            self.assertIn("Governance token is configured", out)
+            self.assertNotIn("Setup stopped", out + err)
+
+    def test_remove_cleans_settings_when_plugin_read_or_write_fails(self):
+        def unavailable(args, stdin=None):
+            return 1, "Error: could not reach the keychain"
+        for claude in [unavailable, FakeClaude(key_set=True, refuse="keychain locked")]:
+            self.settings.write_text(json.dumps({"env": {"MEZMO_GOVERNANCE_TOKEN": KEY, "KEEP": "yes"}}))
+            code, out, err = self.run_cli("remove", claude=claude)
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads(self.settings.read_text()), {"env": {"KEEP": "yes"}})
+            self.assertIn("Removal incomplete", err)
+            self.assertNotIn(KEY, out + err)
+
+    def test_check_readable_token_works_when_plugin_is_unavailable(self):
+        def unavailable(args, stdin=None):
+            return 1, "Error: could not reach the keychain"
+        for args, environ in [(("--key", KEY), {}), ((), {"MEZMO_GOVERNANCE_TOKEN": KEY})]:
+            http = FakeHttp()
+            code, _, err = self.run_cli("check", *args, environ=environ, claude=unavailable, http=http)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(len(http.calls), 1)
+        self.settings.write_text(json.dumps({"env": {"MEZMO_GOVERNANCE_TOKEN": KEY}}))
+        self.assertEqual(self.run_cli("check", claude=unavailable)[0], 0)
+
+    def test_check_without_token_reports_unknown_not_off(self):
+        code, out, err = self.run_cli("check", claude=lambda args, stdin: (1, "unknown command configure"))
+        self.assertEqual(code, 1)
+        self.assertIn("unknown", err)
+        self.assertNotIn("Setup stopped", out + err)
+
+    def test_preflight_names_selected_executable_and_version(self):
+        with patch.object(gc.mc, "claude_executable", return_value="/test/claude"):
+            code, out, err = self.run_cli("preflight")
+        self.assertEqual(code, 0, err)
+        self.assertIn("/test/claude: version 2.1.301", out)
+
     def test_configure_checks_then_saves_to_the_plugin(self):
         claude = FakeClaude()
         code, out, err = self.run_cli("configure", "--key", KEY, "--url", OTHER_URL, claude=claude)

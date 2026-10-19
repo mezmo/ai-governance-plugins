@@ -408,7 +408,7 @@ def configured_key(settings: Mapping[str, Any]) -> Optional[str]:
 def _options_from_args(
     args: argparse.Namespace, environ: Mapping[str, str], fallback_key: Optional[str] = None
 ) -> Options:
-    key = mc.resolve_key(args.key, environ) or fallback_key
+    key = mc.resolve_key(mc.key_argument(args), environ) or fallback_key
     if not key:
         raise ValueError(f"No ingestion key. Pass --key or set {mc.KEY_ENV_VAR}.")
     return Options(
@@ -436,7 +436,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     def add_export_options(p: argparse.ArgumentParser) -> None:
-        p.add_argument("--key", help=f"Mezmo ingestion key (default: ${mc.KEY_ENV_VAR})")
+        mc.add_key_arguments(p, f"Mezmo ingestion key (default: ${mc.KEY_ENV_VAR})")
         p.add_argument("--no-metrics", action="store_true", help="Don't export metrics")
         p.add_argument("--no-logs", action="store_true", help="Don't export events (OTel logs)")
         p.add_argument("--no-traces", action="store_true", help="Don't export traces (beta)")
@@ -467,6 +467,8 @@ def main(argv: Optional[Sequence[str]] = None, environ: Optional[Mapping[str, st
     path = args.settings_file or mc.default_settings_path(environ)
     try:
         if args.command == "managed":
+            if args.key_file and not args.output:
+                raise ValueError("--output is required with --key-file; do not print managed credentials.")
             opts = _options_from_args(args, environ)
             if not args.output:
                 sys.stdout.write(json.dumps(managed_document(opts), indent=2) + "\n")
@@ -533,6 +535,8 @@ def main(argv: Optional[Sequence[str]] = None, environ: Optional[Mapping[str, st
     except (SettingsError, OSError) as err:
         print(f"Error: {err}", file=sys.stderr)
         return EXIT_ERROR
+    finally:
+        mc.cleanup_key_file(args)
     return EXIT_USAGE
 
 

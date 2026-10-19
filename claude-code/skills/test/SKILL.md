@@ -8,6 +8,7 @@ allowed-tools:
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" status*)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" *)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" status*)
+  - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_common.py" *)
 ---
 
 # Test the Mezmo setup
@@ -28,12 +29,13 @@ Arguments: $ARGUMENTS
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" check
    ```
 
-   A key kept in the system keychain can't be read back. In that case the last result shows whether the hook is working, or the user can pass `--key` to check a key directly.
+   A key kept in the system keychain can't be read back. In that case the last result shows whether the hook is working, or the user can supply a private `--key-file` to check a token directly. Never put token text in Bash arguments. Follow setup's private-file procedure: create with `mezmo_common.py create-key-file`, fill via local user entry or Write (not Bash), and pass `--key-file "<KEY_FILE>" --delete-key-file`. If interrupted or parsing/cleanup fails, use `mezmo_common.py delete-key-file "<KEY_FILE>"`. File input protects Bash arguments, not past chat or all filesystem/process exposure.
 
 3. Explain the results using this table:
 
    | What you see | What to tell the user |
    | --- | --- |
+   | Plugin configuration unavailable / state unknown | Report available settings and session results, but do not claim governance is off. Repair Claude/keychain access; setup remains strict. |
    | Governance is off | Bash and MCP tool calls run without a check. Run `/mezmo:setup governance` to turn it on. |
    | Off right after the plugin was reinstalled or its marketplace changed | Reinstalling deletes the saved service account token. Run `/mezmo:setup governance` again. If tool calls are blocked with `HTTP 401` meanwhile, run `/reload-plugins` or start a new session first. |
    | Required but not configured | Every Bash and MCP tool call is blocked until governance is configured. Ask their administrator for the service account token. |
