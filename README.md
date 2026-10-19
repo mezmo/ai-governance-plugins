@@ -310,7 +310,9 @@ before the guard learned to keep a deliberate block quiet gets a warning
 with the reinstall step. It also runs
 each installed Python hook against a closed port and checks that the hook
 denies. A Codex, Cursor, Copilot, Goose, Droid, Windsurf or Antigravity CLI hook copy that differs from this
-checkout gets a warning to run `install` again. It reads the agent configs
+checkout gets a warning to run `install` again. A hook script whose `AGENT` names another
+agent fails, as when `MEZMO_GOVERNANCE_HOOK` points at it: Mezmo then gets that agent's
+`tool_namespace`, and this agent's rules never match. It reads the agent configs
 and changes nothing. `info` lines give the add-agent form values from
 step 1 of [Connect to Mezmo](#connect-to-mezmo). A key can pass the key check
 and still belong to no agent. Add `--probe` to send Mezmo one test call for

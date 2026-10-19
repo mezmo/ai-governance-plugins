@@ -448,10 +448,93 @@ def fail_closed(report: Report, subject: str, ok: bool, setting: str, example: s
         )
 
 
+GUARD = "|| exit 2 guard"
+# The guards the shipped configs end with: bash `|| exit 2` or `|| { ...; exit 2; }`, and PowerShell's
+# `; if ($LASTEXITCODE -ne 0) { exit 2 }`. Each must end the command, so its exit 2 is the command's status.
+BASH_GUARD = re.compile(r"\|\|\s*(?:exit 2|\{(?P<body>[^{}]*)\bexit 2;\s*\})\s*$")
+POWERSHELL_GUARD = re.compile(r";\s*if\s*\(\s*\$LASTEXITCODE\s+-ne\s+0\s*\)\s*\{\s*exit 2\s*\}\s*$", re.I)
+
+
+def guarded(command: str) -> bool:
+    """Whether a hook crash makes the command exit 2; a substring test also took `|| exit 20`."""
+    if re.search(r"(^|\s)#", command):
+        return False
+    bash = BASH_GUARD.search(command)
+    if bash:
+        return not re.search(r"\bexit\b", bash.group("body") or "")
+    return POWERSHELL_GUARD.search(command) is not None
+
+
 def old_guard(report: Report, subject: str, command: str, fix: str) -> None:
     """Warn about the guard before ec18454: install skips a config that has a Mezmo hook, so it stays until replaced."""
     if "hook failed; blocking" in command and "[ $s -eq 2 ]" not in command:
         report.line("warn", subject, 'the || exit 2 guard is the old one: a deliberate block also prints "hook failed"', fix)
+
+
+CLAUDE_KEYS = ("MEZMO_GOVERNANCE_ACCESS_KEY", "MEZMO_GOVERNANCE_TOKEN")
+CLAUDE_REQUIRED = "MEZMO_GOVERNANCE_REQUIRED"
+
+
+def required(value: Any) -> bool:
+    """MEZMO_GOVERNANCE_REQUIRED as governance_hook.py reads it."""
+    return str(value or "").strip().lower() in ("1", "true", "yes")
+
+
+def claude_options(plugin: str) -> Optional[dict]:
+    """The plugin's saved option names and its governance switch, from `claude plugin configure --json`, or None when unknown.
+
+    Its JSON holds no sensitive value: the key stays in the keychain (claude-code/scripts/governance_config.py).
+    """
+    binary = shutil.which("claude")
+    if binary is None:
+        return None
+    try:
+        result = subprocess.run(
+            [binary, "plugin", "configure", plugin, "--json"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20, check=False,
+        )
+        data = json.loads(result.stdout) if result.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    enabled = as_dict(data.get("inputs")).get("governance_enabled", True)
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() not in ("0", "false", "no", "off")
+    return {"key": "governance_access_key" in as_list(data.get("configured")), "enabled": bool(enabled)}
+
+
+def claude_key(report: Report, plugin: str, settings: dict, path: Path) -> bool:
+    """Whether a call with no key is blocked: governance_hook.py allows it unless MEZMO_GOVERNANCE_REQUIRED=1.
+
+    The hook takes its key from the env of settings.json or the shell, else the plugin options while governance_enabled is on.
+    """
+    env = as_dict(settings.get("env"))
+    if required(env.get(CLAUDE_REQUIRED)):
+        report.line("ok", "Claude Code key", f"{CLAUDE_REQUIRED}=1 under env in {shown(path)}, so a call with no key is denied")
+        return True
+    if any(str(env.get(name) or "").strip() for name in CLAUDE_KEYS):
+        report.line("ok", "Claude Code key", f"a key is set under env in {shown(path)} (not shown)")
+        return True
+    options = claude_options(plugin)
+    if options is not None and options["key"] and options["enabled"]:
+        report.line("ok", "Claude Code key", "a key is saved in the plugin options (not shown)")
+        return True
+    fix = (
+        f'add "{CLAUDE_REQUIRED}": "1" under env in {shown(path)}, so a call with no key is denied,'
+        " then run /mezmo:setup governance; an export in your shell does not reach Claude Code started from the Dock or another app"
+    )
+    shell = required(os.environ.get(CLAUDE_REQUIRED)) or any((os.environ.get(name) or "").strip() for name in CLAUDE_KEYS)
+    if shell:
+        detail = f"a key or {CLAUDE_REQUIRED} is set only in this shell; Claude Code started without it lets every call run"
+        report.line("warn", "Claude Code key", detail, fix)
+    elif options is None:
+        detail = "could not read the plugin options (claude plugin configure); with no key the plugin lets every call run"
+        report.line("warn", "Claude Code key", detail, fix)
+    else:
+        why = "the plugin's governance switch is off" if options["key"] else "no key is saved in the plugin options or settings"
+        report.line("FAIL", "Claude Code key", f"{why}, so the plugin lets every call run, {UNGOVERNED}", fix)
+    return False
 
 
 def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list]:
@@ -463,7 +546,8 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
     for key in plugins:
         install = as_dict((as_list(registry["plugins"][key]) or [None])[0])
         folder = Path(str(install.get("installPath") or ""))
-        if as_dict(settings.get("enabledPlugins")).get(key) is True:
+        enabled = as_dict(settings.get("enabledPlugins")).get(key) is True
+        if enabled:
             report.line("ok", "Claude Code plugin", f"{key} is installed and enabled")
         else:
             report.line("FAIL", "Claude Code plugin", f"{key} is installed but not enabled, {UNGOVERNED}", "enable it in /plugin")
@@ -472,16 +556,18 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
         if not found:
             report.line("FAIL", "Claude Code plugin", f"no PreToolUse hook in {shown(folder)}", "reinstall the plugin")
             continue
-        fail_closed(
-            report,
-            "Claude Code plugin",
-            all(handler.get("onFailure") == "block" for *_, handler in found),
-            'onFailure: "block"',
-            "claude-code/hooks/hooks.json",
-        )
+        scripts = []
         for *_, handler in found:
             command = str(handler.get("command")).replace("${CLAUDE_PLUGIN_ROOT}", str(folder))
-            smokes.append(Smoke("Claude Code", hook_path(command, CLAUDE_HOOK_FILE), CLAUDE_EVENT))
+            scripts.append(hook_path(command, CLAUDE_HOOK_FILE))
+            smokes.append(Smoke("Claude Code", scripts[-1], CLAUDE_EVENT))
+        blocks = all(handler.get("onFailure") == "block" for *_, handler in found)
+        # The older mezmo-governance plugin's mezmo_governance_hook.py denies with no key; governance_hook.py allows.
+        keyed = not blocks or not enabled or all(script.name != CLAUDE_HOOK_FILE for script in scripts)
+        if keyed or claude_key(report, key, settings, root / "settings.json"):
+            fail_closed(report, "Claude Code plugin", blocks, 'onFailure: "block"', "claude-code/hooks/hooks.json")
+        else:
+            report.line("warn", "Claude Code plugin", 'onFailure: "block" blocks a hook crash only once a key reaches the hook')
     found = mezmo_handlers(as_dict(settings.get("hooks")).get("PreToolUse"))
     for *_, handler in found:
         report.line("ok", "Claude Code settings", f"PreToolUse hook in {shown(root / 'settings.json')}")
@@ -493,7 +579,13 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
             "claude-code/hooks/hooks.json",
         )
         smokes.append(Smoke("Claude Code", hook_path(str(handler["command"])), CLAUDE_EVENT))
-    return smokes if plugins or found else None
+    if not plugins and not found:
+        return None
+    if settings.get("disableAllHooks") is True:
+        report.line(
+            "FAIL", "Claude Code hooks", f"{shown(root / 'settings.json')} sets disableAllHooks, {UNGOVERNED}", "remove disableAllHooks",
+        )
+    return smokes
 
 
 def codex_hooks(binary: str) -> list:
@@ -601,7 +693,7 @@ def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
     for g, h, _, handler in found:
         command = str(handler.get("command"))
         report.line("ok", "Codex hook", f"PreToolUse hook in {shown(path)}")
-        fail_closed(report, "Codex hook", "exit 2" in command, "|| exit 2 guard", "codex/hooks.example.json")
+        fail_closed(report, "Codex hook", guarded(command), GUARD, "codex/hooks.example.json")
         old_guard(
             report, "Codex guard", command,
             "run ./mezmo-governance uninstall codex, then install codex, then trust the new hook in /hooks",
@@ -681,7 +773,7 @@ def check_gemini(report: Report, version: Optional[tuple]) -> Optional[list]:
     for where, handler, script in found:
         command = str(handler.get("command"))
         report.line("ok", "Gemini CLI hook", f"BeforeTool hook in {shown(where)}")
-        fail_closed(report, "Gemini CLI hook", "exit 2" in command, "|| exit 2 guard", "gemini-cli/hooks/hooks.json")
+        fail_closed(report, "Gemini CLI hook", guarded(command), GUARD, "gemini-cli/hooks/hooks.json")
         if where == extension:
             fix = "run ./mezmo-governance uninstall gemini-cli, then install gemini-cli"
         else:
@@ -754,7 +846,7 @@ def check_copilot(report: Report, version: Optional[tuple]) -> Optional[list]:
                     "copy the command from copilot/hooks.example.json",
                 )
             # VS Code Local runs the tool when the hook exits other than 0 or 2; Copilot blocks it.
-            fail_closed(report, "Copilot hook", "exit 2" in command, "|| exit 2 guard", "copilot/hooks.example.json")
+            fail_closed(report, "Copilot hook", guarded(command), GUARD, "copilot/hooks.example.json")
             smokes.append(Smoke("Copilot", hook_path(command), event, ("preToolUse",)))
     return smokes if installed else None
 
@@ -941,7 +1033,7 @@ def check_droid(report: Report, version: Optional[tuple]) -> Optional[list]:
     for *_, handler in found:
         command = str(handler.get("command"))
         report.line("ok", "Droid hook", f"PreToolUse hook in {shown(where)}")
-        fail_closed(report, "Droid hook", "exit 2" in command, "|| exit 2 guard", "droid/hooks.example.json")
+        fail_closed(report, "Droid hook", guarded(command), GUARD, "droid/hooks.example.json")
         smokes.append(Smoke("Droid", hook_path(command), event))
     return smokes
 
@@ -1000,7 +1092,7 @@ def check_windsurf(report: Report, version: Optional[tuple]) -> Optional[list]:
         for *_, handler in found:
             command = str(handler.get("command"))
             report.line("ok", "Windsurf hook", f"{gate} hook in {shown(path)}")
-            fail_closed(report, "Windsurf hook", "exit 2" in command, "|| exit 2 guard", "windsurf/hooks.example.json")
+            fail_closed(report, "Windsurf hook", guarded(command), GUARD, "windsurf/hooks.example.json")
             smokes.append(Smoke("Windsurf", hook_path(command), event))
     return smokes
 
@@ -1221,6 +1313,31 @@ def install_copies() -> dict:
     }
 
 
+def script_agent(report: Report, smoke: Smoke) -> None:
+    """Fail a hook script made for another agent: it sends that agent's tool_namespace, so this agent's rules never match.
+
+    MEZMO_GOVERNANCE_HOOK can point any agent at any script. The AGENT constant is read from the text; the script never runs here.
+    """
+    agent = next((item for item in AGENTS if item.name == smoke.agent), None)
+    subject = f"{smoke.agent} hook script"
+    try:
+        match = re.search(r"^AGENT\s*=\s*[\"']([^\"']*)[\"']", smoke.path.read_text(encoding="utf-8"), re.M)
+    except (OSError, ValueError) as error:
+        report.line("warn", subject, f"unknown: could not read {shown(smoke.path)}: {error}")
+        return
+    if agent is None or (match and match.group(1) == agent.namespace):
+        return
+    if not match:
+        report.line("warn", subject, f"unknown: {shown(smoke.path)} sets no AGENT, so the doctor cannot tell which agent it is for")
+        return
+    found = match.group(1)
+    report.line(
+        "FAIL", subject,
+        f'{shown(smoke.path)} has AGENT = "{found}", so Mezmo gets tool_namespace {found} and the {smoke.agent} rules never match',
+        f"use the hook from {agent.readme}/; if MEZMO_GOVERNANCE_HOOK is set, point it there or unset it",
+    )
+
+
 def check_smokes(report: Report, smokes: list) -> None:
     if not smokes:
         return
@@ -1253,6 +1370,10 @@ def check_smokes(report: Report, smokes: list) -> None:
             "MEZMO_GOVERNANCE_STATE_DIR": os.devnull + "/mezmo-governance",
         }
     )
+    # Each agent's own pair: MEZMO_GOVERNANCE_HOOK can give every agent the same script, which the smoke runs once.
+    for smoke in {(smoke.agent, smoke.path): smoke for smoke in smokes}.values():
+        if smoke.path.is_file():
+            script_agent(report, smoke)
     seen = set()
     for smoke in smokes:
         if (smoke.path, smoke.args) in seen:

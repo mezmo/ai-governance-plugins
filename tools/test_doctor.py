@@ -357,8 +357,14 @@ CLAUDE_SETTINGS_HOOK = {
 class ClaudeCodeTests(DoctorTestCase):
     def install_settings(self, handler: dict | None = None) -> None:
         self.write(".claude/settings.json", {"hooks": {"PreToolUse": [{"hooks": [handler or CLAUDE_SETTINGS_HOOK]}]}})
-        # A settings install from before the plugin; the Python hooks share their core.
-        self.copy_hook("codex", ".claude/hooks/mezmo_governance_hook.py")
+        # A settings install from before the plugin, whose script had AGENT = "claude_code" as the plugin's has.
+        self.copy_claude_hook(".claude/hooks/mezmo_governance_hook.py")
+
+    def copy_claude_hook(self, relative: str) -> Path:
+        path = self.home / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO / "claude-code" / "scripts" / "governance_hook.py", path)
+        return path
 
     def install_plugin(self, enabled: bool = True, name: str = "mezmo") -> Path:
         folder = self.home / f".claude/plugins/cache/mezmo/{name}/0.2.0"
@@ -369,6 +375,54 @@ class ClaudeCodeTests(DoctorTestCase):
         )
         self.write(".claude/settings.json", {"enabledPlugins": {f"{name}@mezmo": enabled}})
         return folder
+
+    def fake_claude(self, key_set: bool = True, enabled: bool = True) -> None:
+        """A claude whose `plugin configure --json` answers as the real one: option names, never the key."""
+        options = {"configured": ["governance_access_key"] if key_set else [], "inputs": {"governance_enabled": enabled}}
+        fake = self.bin / "claude"
+        fake.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = --version ]; then echo "2.1.300 (Claude Code)"; exit 0; fi\n'
+            'if [ "$1 $2 $3 $4" = "plugin configure mezmo@mezmo --json" ]; then\n'
+            f"  echo '{json.dumps(options)}'; exit 0\n"
+            "fi\n"
+            "exit 1\n"
+        )
+        fake.chmod(0o755)
+
+    def test_a_plugin_that_no_key_reaches_does_not_fail_closed(self) -> None:
+        # governance_hook.py allows every call when no key reaches it, unless MEZMO_GOVERNANCE_REQUIRED=1.
+        no_shell = {"MEZMO_GOVERNANCE_TOKEN": None}
+        cases = [
+            ({"key_set": False}, no_shell, {}, "FAIL", "no key is saved"),
+            ({"enabled": False}, no_shell, {}, "FAIL", "governance switch is off"),
+            ({"key_set": False}, {}, {}, "warn", "only in this shell"),
+            (None, no_shell, {}, "warn", "could not read the plugin options"),
+            ({"key_set": False}, no_shell, {"MEZMO_GOVERNANCE_REQUIRED": "1"}, "ok", "MEZMO_GOVERNANCE_REQUIRED=1"),
+            ({"key_set": False}, no_shell, {"MEZMO_GOVERNANCE_ACCESS_KEY": CANARY}, "ok", "a key is set under env"),
+            ({}, no_shell, {}, "ok", "a key is saved in the plugin options"),
+        ]
+        for options, shell, env, status, words in cases:
+            with self.subTest(options=options, shell=shell, env=env):
+                shutil.rmtree(self.home / ".claude", ignore_errors=True)
+                if options is None:
+                    self.agent("claude", "2.1.300 (Claude Code)")
+                else:
+                    self.fake_claude(**options)
+                self.install_plugin()
+                self.write(".claude/settings.json", {"enabledPlugins": {"mezmo@mezmo": True}, "env": env})
+
+                result = self.doctor(**shell)
+
+                closed = [line for line in self.lines(result, "Claude Code plugin") if "fails closed" in line]
+                self.assertEqual(bool(closed and closed[0].startswith("ok")), status == "ok", result.stdout)
+                line = self.assertStatus(result, "Claude Code key", status)
+                self.assertIn(words, line)
+                if status == "FAIL":
+                    self.assertIn("so every tool call runs ungoverned", line)
+                if status != "ok":
+                    self.assertIn('"MEZMO_GOVERNANCE_REQUIRED": "1"', line)
+                    self.assertIn("Dock", line)
 
     def test_an_agent_without_the_plugin_warns(self) -> None:
         self.agent("claude", "2.1.301 (Claude Code)")
@@ -427,14 +481,15 @@ class ClaudeCodeTests(DoctorTestCase):
     def test_mezmo_governance_hook_variable_moves_the_script(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")
         self.install_settings()
-        moved = self.copy_hook("codex", "elsewhere/mezmo_governance_hook.py")
+        moved = self.copy_claude_hook("elsewhere/mezmo_governance_hook.py")
 
         result = self.doctor(MEZMO_GOVERNANCE_HOOK=str(moved))
 
         self.assertIn("~/elsewhere/mezmo_governance_hook.py", self.assertStatus(result, "Claude Code smoke", "ok"))
+        self.assertEqual(self.lines(result, "Claude Code hook script"), [])
 
     def test_plugin_install_passes_and_a_disabled_plugin_fails(self) -> None:
-        self.agent("claude", "2.1.300 (Claude Code)")
+        self.fake_claude()
         self.install_plugin()
 
         result = self.doctor()
@@ -451,11 +506,27 @@ class ClaudeCodeTests(DoctorTestCase):
         self.assertIn("not enabled, so every tool call runs ungoverned", self.lines(result, "Claude Code plugin")[0])
         self.assertTrue(self.lines(result, "Claude Code plugin")[0].startswith("FAIL"))
 
+    def test_disable_all_hooks_fails_as_ungoverned(self) -> None:
+        # Claude Code runs no hook, plugin hooks too, while settings.json has "disableAllHooks": true.
+        self.agent("claude", "2.1.300 (Claude Code)")
+        for install in (self.install_plugin, self.install_settings):
+            with self.subTest(install=install.__name__):
+                shutil.rmtree(self.home / ".claude", ignore_errors=True)
+                install()
+                path = self.home / ".claude/settings.json"
+                self.write(".claude/settings.json", {**json.loads(path.read_text()), "disableAllHooks": True})
+
+                result = self.doctor()
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                line = self.assertStatus(result, "Claude Code hooks", "FAIL")
+                self.assertIn("sets disableAllHooks, so every tool call runs ungoverned", line)
+
     def test_the_older_mezmo_governance_plugin_is_still_checked(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")
         folder = self.install_plugin(name="mezmo-governance")
-        # That plugin ran mezmo_governance_hook.py from its root.
-        shutil.copy(REPO / "codex" / "mezmo_governance_hook.py", folder / "mezmo_governance_hook.py")
+        # That plugin ran mezmo_governance_hook.py, with AGENT = "claude_code", from its root.
+        shutil.copy(REPO / "claude-code" / "scripts" / "governance_hook.py", folder / "mezmo_governance_hook.py")
         hooks = (folder / "hooks" / "hooks.json").read_text(encoding="utf-8")
         (folder / "hooks" / "hooks.json").write_text(hooks.replace("scripts/governance_hook.py", "mezmo_governance_hook.py"))
 
@@ -553,6 +624,18 @@ class CodexTests(DoctorTestCase):
         self.assertIn("fails closed", self.lines(result, "Codex hook")[1])
         self.install()
         self.assertEqual(self.lines(self.doctor(), "Codex guard"), [])
+
+    def test_a_guard_that_exits_20_does_not_fail_closed(self) -> None:
+        # The substring "exit 2" is in "exit 20", yet a crash then exits 20, and Codex runs the tool.
+        for suffix in (" || exit 20", " || { s=$?; [ $s -eq 2 ] || echo 'failed' >&2; exit 21; }"):
+            with self.subTest(suffix=suffix):
+                self.install(CODEX_COMMAND.split(" ||")[0] + suffix)
+
+                result = self.doctor()
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                line = self.lines(result, "Codex hook")[1]
+                self.assertTrue(line.startswith("FAIL") and "no || exit 2 guard" in line, result.stdout)
 
     def test_failures_in_codex_config(self) -> None:
         cases = [
@@ -685,6 +768,46 @@ class OtherHookAgentTests(DoctorTestCase):
                 result = self.doctor()
                 self.assertTrue(self.lines(result, "Cursor hook")[1].startswith(status), result.stdout)
                 self.assertStatus(result, "Cursor smoke", "ok")
+
+    def test_mezmo_governance_hook_must_name_the_agent_it_checks(self) -> None:
+        # Another agent's script sends its own tool_namespace, so the Droid rules in Mezmo never match.
+        self.agent("droid", "0.244.0")
+        self.copy_hook("droid", ".factory/hooks/mezmo_governance_hook.py")
+        command = 'python3 "${MEZMO_GOVERNANCE_HOOK:-$HOME/.factory/hooks/mezmo_governance_hook.py}" || exit 2'
+        self.write(".factory/hooks.json", {"PreToolUse": [{"hooks": [{"type": "command", "command": command}]}]})
+        for adapter, status in (("codex", "FAIL"), ("droid", None)):
+            with self.subTest(adapter=adapter):
+                moved = self.copy_hook(adapter, f"elsewhere/{adapter}/mezmo_governance_hook.py")
+
+                result = self.doctor(MEZMO_GOVERNANCE_HOOK=str(moved))
+
+                self.assertStatus(result, "Droid smoke", "ok")
+                script = self.lines(result, "Droid hook script")
+                if status is None:
+                    self.assertEqual(script, [], result.stdout)
+                    self.assertEqual(result.returncode, 0, result.stdout)
+                    continue
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertTrue(script and script[0].startswith("FAIL"), result.stdout)
+                self.assertIn('AGENT = "codex"', script[0])
+                self.assertIn("Droid rules", script[0])
+                self.assertIn("MEZMO_GOVERNANCE_HOOK", script[0])
+
+    def test_one_override_for_two_agents_fails_the_one_it_is_not_for(self) -> None:
+        # The smoke runs a shared script once; the AGENT check still names each agent.
+        self.agent("droid", "0.244.0")
+        self.agent("devin-desktop", "1.126.0")
+        command = 'python3 "${MEZMO_GOVERNANCE_HOOK:-$HOME/.factory/hooks/mezmo_governance_hook.py}" || exit 2'
+        self.write(".factory/hooks.json", {"PreToolUse": [{"hooks": [{"type": "command", "command": command}]}]})
+        self.write(".codeium/windsurf/hooks.json", self.windsurf_config(" || exit 2"))
+        moved = self.copy_hook("droid", "elsewhere/mezmo_governance_hook.py")
+
+        result = self.doctor(MEZMO_GOVERNANCE_HOOK=str(moved))
+
+        self.assertEqual(self.lines(result, "Droid hook script"), [], result.stdout)
+        script = self.lines(result, "Windsurf hook script")
+        self.assertEqual(len(script), 1, result.stdout)
+        self.assertTrue(script[0].startswith("FAIL") and 'AGENT = "droid"' in script[0], script)
 
     def test_droid_needs_the_guard(self) -> None:
         self.agent("droid", "0.244.0")
@@ -1185,6 +1308,51 @@ class SmokeTests(DoctorTestCase):
         result = self.doctor()
 
         self.assertIn("older than 3.9", self.assertStatus(result, "python3", "FAIL"))
+
+
+# Each shipped config whose PreToolUse command carries a guard; copilot's also has the PowerShell form.
+GUARDED_CONFIGS = (
+    "codex/hooks.example.json", "codex/hooks/hooks.json", "gemini-cli/hooks/hooks.json", "gemini-cli/settings.example.json",
+    "copilot/hooks.example.json", "copilot/hooks/hooks.json", "droid/hooks.example.json", "droid/hooks/hooks.json",
+    "windsurf/hooks.example.json",
+)
+
+
+def strings(value: Any) -> list:
+    if isinstance(value, str):
+        return [value]
+    items = value.values() if isinstance(value, dict) else value if isinstance(value, list) else []
+    return [text for item in items for text in strings(item)]
+
+
+class GuardTests(unittest.TestCase):
+    def test_the_shipped_guards_pass_and_near_misses_do_not(self) -> None:
+        sys.path.insert(0, str(DOCTOR.parent))
+        self.addCleanup(sys.path.remove, str(DOCTOR.parent))
+        import doctor
+
+        shipped = [
+            text for path in GUARDED_CONFIGS for text in strings(json.loads((REPO / path).read_text(encoding="utf-8")))
+            if "exit" in text
+        ]
+        self.assertEqual(len(shipped), 14, shipped)
+        self.assertEqual(sum("$LASTEXITCODE" in text for text in shipped), 2)
+        for command in shipped:
+            with self.subTest(command=command):
+                self.assertTrue(doctor.guarded(command))
+        base = 'python3 "$HOME/.codex/hooks/mezmo_governance_hook.py"'
+        for suffix in (" || exit 2", " || { exit 2; }", " || { echo 'failed' >&2; exit 2; }", OLD_GUARD):
+            with self.subTest(kept=suffix):
+                self.assertTrue(doctor.guarded(base + suffix))
+        near_misses = (
+            "", " || exit 20", " || exit 21", " || exit 2; true", " && exit 2", " | exit 2", " # || exit 2",
+            " || echo exit 2", " || { exit 20; }", " || { exit 20; exit 2; }",
+            " || { s=$?; [ $s -eq 2 ] || echo 'failed' >&2; exit 20; }",
+            "; if ($LASTEXITCODE -ne 0) { exit 20 }", "; if ($LASTEXITCODE -ne 0) { exit 2 }; exit 0",
+        )
+        for suffix in near_misses:
+            with self.subTest(rejected=suffix):
+                self.assertFalse(doctor.guarded(base + suffix))
 
 
 class SourceTests(unittest.TestCase):
