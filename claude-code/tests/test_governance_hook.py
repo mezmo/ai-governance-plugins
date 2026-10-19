@@ -288,6 +288,45 @@ class ServiceProtocolTests(unittest.TestCase):
         self.assertIn("argument names", reason_of(output))
         self.assertNotIn("'pattern'", reason_of(output))
 
+    def test_a_server_error_shows_no_server_text(self) -> None:
+        # protocol.md rule 9: Mezmo's code and message only on a 4xx.
+        body = {"code": "EINTERNAL", "message": "stack trace at db.js:12"}
+        output = hook.handle_event(hook_event("PreToolUse"), http=FakeHttp([(500, body)]))
+        self.assertEqual(decision_of(output), "deny")
+        self.assertIn("Mezmo Governance returned HTTP 500", reason_of(output))
+        self.assertNotIn("EINTERNAL", reason_of(output))
+        self.assertNotIn("stack trace", reason_of(output))
+
+    def test_a_poll_server_error_shows_no_server_text(self) -> None:
+        clock = FakeClock()
+        http = FakeHttp([(207, {"approved": False}), (502, {"code": "EGATEWAY", "message": "upstream said no"})])
+        output = hook.handle_event(hook_event("PreToolUse"), http=http, clock=clock, sleep=clock.sleep)
+        self.assertIn("Mezmo Governance returned HTTP 502 while polling", reason_of(output))
+        self.assertNotIn("upstream said no", reason_of(output))
+
+    def test_code_and_message_are_one_bounded_line_each(self) -> None:
+        body = {"code": "EBAD\nCODE" + "C" * 300, "message": "first line\r\nsecond\tline " + "m" * 500}
+        output = hook.handle_event(hook_event("PreToolUse"), http=FakeHttp([(403, body)]))
+        reason = reason_of(output)
+        self.assertNotIn("\n", reason)
+        self.assertNotIn("\r", reason)
+        self.assertNotIn("\t", reason)
+        self.assertIn("EBAD CODE", reason)
+        self.assertIn("first line second line", reason)
+        self.assertNotIn("C" * 201, reason)
+        self.assertNotIn("m" * 200, reason)
+
+    def test_nested_error_detail_is_not_shown(self) -> None:
+        body = {
+            "code": "EINVAL", "message": "Bad Request",
+            "errors": [{"message": "must not hold secret-value", "instance_path": "/items/0/tool_name"}],
+        }
+        output = hook.handle_event(hook_event("PreToolUse"), http=FakeHttp([(400, body)]))
+        reason = reason_of(output)
+        self.assertIn("HTTP 400 EINVAL: Bad Request", reason)
+        self.assertNotIn("secret-value", reason)
+        self.assertNotIn("/items/0/tool_name", reason)
+
     def test_bearer_key_is_sent_unchanged(self) -> None:
         with patch.dict(os.environ, {"MEZMO_GOVERNANCE_ACCESS_KEY": "Bearer sts_test"}):
             self.assertEqual(hook.authorization_header(), "Bearer sts_test")
