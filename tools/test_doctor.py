@@ -357,8 +357,14 @@ CLAUDE_SETTINGS_HOOK = {
 class ClaudeCodeTests(DoctorTestCase):
     def install_settings(self, handler: dict | None = None) -> None:
         self.write(".claude/settings.json", {"hooks": {"PreToolUse": [{"hooks": [handler or CLAUDE_SETTINGS_HOOK]}]}})
-        # A settings install from before the plugin; the Python hooks share their core.
-        self.copy_hook("codex", ".claude/hooks/mezmo_governance_hook.py")
+        # A settings install from before the plugin, whose script had AGENT = "claude_code" as the plugin's has.
+        self.copy_claude_hook(".claude/hooks/mezmo_governance_hook.py")
+
+    def copy_claude_hook(self, relative: str) -> Path:
+        path = self.home / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO / "claude-code" / "scripts" / "governance_hook.py", path)
+        return path
 
     def install_plugin(self, enabled: bool = True, name: str = "mezmo") -> Path:
         folder = self.home / f".claude/plugins/cache/mezmo/{name}/0.2.0"
@@ -475,11 +481,12 @@ class ClaudeCodeTests(DoctorTestCase):
     def test_mezmo_governance_hook_variable_moves_the_script(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")
         self.install_settings()
-        moved = self.copy_hook("codex", "elsewhere/mezmo_governance_hook.py")
+        moved = self.copy_claude_hook("elsewhere/mezmo_governance_hook.py")
 
         result = self.doctor(MEZMO_GOVERNANCE_HOOK=str(moved))
 
         self.assertIn("~/elsewhere/mezmo_governance_hook.py", self.assertStatus(result, "Claude Code smoke", "ok"))
+        self.assertEqual(self.lines(result, "Claude Code hook script"), [])
 
     def test_plugin_install_passes_and_a_disabled_plugin_fails(self) -> None:
         self.fake_claude()
@@ -518,8 +525,8 @@ class ClaudeCodeTests(DoctorTestCase):
     def test_the_older_mezmo_governance_plugin_is_still_checked(self) -> None:
         self.agent("claude", "2.1.300 (Claude Code)")
         folder = self.install_plugin(name="mezmo-governance")
-        # That plugin ran mezmo_governance_hook.py from its root.
-        shutil.copy(REPO / "codex" / "mezmo_governance_hook.py", folder / "mezmo_governance_hook.py")
+        # That plugin ran mezmo_governance_hook.py, with AGENT = "claude_code", from its root.
+        shutil.copy(REPO / "claude-code" / "scripts" / "governance_hook.py", folder / "mezmo_governance_hook.py")
         hooks = (folder / "hooks" / "hooks.json").read_text(encoding="utf-8")
         (folder / "hooks" / "hooks.json").write_text(hooks.replace("scripts/governance_hook.py", "mezmo_governance_hook.py"))
 
@@ -761,6 +768,46 @@ class OtherHookAgentTests(DoctorTestCase):
                 result = self.doctor()
                 self.assertTrue(self.lines(result, "Cursor hook")[1].startswith(status), result.stdout)
                 self.assertStatus(result, "Cursor smoke", "ok")
+
+    def test_mezmo_governance_hook_must_name_the_agent_it_checks(self) -> None:
+        # Another agent's script sends its own tool_namespace, so the Droid rules in Mezmo never match.
+        self.agent("droid", "0.244.0")
+        self.copy_hook("droid", ".factory/hooks/mezmo_governance_hook.py")
+        command = 'python3 "${MEZMO_GOVERNANCE_HOOK:-$HOME/.factory/hooks/mezmo_governance_hook.py}" || exit 2'
+        self.write(".factory/hooks.json", {"PreToolUse": [{"hooks": [{"type": "command", "command": command}]}]})
+        for adapter, status in (("codex", "FAIL"), ("droid", None)):
+            with self.subTest(adapter=adapter):
+                moved = self.copy_hook(adapter, f"elsewhere/{adapter}/mezmo_governance_hook.py")
+
+                result = self.doctor(MEZMO_GOVERNANCE_HOOK=str(moved))
+
+                self.assertStatus(result, "Droid smoke", "ok")
+                script = self.lines(result, "Droid hook script")
+                if status is None:
+                    self.assertEqual(script, [], result.stdout)
+                    self.assertEqual(result.returncode, 0, result.stdout)
+                    continue
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertTrue(script and script[0].startswith("FAIL"), result.stdout)
+                self.assertIn('AGENT = "codex"', script[0])
+                self.assertIn("Droid rules", script[0])
+                self.assertIn("MEZMO_GOVERNANCE_HOOK", script[0])
+
+    def test_one_override_for_two_agents_fails_the_one_it_is_not_for(self) -> None:
+        # The smoke runs a shared script once; the AGENT check still names each agent.
+        self.agent("droid", "0.244.0")
+        self.agent("devin-desktop", "1.126.0")
+        command = 'python3 "${MEZMO_GOVERNANCE_HOOK:-$HOME/.factory/hooks/mezmo_governance_hook.py}" || exit 2'
+        self.write(".factory/hooks.json", {"PreToolUse": [{"hooks": [{"type": "command", "command": command}]}]})
+        self.write(".codeium/windsurf/hooks.json", self.windsurf_config(" || exit 2"))
+        moved = self.copy_hook("droid", "elsewhere/mezmo_governance_hook.py")
+
+        result = self.doctor(MEZMO_GOVERNANCE_HOOK=str(moved))
+
+        self.assertEqual(self.lines(result, "Droid hook script"), [], result.stdout)
+        script = self.lines(result, "Windsurf hook script")
+        self.assertEqual(len(script), 1, result.stdout)
+        self.assertTrue(script[0].startswith("FAIL") and 'AGENT = "droid"' in script[0], script)
 
     def test_droid_needs_the_guard(self) -> None:
         self.agent("droid", "0.244.0")

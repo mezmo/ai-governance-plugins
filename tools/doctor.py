@@ -1312,6 +1312,31 @@ def install_copies() -> dict:
     }
 
 
+def script_agent(report: Report, smoke: Smoke) -> None:
+    """Fail a hook script made for another agent: it sends that agent's tool_namespace, so this agent's rules never match.
+
+    MEZMO_GOVERNANCE_HOOK can point any agent at any script. The AGENT constant is read from the text; the script never runs here.
+    """
+    agent = next((item for item in AGENTS if item.name == smoke.agent), None)
+    subject = f"{smoke.agent} hook script"
+    try:
+        match = re.search(r"^AGENT\s*=\s*[\"']([^\"']*)[\"']", smoke.path.read_text(encoding="utf-8"), re.M)
+    except (OSError, ValueError) as error:
+        report.line("warn", subject, f"unknown: could not read {shown(smoke.path)}: {error}")
+        return
+    if agent is None or (match and match.group(1) == agent.namespace):
+        return
+    if not match:
+        report.line("warn", subject, f"unknown: {shown(smoke.path)} sets no AGENT, so the doctor cannot tell which agent it is for")
+        return
+    found = match.group(1)
+    report.line(
+        "FAIL", subject,
+        f'{shown(smoke.path)} has AGENT = "{found}", so Mezmo gets tool_namespace {found} and the {smoke.agent} rules never match',
+        f"use the hook from {agent.readme}/; if MEZMO_GOVERNANCE_HOOK is set, point it there or unset it",
+    )
+
+
 def check_smokes(report: Report, smokes: list) -> None:
     if not smokes:
         return
@@ -1344,6 +1369,10 @@ def check_smokes(report: Report, smokes: list) -> None:
             "MEZMO_GOVERNANCE_STATE_DIR": os.devnull + "/mezmo-governance",
         }
     )
+    # Each agent's own pair: MEZMO_GOVERNANCE_HOOK can give every agent the same script, which the smoke runs once.
+    for smoke in {(smoke.agent, smoke.path): smoke for smoke in smokes}.values():
+        if smoke.path.is_file():
+            script_agent(report, smoke)
     seen = set()
     for smoke in smokes:
         if (smoke.path, smoke.args) in seen:
