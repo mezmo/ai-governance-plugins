@@ -706,5 +706,41 @@ class HostileInputTests(unittest.TestCase):
                 self.assertEqual(http.calls, [])
 
 
+class SlowHttp(FakeHttp):
+    """Each answer arrives `delay` seconds after the request, on the fake clock."""
+
+    def __init__(self, clock: FakeClock, delay: float, responses: List[Response]) -> None:
+        super().__init__(responses)
+        self.clock = clock
+        self.delay = delay
+
+    def __call__(
+        self, method: str, url: str, payload: Optional[Mapping[str, Any]], timeout: float
+    ) -> Tuple[int, Dict[str, Any]]:
+        self.clock.now += self.delay
+        return super().__call__(method, url, payload, timeout)
+
+
+@patch.dict(os.environ, environment(**{**ENV, "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "2"}), clear=True)
+class LateAnswerTests(unittest.TestCase):
+    """protocol.md rule 8: an answer that arrives after the deadline is a deny."""
+
+    def test_an_approval_posted_after_the_deadline_is_refused(self) -> None:
+        clock = FakeClock()
+        http = SlowHttp(clock, 5.0, [(200, {"approved": True})])
+        output = hook.handle_event(hook_event("PreToolUse"), http=http, clock=clock, sleep=clock.sleep)
+        self.assertIsNotNone(output)
+        self.assertEqual(decision_of(output), "deny")
+        self.assertIn("Mezmo Governance: approval still pending", reason_of(output))
+
+    def test_an_approval_polled_after_the_deadline_is_refused(self) -> None:
+        clock = FakeClock()
+        http = SlowHttp(clock, 1.5, [(207, {"approved": False, "reason": None}), (200, {"approved": True})])
+        output = hook.handle_event(hook_event("PreToolUse"), http=http, clock=clock, sleep=clock.sleep)
+        self.assertIsNotNone(output)
+        self.assertEqual(decision_of(output), "deny")
+        self.assertIn("Mezmo Governance: approval still pending", reason_of(output))
+
+
 if __name__ == "__main__":
     unittest.main()

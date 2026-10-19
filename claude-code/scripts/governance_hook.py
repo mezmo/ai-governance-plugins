@@ -437,15 +437,17 @@ def poll_decision(decision_id: str, deadline: float, http: HttpJson, clock: Cloc
             status, body = http("GET", url, None, leftover)
         except TimeoutError as error:
             raise HookContractError(f"Mezmo Governance is unavailable: {error}") from error
+        # An answer that arrives after the deadline is too late to act on.
+        leftover = remaining_seconds(deadline, clock)
         if status in (207, 404):  # still pending, or not visible yet
-            sleep(min(interval, remaining_seconds(deadline, clock)))
+            sleep(min(interval, leftover))
             continue
         if status != 200:
             raise HookContractError(describe_failure(status, body) + " while polling")
         decided = decision_from_status_body(body)
         if decided is not None:
             return decided
-        sleep(min(interval, remaining_seconds(deadline, clock)))
+        sleep(min(interval, leftover))
 
 
 OnPending = Callable[[Optional[str], float], None]
@@ -472,6 +474,8 @@ def authorize(
         status, body = http("POST", url, payload, leftover)
     except TimeoutError:
         return wait(None)
+    # An answer that arrives after the deadline is too late to act on.
+    remaining_seconds(deadline, clock)
     # 207: a person has to decide. 409: this decision_id exists already (a retry).
     if status in (207, 409):
         reason = body.get("reason") if status == 207 else None
