@@ -16,8 +16,20 @@ Known limits, not vulnerabilities:
   times out (see their READMEs). In Codex, Gemini CLI, Droid, Windsurf and
   VS Code Local, a hook that crashes blocks the call only with the
   `|| exit 2` guard that the example configs carry.
-- The Claude Code plugin lets every call run until it has a key. Set
-  `MEZMO_GOVERNANCE_REQUIRED=1` to make it deny instead.
+- The Claude Code plugin governs only Bash and MCP tool calls; Read, Edit,
+  Write and the other built-in tools run without a check. It lets every call run until it has a key. Set
+  `MEZMO_GOVERNANCE_REQUIRED=1` to make it deny instead. A crash or timeout
+  blocks the call only on Claude Code 2.1.295 and later; Zed's cached adapter
+  can bundle an older CLI.
+- Codex fires no hook for hosted tools such as `WebSearch`. It skips a hook
+  that is new, changed or not yet trusted without a warning, headless
+  `codex exec` included.
+- Droid skips every hook in a folder you have not trusted yet.
+- Cursor cloud agents do not load `~/.cursor/hooks.json`, so they run
+  ungoverned unless the project has the hook in `.cursor/hooks.json`.
+- OpenCode runs tools ungated when the plugin fails to load.
+- Mastra tools that `prepareStep` or an input processor returns per step run
+  without the hooks. Declare every tool on the agent.
 - Windsurf has no hook for grep and find, `write_to_file`, web search, URL
   reads, git commit, deploy or subagents, and loads no hook in Restricted Mode.
 - Goose runs the tool calls inside Code Mode scripts and `delegate` subagents
@@ -33,7 +45,10 @@ Known limits, not vulnerabilities:
 
 Each tool call sends Mezmo the tool name and its full arguments, plus the
 session and tool call ids. [What leaves your machine](README.md#what-leaves-your-machine)
-has the details, including the LangChain middleware's OpenTelemetry span.
+has the details and the exceptions: the LangChain middleware's OpenTelemetry
+span and optional `tool_call_intent`, Claude Code's opt-in telemetry and
+once-per-session ingestion key check, and Antigravity's `toolAction` and
+`toolSummary` notes.
 
 ## Reporting a vulnerability
 

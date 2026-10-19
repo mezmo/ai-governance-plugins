@@ -77,6 +77,10 @@ To try the plugin for one session without installing it, run
 To check the setup from the repository root, run `./mezmo-governance doctor claude-code` and
 `./mezmo-governance smoke claude-code`. `doctor` reads `MEZMO_GOVERNANCE_URL` and
 `MEZMO_GOVERNANCE_TOKEN` from the shell, not the key that setup saved, so export them first.
+It also checks that a key reaches the hook, since without one the plugin lets every call run.
+That passes when `claude plugin configure` shows a saved key with governance on, or when
+`settings.json` has a key or `MEZMO_GOVERNANCE_REQUIRED=1` under `env`. A key or that variable
+only in your shell gets a warning: Claude Code started from the Dock or another app may not see it.
 `smoke` uses its own mock.
 `/mezmo:test` checks the saved key from inside Claude Code.
 

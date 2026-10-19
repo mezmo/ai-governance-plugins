@@ -21,7 +21,8 @@ plugins repo, with these changes:
 - The service answers HTTP 207 while a person decides, with {approved, reason} on both the
   POST and the status GET. 207 means pending, whatever `approved` says. The adapter's
   {status: ...} poll body is still accepted.
-- Deny messages carry the service's error code and message.
+- Deny messages carry the service's error code and message on a 4xx, one line each, plus a fixed
+  local hint.
 - Each session's counts, pending decisions and last result, never the tool's arguments, go to
   ~/.mezmo/governance/sessions/<session id>.json, for the status mod and /mezmo:test.
 """
@@ -55,6 +56,7 @@ DEFAULT_TIMEOUT_SECONDS = 590.0
 # hooks.json gives the hook 600 seconds; deny before Claude Code stops it.
 MAX_TIMEOUT_SECONDS = 590.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
+MIN_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_AUDIT_LOG = Path.home() / ".mezmo" / "governance-audit.jsonl"
 # One status file per session, which the plugin's status mod reads. The mod finds it by
 # $HOME and its session id, so the path must stay in step with hooks/governance.ts.
@@ -229,7 +231,10 @@ def timeout_seconds() -> float:
 
 
 def poll_interval_seconds() -> float:
-    return positive_seconds("MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS)
+    return max(
+        positive_seconds("MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS", DEFAULT_POLL_INTERVAL_SECONDS),
+        MIN_POLL_INTERVAL_SECONDS,
+    )
 
 
 def audit_log_path() -> Path:
@@ -433,29 +438,53 @@ def rejected_argument_names(errors: Sequence[Any], payload: Optional[Mapping[str
     return names
 
 
-def describe_failure(status: int, body: Mapping[str, Any], payload: Optional[Mapping[str, Any]] = None) -> str:
-    """One line for a non-decision answer: status, the service's code and message, and a hint."""
-    code = body.get("code") if isinstance(body.get("code"), str) else None
-    message = body.get("message") if isinstance(body.get("message"), str) else None
-    text = f"Mezmo Governance returned HTTP {status}" + (f" {code}" if code else "")
+MAX_ERROR_DETAIL_CHARACTERS = 200
+
+
+def error_detail(value: Any) -> str:
+    """Mezmo's own error text on one bounded line, or "" when there is none."""
+    if not isinstance(value, str):
+        return ""
+    printable = "".join(ch if ch.isprintable() else " " for ch in value)
+    return " ".join(printable.split())[:MAX_ERROR_DETAIL_CHARACTERS]
+
+
+def http_failure(status: int, body: Mapping[str, Any], when: str = "") -> str:
+    """Name the status and, on a 4xx, Mezmo's code and message; nothing else."""
+    code = message = ""
+    if 400 <= status < 500:
+        code = error_detail(body.get("code"))
+        message = error_detail(body.get("message"))
+    text = f"Mezmo Governance returned HTTP {status}"
+    if code:
+        text += f" {code}"
+    text += when
     if message:
         text += f": {message}"
+    return text
+
+
+def describe_failure(
+    status: int, body: Mapping[str, Any], payload: Optional[Mapping[str, Any]] = None, when: str = ""
+) -> str:
+    """http_failure, then a fixed local hint. No other text from the reply is shown."""
+    text = http_failure(status, body, when)
+    if not 400 <= status < 500:
+        return text
     errors = body.get("errors") if isinstance(body.get("errors"), list) else []
     names = rejected_argument_names(errors, payload)
     if names:
-        listed = ", ".join(repr(n) for n in names)
+        # The names come from this call's own arguments, not from the reply.
+        listed = ", ".join(repr(n) for n in names)[:MAX_ERROR_DETAIL_CHARACTERS]
         noun, verb = ("argument name", "isn't") if len(names) == 1 else ("argument names", "aren't")
         text += (
             f" ({noun} {listed} {verb} accepted; names must match {ARGUMENT_NAME.pattern} "
             f"and be at most {ARGUMENT_NAME_MAX} characters)"
         )
-    elif errors and isinstance(errors[0], dict) and errors[0].get("message"):
-        where = errors[0].get("instance_path") or ""
-        text += f" ({where} {errors[0]['message']})".replace("( ", "(")
-    hint = ERROR_HINTS.get(code or "") or ERROR_HINTS.get(status)
+    hint = ERROR_HINTS.get(error_detail(body.get("code"))) or ERROR_HINTS.get(status)
     if hint:
         text += f". {hint[0].upper()}{hint[1:]}"
-    return text[: MAX_DETAIL_CHARACTERS * 2]
+    return text
 
 
 def remaining_seconds(deadline: float, clock: Clock) -> float:
@@ -498,15 +527,17 @@ def poll_decision(decision_id: str, deadline: float, http: HttpJson, clock: Cloc
             status, body = http("GET", url, None, leftover)
         except TimeoutError as error:
             raise HookContractError(f"Mezmo Governance is unavailable: {error}") from error
+        # An answer that arrives after the deadline is too late to act on.
+        leftover = remaining_seconds(deadline, clock)
         if status in (207, 404):  # still pending, or not visible yet
-            sleep(min(interval, remaining_seconds(deadline, clock)))
+            sleep(min(interval, leftover))
             continue
         if status != 200:
-            raise HookContractError(describe_failure(status, body) + " while polling")
+            raise HookContractError(describe_failure(status, body, when=" while polling"))
         decided = decision_from_status_body(body)
         if decided is not None:
             return decided
-        sleep(min(interval, remaining_seconds(deadline, clock)))
+        sleep(min(interval, leftover))
 
 
 OnPending = Callable[[Optional[str], float], None]
@@ -533,6 +564,8 @@ def authorize(
         status, body = http("POST", url, payload, leftover)
     except TimeoutError:
         return wait(None)
+    # An answer that arrives after the deadline is too late to act on.
+    remaining_seconds(deadline, clock)
     # 207: a person has to decide. 409: this decision_id exists already (a retry).
     if status in (207, 409):
         reason = body.get("reason") if status == 207 else None
