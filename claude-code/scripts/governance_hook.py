@@ -8,6 +8,10 @@ plugins repo, with these changes:
 - Only Bash and MCP tool calls go to Mezmo Governance, minus the Claude desktop app's own
   servers (ccd_session, ccd_turn and the like). hooks/hooks.json matches the same calls, so
   other tools don't start the hook at all.
+- A Bash call goes as one item per part of its command (bash_parts.py), each with its
+  program and positional arguments as fields a policy rule can match.
+- When auto mode's classifier blocks one of these calls (PermissionDenied), the hook counts it
+  and logs it locally. Mezmo isn't asked: the call already didn't run.
 - Off until configured: with no access key, the hook allows every call and records
   nothing, unless MEZMO_GOVERNANCE_REQUIRED=1, which denies instead. Once configured it
   fails closed, as the adapter does.
@@ -43,6 +47,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+import bash_parts
+
 AGENT = "claude_code"
 DEFAULT_URL = "https://api.mezmo.com/governance/workflow/authorize"
 DEFAULT_TIMEOUT_SECONDS = 590.0
@@ -65,6 +71,10 @@ CLAUDE_APP_SERVERS = frozenset({
     "ccd_connectors", "ccd_directory", "ccd_host", "ccd_pr", "ccd_session", "ccd_session_mgmt",
     "ccd_settings", "ccd_sidebar", "ccd_turn", "ccd_view", "ccd_window",
 })
+# Mezmo takes up to 100 items a request. A command with more parts goes whole, as before.
+MAX_BASH_PARTS = 50
+# Each argument is a row in Mezmo, and rules rarely look past the first few.
+MAX_BASH_ARGS = 10
 # The service's rule for argument names (ai-governance-service schema/constants.js).
 ARGUMENT_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 ARGUMENT_NAME_MAX = 64
@@ -295,23 +305,63 @@ def origin(event: Mapping[str, Any]) -> Dict[str, Any]:
     return {"kind": "claude_code_hook", "reason": str(event.get("hook_event_name") or "Claude Code tool hook")}
 
 
+def bash_items(arguments: Mapping[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    """One item per part of a Bash command, or None to send the call whole.
+
+    The first item leads with the call's own input and the whole command, then each item has
+    its part's fields. A parser failure only means the call goes whole: it never blocks it.
+    """
+    command = arguments.get("command")
+    if not isinstance(command, str):
+        return None
+    try:
+        parts = bash_parts.split_command(command)
+    except Exception:
+        return None
+    if not parts or len(parts) > MAX_BASH_PARTS:
+        return None
+    rest = {name: value for name, value in arguments.items() if name != "command"}
+    items = []
+    for index, part in enumerate(parts):
+        if len(parts) == 1:
+            fields = {"command": command, **rest}
+        elif index == 0:
+            fields = {"full_command": command, **rest, "command": part.text}
+        else:
+            fields = {"command": part.text}
+        if part.program is not None:
+            fields["program"] = part.program
+            fields.update((f"arg_{n}", value) for n, value in enumerate(part.args[:MAX_BASH_ARGS], 1))
+            for name, value in part.flags:
+                field = "flag_" + re.sub(r"[^A-Za-z0-9_]", "_", name)
+                if len(field) <= ARGUMENT_NAME_MAX:
+                    fields[field] = value
+        item: Dict[str, Any] = {"id": index, "tool_namespace": AGENT, "tool_name": "Bash", "arguments": fields}
+        if index and part.after in bash_parts.SEQUENTIAL:
+            item["dependencies"] = [index - 1]
+        items.append(item)
+    return items
+
+
 def approval_payload(event: Mapping[str, Any]) -> Dict[str, Any]:
     tool_call = normalize_tool_call(event)
     identity = call_identity(event)
+    is_bash = (tool_call.namespace, tool_call.name) == (AGENT, "Bash")
+    items = (bash_items(tool_call.arguments) if is_bash else None) or [
+        {
+            "id": 0,
+            "tool_namespace": tool_call.namespace,
+            "tool_name": tool_call.name,
+            "arguments": tool_call.arguments,
+        }
+    ]
     return {
         "version": 1,
         "decision_id": identity.decision_id,
         "request_id": identity.request_id,
         "scope": {"kind": "single", "session_id": identity.session_id},
         "origin": origin(event),
-        "items": [
-            {
-                "id": 0,
-                "tool_namespace": tool_call.namespace,
-                "tool_name": tool_call.name,
-                "arguments": tool_call.arguments,
-            }
-        ],
+        "items": items,
     }
 
 
@@ -684,6 +734,38 @@ def handle_post_tool_use(event: Mapping[str, Any]) -> None:
     )
 
 
+def handle_permission_denied(event: Mapping[str, Any]) -> None:
+    """Count and log a call auto mode's classifier blocked. Never its arguments."""
+    try:
+        tool_call = normalize_tool_call(event)
+        namespace, name = tool_call.namespace, tool_call.name
+    except HookContractError:
+        namespace, name = None, str(event.get("tool_name") or "")
+    try:
+        identity = call_identity(event)
+        decision_id, request_id = identity.decision_id, identity.request_id
+    except HookContractError:
+        decision_id = request_id = None
+    reason = event.get("reason")
+    append_audit(
+        {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "agent": AGENT,
+            "decision_id": decision_id,
+            "request_id": request_id,
+            "tool_namespace": namespace,
+            "tool_name": name,
+            "status": "blocked_by_auto_mode",
+            "reason": reason[:MAX_DETAIL_CHARACTERS] if isinstance(reason, str) else None,
+        }
+    )
+
+    def count(state: Dict[str, Any]) -> None:
+        state["counts"]["auto_mode_blocked"] = state["counts"].get("auto_mode_blocked", 0) + 1
+
+    update_session_state(event, count)
+
+
 def governed(event: Mapping[str, Any]) -> bool:
     """Whether Mezmo Governance decides this call. A call without a usable tool name counts, so it gets denied."""
     name = event.get("tool_name")
@@ -702,7 +784,7 @@ def handle_event(
     sleep: Sleeper = time.sleep,
 ) -> Optional[Dict[str, Any]]:
     event_name = event.get("hook_event_name")
-    if event_name in {"PreToolUse", "PostToolUse", "PostToolUseFailure"} and not governed(event):
+    if event_name in {"PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied"} and not governed(event):
         return None
     configured = load_config() is not None
     if event_name == "PreToolUse":
@@ -719,6 +801,14 @@ def handle_event(
             handle_post_tool_use(event)
         except Exception as error:
             print(f"Mezmo Governance could not write the local audit log: {error}", file=sys.stderr)
+        return None
+    if event_name == "PermissionDenied":
+        if not configured:
+            return None
+        try:
+            handle_permission_denied(event)
+        except Exception as error:
+            print(f"Mezmo Governance could not record the auto mode block: {error}", file=sys.stderr)
         return None
     raise HookContractError(f"unsupported hook event: {event_name!r}")
 

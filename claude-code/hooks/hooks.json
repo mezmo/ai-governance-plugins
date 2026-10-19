@@ -39,6 +39,18 @@
           }
         ]
       }
+    ],
+    "PermissionDenied": [
+      {
+        "matcher": "^(Bash|mcp__.*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/governance_hook.py\"",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   }
 }

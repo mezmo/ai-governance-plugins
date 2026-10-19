@@ -778,7 +778,7 @@ class WhichCallsAreGovernedTests(unittest.TestCase):
     def test_the_plugin_only_runs_the_hook_for_bash_and_mcp_tools(self) -> None:
         # Claude Code tests a matcher like this one as a regular expression against the tool name.
         hooks = json.loads((pathlib.Path(__file__).resolve().parents[1] / "hooks" / "hooks.json").read_text())["hooks"]
-        for event_name in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
+        for event_name in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied"):
             with self.subTest(event=event_name):
                 (entry,) = hooks[event_name]
                 matcher = re.compile(entry["matcher"])
@@ -786,6 +786,151 @@ class WhichCallsAreGovernedTests(unittest.TestCase):
                     self.assertTrue(matcher.search(name), name)
                 for name in ("Read", "BashOutput", "ToolSearch", "Xmcp__a__b"):
                     self.assertFalse(matcher.search(name), name)
+
+
+def bash_event(command: str, **tool_input: Any) -> Dict[str, Any]:
+    return {**hook_event("PreToolUse"), "tool_name": "Bash", "tool_input": {"command": command, **tool_input}}
+
+
+@patch.dict(os.environ, environment(**ENV), clear=True)
+class BashPartsTests(unittest.TestCase):
+    """A Bash call goes to Mezmo as one item per part, with fields a policy rule can match."""
+
+    def items(self, command: str, **tool_input: Any) -> List[Dict[str, Any]]:
+        return hook.approval_payload(bash_event(command, **tool_input))["items"]
+
+    def test_a_one_part_command_keeps_its_input_and_gains_its_program(self) -> None:
+        (item,) = self.items("git status --short", description="Show changes")
+        self.assertEqual(
+            list(item["arguments"].items()),
+            [("command", "git status --short"), ("description", "Show changes"), ("program", "git"), ("arg_1", "status"),
+             ("flag_short", True)],
+        )
+        self.assertNotIn("dependencies", item)
+
+    def test_flags_become_fields_a_rule_can_match(self) -> None:
+        (item,) = self.items("git push --force-with-lease=main -fu origin main")
+        self.assertEqual(
+            [(name, value) for name, value in item["arguments"].items() if name.startswith("flag_")],
+            [("flag_force_with_lease", "main"), ("flag_f", True), ("flag_u", True)],
+        )
+        # A name Mezmo wouldn't accept is made one it does, and one too long for it is left out.
+        (item,) = self.items("tool --odd.name --" + "x" * 70 + " target")
+        self.assertEqual([name for name in item["arguments"] if name.startswith("flag_")], ["flag_odd_name"])
+
+    def test_each_part_is_an_item_and_the_first_shows_the_whole_command(self) -> None:
+        command = "cd /repo && git push origin main | tee push.log"
+        items = self.items(command, description="Push main", timeout=60000)
+        self.assertEqual([item["id"] for item in items], [0, 1, 2])
+        self.assertTrue(all((i["tool_namespace"], i["tool_name"]) == ("claude_code", "Bash") for i in items))
+        # The whole command and why come first, then this part's own fields.
+        self.assertEqual(
+            list(items[0]["arguments"].items()),
+            [("full_command", command), ("description", "Push main"), ("timeout", 60000),
+             ("command", "cd /repo"), ("program", "cd"), ("arg_1", "/repo")],
+        )
+        self.assertEqual(
+            items[1]["arguments"],
+            {"command": "git push origin main", "program": "git", "arg_1": "push", "arg_2": "origin", "arg_3": "main"},
+        )
+        self.assertEqual(items[2]["arguments"], {"command": "tee push.log", "program": "tee", "arg_1": "push.log"})
+        # git push runs once cd has finished; tee runs alongside it.
+        self.assertEqual(items[1]["dependencies"], [0])
+        self.assertNotIn("dependencies", items[2])
+
+    def test_a_part_it_cannot_read_has_no_program(self) -> None:
+        items = self.items("ls $HOME && npm test")
+        self.assertEqual(items[0]["arguments"], {"full_command": "ls $HOME && npm test", "command": "ls $HOME"})
+        self.assertEqual(items[1]["arguments"]["program"], "npm")
+
+    def test_a_command_it_cannot_split_goes_whole_as_before(self) -> None:
+        for command in ("echo $(whoami) && rm -rf x", "cat <<EOF\nhi\nEOF"):
+            with self.subTest(command=command):
+                (item,) = self.items(command, description="d")
+                self.assertEqual(item["arguments"], {"command": command, "description": "d"})
+
+    def test_a_parser_failure_never_blocks_the_call(self) -> None:
+        http = FakeHttp([(200, {"approved": True})])
+        with patch.object(hook.bash_parts, "split_command", side_effect=RecursionError("deep")):
+            self.assertIsNone(hook.handle_event(bash_event("ls && pwd"), http=http))
+        self.assertEqual(http.calls[0][2]["items"], [{"id": 0, "tool_namespace": "claude_code", "tool_name": "Bash", "arguments": {"command": "ls && pwd"}}])
+
+    def test_a_command_with_too_many_parts_goes_whole(self) -> None:
+        command = "; ".join(["true"] * (hook.MAX_BASH_PARTS + 1))
+        (item,) = self.items(command)
+        self.assertEqual(item["arguments"], {"command": command})
+
+    def test_only_the_first_arguments_become_fields(self) -> None:
+        (item,) = self.items("touch " + " ".join(f"f{n}" for n in range(1, 30)))
+        names = [name for name in item["arguments"] if name.startswith("arg_")]
+        self.assertEqual(names, [f"arg_{n}" for n in range(1, hook.MAX_BASH_ARGS + 1)])
+
+    def test_mcp_calls_stay_one_item(self) -> None:
+        event = {**hook_event("PreToolUse"), "tool_name": "mcp__terminal__run", "tool_input": {"command": "ls && pwd"}}
+        (item,) = hook.approval_payload(event)["items"]
+        self.assertEqual(item["arguments"], {"command": "ls && pwd"})
+
+    def test_the_decision_stays_bound_to_the_exact_call(self) -> None:
+        payload = hook.approval_payload(bash_event("ls && pwd"))
+        self.assertEqual(payload["decision_id"], hook.call_identity(bash_event("ls && pwd")).decision_id)
+        self.assertNotEqual(payload["decision_id"], hook.approval_payload(bash_event("ls && pwd -P"))["decision_id"])
+
+
+def blocked_event(tool_name: str = "Bash") -> Dict[str, Any]:
+    return {
+        **hook_event("PermissionDenied"),
+        "tool_name": tool_name,
+        "tool_input": {"command": "rm -rf build"},
+        "reason": "[Irreversible Local Destruction] Deletes the build directory",
+    }
+
+
+class AutoModeBlockTests(unittest.TestCase):
+    """When auto mode's classifier blocks a governed call, the hook records it locally. Mezmo isn't asked."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.dir = pathlib.Path(tmp.name)
+        # One patch, made here: a class-level patch would apply after setUp and replace these paths.
+        paths = {
+            "MEZMO_GOVERNANCE_AUDIT_LOG": str(self.dir / "audit.jsonl"),
+            "MEZMO_GOVERNANCE_STATE_DIR": str(self.dir / "sessions"),
+        }
+        patcher = patch.dict(os.environ, environment(**ENV, **paths), clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def state(self) -> Dict[str, Any]:
+        return json.loads((self.dir / "sessions" / "session-1.json").read_text())
+
+    def test_a_block_is_counted_and_logged_without_the_command(self) -> None:
+        http = FakeHttp([])
+        self.assertIsNone(hook.handle_event(blocked_event(), http=http))
+        self.assertEqual(http.calls, [])
+        self.assertEqual(self.state()["counts"]["auto_mode_blocked"], 1)
+        # The status mod toasts the last result, so a block leaves it alone.
+        self.assertNotIn("last", self.state())
+        (record,) = [json.loads(line) for line in (self.dir / "audit.jsonl").read_text().splitlines()]
+        self.assertEqual(
+            (record["tool_namespace"], record["tool_name"], record["status"]),
+            ("claude_code", "Bash", "blocked_by_auto_mode"),
+        )
+        self.assertEqual(record["reason"], "[Irreversible Local Destruction] Deletes the build directory")
+        self.assertNotIn("rm -rf", json.dumps(record))
+
+    def test_a_block_without_a_call_id_is_still_counted(self) -> None:
+        event = blocked_event()
+        del event["tool_use_id"]
+        hook.handle_event(event)
+        self.assertEqual(self.state()["counts"]["auto_mode_blocked"], 1)
+
+    def test_nothing_is_recorded_without_governance_or_for_other_tools(self) -> None:
+        with patch.dict(os.environ, {"MEZMO_GOVERNANCE_ACCESS_KEY": ""}):
+            hook.handle_event(blocked_event())
+        hook.handle_event(blocked_event("Edit"))
+        self.assertFalse((self.dir / "audit.jsonl").exists())
+        self.assertFalse((self.dir / "sessions").exists())
 
 
 if __name__ == "__main__":

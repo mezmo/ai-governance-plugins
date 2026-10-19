@@ -10,6 +10,7 @@ import {
   formatDuration,
   governanceLabel,
   governanceStatePath,
+  governanceText,
   livePending,
   parseGovernanceState,
   summarizeCall,
@@ -378,7 +379,7 @@ test('reads a status file, and nothing that is not one', () => {
     last: lastDecision(),
     host: 'api.mezmo.com',
   }))
-  expect(state?.counts).toEqual({ allowed: 2, denied: 0, expired: 0, errors: 0 })
+  expect(state?.counts).toEqual({ allowed: 2, denied: 0, expired: 0, errors: 0, auto_mode_blocked: 0 })
   expect(Object.keys(state?.pending ?? {})).toEqual(['d-1'])
   expect(state?.last?.decision_id).toBe('d-1')
   expect(parseGovernanceState('{"counts": ')).toBeUndefined()
@@ -424,6 +425,17 @@ test('the footer label says what is waiting, or counts the session', () => {
   expect(governanceLabel(govState({ counts: { allowed: 14, denied: 0, expired: 0, errors: 0 } }))).toBe('Governance 14 ✓')
   expect(governanceLabel(govState({ counts: { allowed: 14, denied: 1, expired: 1, errors: 0 } }))).toBe('Governance 14 ✓ 2 ✗')
   expect(governanceLabel(govState({ pending: { 'd-1': pendingEntry(0) } }))).toBe('Governance ⏳ 1 waiting')
+})
+
+test('/mezmo says when auto mode blocked calls Mezmo Governance allowed', () => {
+  const quiet = governanceText(govState({ counts: { allowed: 3, denied: 0, expired: 0, errors: 0 } }), 0)!
+  expect(quiet.includes('Auto mode')).toBe(false)
+  const two = governanceText(parseGovernanceState(JSON.stringify({ counts: { allowed: 3, auto_mode_blocked: 2 } })), 0)!
+  expect(two.split('\n')[1]).toBe('Auto mode blocked 2 calls that Mezmo Governance allowed.')
+  const one = governanceText(govState({ counts: { allowed: 1, denied: 0, expired: 0, errors: 0, auto_mode_blocked: 1 } }), 0)!
+  expect(one.split('\n')[1]).toBe('Auto mode blocked 1 call that Mezmo Governance allowed.')
+  // The footer counts Mezmo's own decisions only.
+  expect(governanceLabel(govState({ counts: { allowed: 1, denied: 0, expired: 0, errors: 0, auto_mode_blocked: 1 } }))).toBe('Governance 1 ✓')
 })
 
 test('the footer names Mezmo once, governance first, and leaves out what is off', () => {

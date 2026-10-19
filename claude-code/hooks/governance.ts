@@ -10,6 +10,8 @@ export type GovernanceCounts = {
   denied: number
   expired: number
   errors: number
+  /** Calls auto mode's classifier blocked after Mezmo Governance allowed them. */
+  auto_mode_blocked?: number
 }
 
 export type PendingDecision = {
@@ -89,6 +91,7 @@ export function parseGovernanceState(text: string): GovernanceState | undefined 
       denied: count(counts.denied),
       expired: count(counts.expired),
       errors: count(counts.errors),
+      auto_mode_blocked: count(counts.auto_mode_blocked),
     },
     pending,
     last,
@@ -207,6 +210,10 @@ export function governanceText(state: GovernanceState | undefined, nowMs: number
     `Mezmo Governance${state.host ? ` (${state.host})` : ''} in this session: ${c.allowed} allowed, ${c.denied} denied, ` +
       `${c.expired} not decided in time, ${c.errors} errors.`,
   ]
+  const blockedByAutoMode = c.auto_mode_blocked ?? 0
+  if (blockedByAutoMode > 0) {
+    lines.push(`Auto mode blocked ${blockedByAutoMode} call${blockedByAutoMode === 1 ? '' : 's'} that Mezmo Governance allowed.`)
+  }
   for (const entry of Object.values(state.pending)) {
     lines.push(
       `Waiting for a person: ${toolLabel(entry.tool_name || entry.tool)} for ${formatDuration(nowMs - entry.since_ms)}, ` +
