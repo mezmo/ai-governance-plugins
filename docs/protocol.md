@@ -165,7 +165,7 @@ The table lists the pieces before `#<digest>`.
 | Runtime | `request_id` pieces | `origin.kind` | Default `tool_namespace` |
 | --- | --- | --- | --- |
 | Codex | `codex`, `session_id`, `tool_use_id` (plus `turn_id` when present) | `codex_hook` | `codex`, or MCP server from `mcp__<server>__<tool>` |
-| Claude Code | `claude_code`, `session_id`, `tool_use_id` (plus `turn_id` when present) | `claude_code_hook` | `claude_code`, or MCP server from `mcp__<server>__<tool>` |
+| Claude Code | `claude_code`, `session_id`, `tool_use_id` (plus `turn_id` when present) | `claude_code_hook` | `claude_code` for Bash, or MCP server from `mcp__<server>__<tool>`. Other built-in tools and the Claude app's own `ccd_*` servers aren't sent |
 | Cursor | `cursor`, `conversation_id`, `tool_use_id`, or a fresh `run-<uuid>` when the event has none | `cursor_hook` | `cursor`, `mcp_server_name`, or `<server>` from `mcp__<server>__<tool>` |
 | Gemini CLI | `gemini_cli`, `session_id`, a fresh `run-<uuid>` (no call id) | `gemini_cli_hook` | `gemini_cli`, or `mcp_context.server_name` |
 | GitHub Copilot | `copilot`, `sessionId`, a fresh `run-<uuid>` (no call id); from VS Code Local, `session_id` and `tool_use_id` | `copilot_hook` | `copilot` |

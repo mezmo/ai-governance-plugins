@@ -1,9 +1,10 @@
 {
-  "description": "Mezmo status mod (footer indicator, one connection check per session, /mezmo) and the Mezmo Governance tool-call check, which stays off until an access key is configured",
+  "description": "Mezmo status mod (footer indicator, one connection check per session, /mezmo) and the Mezmo Governance check on Bash and MCP tool calls, which stays off until an access key is configured",
   "modules": ["./register.ts"],
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "^(Bash|mcp__.*)$",
         "hooks": [
           {
             "type": "command",
@@ -17,6 +18,7 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "^(Bash|mcp__.*)$",
         "hooks": [
           {
             "type": "command",
@@ -28,6 +30,7 @@
     ],
     "PostToolUseFailure": [
       {
+        "matcher": "^(Bash|mcp__.*)$",
         "hooks": [
           {
             "type": "command",

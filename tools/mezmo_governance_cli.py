@@ -1419,7 +1419,7 @@ def policy_apply(base: str, key: str, records: list, policies: list, fixed: Opti
             print(f"FAIL  {policy.get('name')}: {error}", flush=True)
             failed = True
             continue
-        print(f"ok    {policy.get('name')}: {len(added)} rules added, {len(kept)} kept", flush=True)
+        print(f"ok    {policy.get('name')}: {len(added)} rule{'' if len(added) == 1 else 's'} added, {len(kept)} kept", flush=True)
     if planned and not yes:
         print("Nothing changed. Run again with --yes to add these rules through a Mezmo draft.", flush=True)
     return 1 if failed else 0

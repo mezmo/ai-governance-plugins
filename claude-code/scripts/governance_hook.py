@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Claude Code PreToolUse / PostToolUse hook for Mezmo Governance.
 
-Before each tool call, ask Mezmo Governance whether this exact call may run, and block it
-when the answer is no. Ported from the Claude Code adapter in the Mezmo Governance plugins
-repo, with these changes:
+Before each Bash or MCP tool call, ask Mezmo Governance whether this exact call may run, and
+block it when the answer is no. Ported from the Claude Code adapter in the Mezmo Governance
+plugins repo, with these changes:
 
+- Only Bash and MCP tool calls go to Mezmo Governance, minus the Claude desktop app's own
+  servers (ccd_session, ccd_turn and the like). hooks/hooks.json matches the same calls, so
+  other tools don't start the hook at all.
 - Off until configured: with no access key, the hook allows every call and records
   nothing, unless MEZMO_GOVERNANCE_REQUIRED=1, which denies instead. Once configured it
   fails closed, as the adapter does.
@@ -54,6 +57,14 @@ STATE_RETENTION_SECONDS = 7 * 24 * 3600
 MAX_RESULT_PREVIEW_CHARACTERS = 2_000
 MAX_DETAIL_CHARACTERS = 300
 MCP_TOOL_PREFIX = "mcp__"
+# The built-in tools Mezmo Governance decides. Every other built-in is left alone.
+GOVERNED_BUILT_IN_TOOLS = frozenset({"Bash"})
+# MCP servers the Claude desktop app adds for its own sessions, panes and task list. Exact
+# names, not a ccd_ prefix, so a server merely named like one is still governed.
+CLAUDE_APP_SERVERS = frozenset({
+    "ccd_connectors", "ccd_directory", "ccd_host", "ccd_pr", "ccd_session", "ccd_session_mgmt",
+    "ccd_settings", "ccd_sidebar", "ccd_turn", "ccd_view", "ccd_window",
+})
 # The service's rule for argument names (ai-governance-service schema/constants.js).
 ARGUMENT_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 ARGUMENT_NAME_MAX = 64
@@ -673,6 +684,17 @@ def handle_post_tool_use(event: Mapping[str, Any]) -> None:
     )
 
 
+def governed(event: Mapping[str, Any]) -> bool:
+    """Whether Mezmo Governance decides this call. A call without a usable tool name counts, so it gets denied."""
+    name = event.get("tool_name")
+    if not isinstance(name, str) or not name:
+        return True
+    if name.startswith(MCP_TOOL_PREFIX):
+        parts = name.split("__", 2)
+        return len(parts) != 3 or parts[1] not in CLAUDE_APP_SERVERS
+    return name in GOVERNED_BUILT_IN_TOOLS
+
+
 def handle_event(
     event: Mapping[str, Any],
     http: HttpJson = http_json,
@@ -680,6 +702,8 @@ def handle_event(
     sleep: Sleeper = time.sleep,
 ) -> Optional[Dict[str, Any]]:
     event_name = event.get("hook_event_name")
+    if event_name in {"PreToolUse", "PostToolUse", "PostToolUseFailure"} and not governed(event):
+        return None
     configured = load_config() is not None
     if event_name == "PreToolUse":
         if not configured and not governance_required():

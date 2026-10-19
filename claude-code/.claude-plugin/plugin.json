@@ -1,8 +1,8 @@
 {
   "name": "mezmo",
   "displayName": "Mezmo",
-  "version": "0.2.0",
-  "description": "Check Claude Code's tool calls with Mezmo Governance, send Claude Code telemetry to Mezmo, and connect Claude to Mezmo MCP.",
+  "version": "0.3.0",
+  "description": "Check Claude Code's Bash and MCP tool calls with Mezmo Governance, send Claude Code telemetry to Mezmo, and connect Claude to Mezmo MCP.",
   "author": {
     "name": "Mezmo",
     "url": "https://www.mezmo.com"
@@ -24,7 +24,7 @@
     "governance_access_key": {
       "type": "string",
       "title": "Mezmo Governance access key",
-      "description": "Token of the service account that the Claude Code agent uses in Mezmo Governance, a standard Mezmo service key. Leave empty to keep governance off. With a key, every tool call is checked before it runs.",
+      "description": "Token of the service account that the Claude Code agent uses in Mezmo Governance, a standard Mezmo service key. Leave empty to keep governance off. With a key, every Bash and MCP tool call is checked before it runs.",
       "sensitive": true
     },
     "governance_url": {

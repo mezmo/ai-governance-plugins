@@ -830,8 +830,8 @@ class LiveSmokeTests(CliTestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        # The mock denies shell tools and holds Claude Code's read tool for approval.
-        server = ThreadingHTTPServer(("127.0.0.1", 0), mock_governance.make_handler(["Bash", "Shell"], ["Read"]))
+        # The mock denies Codex's shell tool and holds Claude Code's for approval.
+        server = ThreadingHTTPServer(("127.0.0.1", 0), mock_governance.make_handler(["codex:Bash", "Shell"], ["claude_code:Bash"]))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -843,11 +843,11 @@ class LiveSmokeTests(CliTestCase):
         self.cli("install", "claude-code", "codex")
         result = self.cli("smoke", "--live")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("live  claude-code: Bash denied: mock policy: claude_code:Bash is denied (", result.stdout)
-        self.assertIn("live  claude-code: Read pending approval (", result.stdout)
+        self.assertIn("live  claude-code: Bash pending approval (", result.stdout)
         self.assertIn("live  codex: Bash denied: mock policy: codex:Bash is denied (", result.stdout)
-        # Codex has no read-only tool, so it gets the shell call only.
+        # Neither sends a read-only tool, so each gets the shell call only.
         self.assertNotIn("apply_patch", result.stdout)
+        self.assertNotIn("claude-code: Read", result.stdout)
         self.assertNotIn("mock  Mezmo stand-in", result.stdout)
         self.assertNotIn("FAIL", result.stdout)
         # The smoke calls stay out of the user's audit log.
@@ -978,7 +978,8 @@ class PolicyTests(CliTestCase):
         self.assertIn(f"policy  Mock policy ({policy_id})", result.stdout)
         self.assertIn(f"  rule     allow doctor tool eq probe: - (rule_id {self.seeded['rule_id']})", result.stdout)
         self.assertIn("  default  approval_required: No rule in this policy covers this request.", result.stdout)
-        self.assertIn("cover   claude-code in Mock policy: shell Bash not covered; read Read not covered", result.stdout)
+        # Claude Code sends no read-only tool, so only its shell tool needs a rule.
+        self.assertIn("cover   claude-code in Mock policy: shell Bash not covered\n", result.stdout)
         # Mezmo has one agent, so every installed agent, which sends its token, gets its policy.
         self.assertIn("cover   codex in Mock policy: shell Bash not covered\n", result.stdout)
         self.assertNotIn("cursor", result.stdout)
@@ -1030,7 +1031,7 @@ class PolicyTests(CliTestCase):
         self.assertIn(f"policy  Mock policy ({self.mock_policy['policy_id']}) for claude-code, cursor, copilot:", result.stdout)
         self.assertIn(f"  keep     allow doctor tool eq probe: - (rule_id {self.seeded['rule_id']})", result.stdout)
         self.assertIn("  would add deny in claude_code, cursor, copilot tool in Bash, Shell, bash: Shell blocked by Mezmo policy", result.stdout)
-        self.assertIn("  would add allow in claude_code, cursor, copilot tool in Read, view: -", result.stdout)
+        self.assertIn("  would add allow in cursor, copilot tool in Read, view: -", result.stdout)
         self.assertIn("--yes", result.stdout)
         self.assertEqual(json.dumps(self.governance["policies"]), before)
         self.assertEqual(self.writes(), [])
@@ -1054,12 +1055,11 @@ class PolicyTests(CliTestCase):
             [
                 {"recourse": "deny", "tool": {"op": "in", "value": ["Bash"]}, "namespace": {"op": "in", "value": ["claude_code"]},
                  "code": "FORBIDDEN_TOOL", "error_message": "Shell blocked by Mezmo policy"},
-                {"recourse": "allow", "tool": {"op": "in", "value": ["Read"]}, "namespace": {"op": "in", "value": ["claude_code"]}},
             ],
         )
         self.assertIn("  add      deny in claude_code tool in Bash: Shell blocked by Mezmo policy", result.stdout)
-        self.assertIn("ok    Mock policy: 2 rules added, 2 kept", result.stdout)
-        # A second run finds both tools covered and opens no draft.
+        self.assertIn("ok    Mock policy: 1 rule added, 2 kept", result.stdout)
+        # A second run finds Bash covered and opens no draft.
         self.governance["calls"].clear()
         again = self.policy("apply", "--yes")
         self.assertEqual(again.returncode, 0, again.stdout)
@@ -1077,7 +1077,6 @@ class PolicyTests(CliTestCase):
             [
                 {"recourse": "deny", "tool": {"op": "in", "value": ["Bash"]}, "namespace": {"op": "in", "value": ["claude_code", "codex"]},
                  "code": "FORBIDDEN_TOOL", "error_message": "Shell blocked by Mezmo policy"},
-                {"recourse": "allow", "tool": {"op": "in", "value": ["Read"]}, "namespace": {"op": "in", "value": ["claude_code"]}},
             ],
         )
         self.assertIn("  add      deny in claude_code, codex tool in Bash: Shell blocked by Mezmo policy", result.stdout)
@@ -1138,8 +1137,8 @@ class PolicyTests(CliTestCase):
         self.cli("install", "claude-code")
         self.policy_rules([flat({"op": "eq", "value": "Bash"}, "allow", {"op": "eq", "value": "claude_code"})])
         result = self.policy("apply")
-        self.assertIn("  would add allow in claude_code tool in Read: -", result.stdout)
-        self.assertNotIn("would add deny", result.stdout)
+        self.assertIn("nothing to add", result.stdout)
+        self.assertNotIn("would add", result.stdout)
 
     def test_apply_takes_named_agents_and_refuses_unknown_ones(self) -> None:
         self.register("codex")
@@ -1170,7 +1169,8 @@ class PolicyTests(CliTestCase):
                 self.call("DELETE", f"/policy/{self.mock_policy['policy_id']}/draft/{draft}")
         result = self.policy("apply", "--yes")
         self.assertEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(len(self.mock_policy["rules"]), 3)
+        # The seeded rule plus the Bash deny.
+        self.assertEqual(len(self.mock_policy["rules"]), 2)
 
     def test_mezmo_handing_back_an_existing_draft_stops_apply(self) -> None:
         # The policy read showed no draft, but the draft call returned one (200, not 201).
@@ -1224,7 +1224,8 @@ class PolicyTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertNotIn("Codex policy", result.stdout)
         self.assertEqual(json.dumps(other), before)
-        self.assertEqual(len(self.mock_policy["rules"]), 3)
+        # The seeded rule plus the Bash deny.
+        self.assertEqual(len(self.mock_policy["rules"]), 2)
 
     def test_a_draft_it_cannot_delete_is_named(self) -> None:
         self.cli("install", "claude-code")

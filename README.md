@@ -58,7 +58,8 @@ call before you connect it to anything. You need Python 3.9+ and Claude Code
 
 3. Ask Claude to run `ls`. The mock prints a `denied` line for `claude_code:Bash`, and
    Claude reports `Mezmo Governance denied this exact tool call: mock policy:
-   claude_code:Bash is denied`. Ask it to read a file: that call is approved.
+   claude_code:Bash is denied`. Ask it to read a file: it runs without reaching the mock,
+   because the Claude Code plugin only sends Bash and MCP tool calls.
 
 `--deny PATTERN` and `--hold PATTERN` repeat. A pattern matches the tool name
 (`Bash`) or `<namespace>:<tool>` (`claude_code:Bash`), with shell wildcards,
@@ -176,23 +177,25 @@ This policy tests all three outcomes with Claude Code:
 | Rule | Tool space | Tool name | Effect |
 | --- | --- | --- | --- |
 | 1 | `doctor` | `probe` | allow, so `doctor --probe` passes |
-| 2 | `claude_code` | `Read` | allow |
-| 3 | `claude_code` | `Bash` | deny, with a message such as `Bash is blocked by policy` |
+| 2 | `claude_code` | `Bash` | deny, with a message such as `Bash is blocked by policy` |
 | Fallthrough | | | **Send for Approval**, with yourself as approver |
 
 Run the check in one Claude Code session that loads the plugin, not with a
 user-level install. An installed plugin governs every Claude Code session on
-the machine: under this policy each one loses `Bash`, and every tool other
-than `Read` waits for your approval. Install at user level once the policy
-fits your daily work.
+the machine: under this policy each one loses `Bash`, and every MCP tool call
+waits for your approval. Install at user level once the policy fits your
+daily work.
 
 1. `./mezmo-governance doctor --probe`: every Mezmo line is `ok`.
 2. Start `claude --plugin-dir ./claude-code` from this repository, with
    `MEZMO_GOVERNANCE_URL` and `MEZMO_GOVERNANCE_TOKEN` exported. Ask it to
-   read a file: it runs.
+   read a file: it runs, and nothing reaches Mezmo. The plugin only sends
+   Bash and MCP tool calls.
 3. Ask it to run `ls`: Claude Code shows your deny message.
-4. Ask it to write a file: Claude Code waits; approve the call in Mezmo
-   and the write runs. Try once more and reject it: the write is blocked.
+4. Ask it to call an MCP tool, such as listing your Mezmo pipelines once
+   `/mezmo:setup mcp` has connected Mezmo's MCP server: Claude Code waits;
+   approve the call in Mezmo and it runs. Try once more and reject it: the
+   call is blocked.
 
 ### Set up rules
 
@@ -405,8 +408,8 @@ first and blocked the call with `approval still pending`.
 
 ## What leaves your machine
 
-Before each tool call, the plugin sends Mezmo the tool name and its full
-arguments: the shell command, the file path, and for write tools the file
+Before each tool call it governs (for Claude Code, each Bash and MCP tool
+call), the plugin sends Mezmo the tool name and its full arguments: the shell command, the file path, and for write tools the file
 content. It also sends the session id and the tool call id (Gemini CLI, Antigravity CLI, Copilot, Droid and Windsurf send a fresh random id per call, because they expose none; VS Code Local exposes one). Tool results are
 not sent to Mezmo: post-tool hooks only append a line to a local file.
 

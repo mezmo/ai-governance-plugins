@@ -212,7 +212,7 @@ def _build_parser() -> argparse.ArgumentParser:
     managed = sub.add_parser("managed", help="Add the variables to a managed-settings document")
     managed.add_argument("--key", help="Service account token (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
     managed.add_argument("--url", default=DEFAULT_URL)
-    managed.add_argument("--required", action="store_true", help="Deny every tool call when governance isn't configured")
+    managed.add_argument("--required", action="store_true", help="Deny every Bash and MCP tool call when governance isn't configured")
     managed.add_argument("--output", type=pathlib.Path, help="Write, or merge into, this file instead of printing")
     return parser
 
@@ -271,7 +271,7 @@ def main(
                 cco.write_settings(settings_file, {**settings, "env": env})
                 where = f"the env block of {settings_file}"
             print(f"Saved Mezmo Governance access key {mc.mask(key)} for {args.url} in {where}.")
-            print("Every tool call is now checked with Mezmo Governance. Start a new Claude Code session to apply it.")
+            print("Every Bash and MCP tool call is now checked with Mezmo Governance. Start a new Claude Code session to apply it.")
             return 0
 
         if args.command == "remove":
@@ -320,13 +320,13 @@ def main(
                 print(json.dumps(report, indent=2))
                 return 0
             if report["configured"]:
-                print("Mezmo Governance is on: every tool call is checked before it runs.")
+                print("Mezmo Governance is on: every Bash and MCP tool call is checked before it runs.")
                 print(f"  URL:        {report['url']}")
                 print(f"  Access key: {report['key']}, from {report['source']}")
             elif report["required_by"]:
-                print(f"Mezmo Governance is required by {report['required_by']} but not configured: every tool call is denied.")
+                print(f"Mezmo Governance is required by {report['required_by']} but not configured: every Bash and MCP tool call is denied.")
             elif report["switched_off"]:
-                print("Mezmo Governance is switched off in the plugin options: tool calls run without a governance check.")
+                print("Mezmo Governance is switched off in the plugin options: Bash and MCP tool calls run without a governance check.")
             else:
                 print("Mezmo Governance is off: tool calls run without a governance check.")
             if report["required_by"] and report["configured"]:

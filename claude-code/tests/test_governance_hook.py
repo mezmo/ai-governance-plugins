@@ -8,6 +8,7 @@ until configured, plugin options, and error messages.
 import json
 import os
 import pathlib
+import re
 import stat
 import subprocess
 import sys
@@ -280,7 +281,7 @@ class ServiceProtocolTests(unittest.TestCase):
             ],
         }
         event = hook_event("PreToolUse")
-        event["tool_name"] = "Grep"
+        event["tool_name"] = "mcp__search__grep"
         event["tool_input"] = {"pattern": "x", "-i": True, "-C": 2}
         output = hook.handle_event(event, http=FakeHttp([(400, body)]))
         self.assertEqual(decision_of(output), "deny")
@@ -704,6 +705,87 @@ class HostileInputTests(unittest.TestCase):
                 self.assertEqual(decision_of(output), "deny")
                 self.assertIn("would pass as a built-in tool", reason_of(output))
                 self.assertEqual(http.calls, [])
+
+
+@patch.dict(os.environ, environment(**ENV), clear=True)
+class WhichCallsAreGovernedTests(unittest.TestCase):
+    """Mezmo Governance decides Bash and MCP tool calls. Other built-in tools and the Claude app's own servers stay out."""
+
+    def call(self, name: str, event_name: str = "PreToolUse", http: Optional[FakeHttp] = None):
+        event = {**hook_event(event_name), "tool_name": name, "tool_input": {"command": "ls"}}
+        http = http if http is not None else FakeHttp([(200, {"approved": True})])
+        return hook.handle_event(event, http=http), http
+
+    def test_bash_is_governed(self) -> None:
+        output, http = self.call("Bash")
+        self.assertIsNone(output)
+        item = http.calls[0][2]["items"][0]
+        self.assertEqual((item["tool_namespace"], item["tool_name"]), ("claude_code", "Bash"))
+
+    def test_other_built_in_tools_are_not_sent(self) -> None:
+        for name in ("Read", "Edit", "Write", "ToolSearch", "Agent", "WebFetch"):
+            with self.subTest(name=name):
+                output, http = self.call(name)
+                self.assertIsNone(output)
+                self.assertEqual(http.calls, [])
+
+    def test_the_claude_apps_own_servers_are_not_sent(self) -> None:
+        for name in ("mcp__ccd_turn__wrap_up", "mcp__ccd_turn__update_plan", "mcp__ccd_session__start_session",
+                     "mcp__ccd_view__show_pane"):
+            with self.subTest(name=name):
+                output, http = self.call(name)
+                self.assertIsNone(output)
+                self.assertEqual(http.calls, [])
+
+    def test_a_server_only_named_like_the_apps_is_governed(self) -> None:
+        # Only the app's exact server names are skipped, so a look-alike can't slip past.
+        output, http = self.call("mcp__ccd_turn_extra__wrap_up")
+        self.assertIsNone(output)
+        self.assertEqual(len(http.calls), 1)
+
+    def test_other_mcp_servers_are_governed(self) -> None:
+        for name in ("mcp__mezmo__list_pipelines", "mcp__kubernetes_demo__pods_delete", "mcp__terminal__run_in_terminal"):
+            with self.subTest(name=name):
+                output, http = self.call(name)
+                self.assertIsNone(output)
+                self.assertEqual(http.calls[0][2]["items"][0]["tool_name"], name.split("__", 2)[2])
+
+    def test_a_call_without_a_tool_name_is_still_denied(self) -> None:
+        event = {**hook_event("PreToolUse"), "tool_input": {}}
+        del event["tool_name"]
+        http = FakeHttp([])
+        self.assertEqual(decision_of(hook.handle_event(event, http=http)), "deny")
+        self.assertEqual(http.calls, [])
+
+    def test_required_governance_only_blocks_governed_calls(self) -> None:
+        with patch.dict(os.environ, environment(MEZMO_GOVERNANCE_REQUIRED="1"), clear=True):
+            output, _ = self.call("Read")
+            self.assertIsNone(output)
+            for name in ("Bash", "mcp__mezmo__publish_pipeline"):
+                with self.subTest(name=name):
+                    output, _ = self.call(name, http=FakeHttp([]))
+                    self.assertEqual(decision_of(output), "deny")
+
+    def test_post_tool_events_for_other_built_ins_write_no_audit_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = pathlib.Path(tmp) / "audit.jsonl"
+            with patch.dict(os.environ, {"MEZMO_GOVERNANCE_AUDIT_LOG": str(log)}):
+                self.call("Read", event_name="PostToolUse")
+                self.assertFalse(log.exists())
+                self.call("Bash", event_name="PostToolUse")
+                self.assertTrue(log.exists())
+
+    def test_the_plugin_only_runs_the_hook_for_bash_and_mcp_tools(self) -> None:
+        # Claude Code tests a matcher like this one as a regular expression against the tool name.
+        hooks = json.loads((pathlib.Path(__file__).resolve().parents[1] / "hooks" / "hooks.json").read_text())["hooks"]
+        for event_name in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
+            with self.subTest(event=event_name):
+                (entry,) = hooks[event_name]
+                matcher = re.compile(entry["matcher"])
+                for name in ("Bash", "mcp__mezmo__list_pipelines", "mcp__ccd_turn__wrap_up"):
+                    self.assertTrue(matcher.search(name), name)
+                for name in ("Read", "BashOutput", "ToolSearch", "Xmcp__a__b"):
+                    self.assertFalse(matcher.search(name), name)
 
 
 if __name__ == "__main__":

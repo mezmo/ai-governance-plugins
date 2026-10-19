@@ -1122,12 +1122,13 @@ class Agent(NamedTuple):
     check: Any
     namespace: str  # the tool_namespace the adapter sends for a built-in tool (AGENT in its hook)
     shell: str
-    read: Optional[str]  # None where the agent has no read-only tool: Codex's apply_patch writes files
+    # None where the agent sends no read-only tool: Codex's apply_patch writes files, and Claude Code only sends Bash and MCP tools
+    read: Optional[str]
 
 
 # Tested versions come from the live-run table in docs/live-testing.md; tool names from each adapter README.
 AGENTS = (
-    Agent("Claude Code", "claude", ("2.1.301",), "2.1.295", "claude-code", check_claude_code, "claude_code", "Bash", "Read"),
+    Agent("Claude Code", "claude", ("2.1.301",), "2.1.295", "claude-code", check_claude_code, "claude_code", "Bash", None),
     Agent("Codex", "codex", ("0.162.1",), None, "codex", check_codex, "codex", "Bash", None),
     Agent("Cursor", "cursor-agent", ("2026.10.14",), None, "cursor", check_cursor, "cursor", "Shell", "Read"),
     Agent("Gemini CLI", "gemini", ("0.64.0",), None, "gemini-cli", check_gemini, "gemini_cli", "run_shell_command", "read_file"),
