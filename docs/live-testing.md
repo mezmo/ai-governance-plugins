@@ -417,7 +417,9 @@ A local HTTP server stands in for Mezmo. The tests confirm that:
   and negative values are refused;
 - the post-tool event writes an audit line and never blocks;
 - each example config registers every event and blocks on hook failure,
-  including the `|| exit 2` guard for Codex, Gemini CLI, Droid and Windsurf;
+  including the `|| exit 2` guard for Codex, Gemini CLI, Droid, Windsurf and
+  Copilot (Copilot's example also carries a PowerShell form that exits 2 on a
+  non-zero exit);
 - `./mezmo-governance` installs each agent, finds it installed, changes
   nothing on a second install, and on uninstall leaves each config as it was,
   with the user's other entries and a backup; a run stopped between two steps

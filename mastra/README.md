@@ -123,6 +123,10 @@ These run without asking Mezmo:
   fires.
 - A workflow step, or any other code, that calls a tool's `execute` directly:
   the hooks run only in an agent's tool loop.
+- Tools that `prepareStep` or an input processor's `processInputStep` returns
+  for a step: Mastra rebuilds them without the agent hooks (checked in
+  `@mastra/core` 1.77.0, where `makeCoreTool` runs without
+  `wrapToolsWithHooks`). Declare every tool on the agent instead.
 
 Keep such tools away from agents that need the gate, or gate them in your own
 code.
