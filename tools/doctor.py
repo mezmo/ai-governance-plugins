@@ -448,6 +448,23 @@ def fail_closed(report: Report, subject: str, ok: bool, setting: str, example: s
         )
 
 
+GUARD = "|| exit 2 guard"
+# The guards the shipped configs end with: bash `|| exit 2` or `|| { ...; exit 2; }`, and PowerShell's
+# `; if ($LASTEXITCODE -ne 0) { exit 2 }`. Each must end the command, so its exit 2 is the command's status.
+BASH_GUARD = re.compile(r"\|\|\s*(?:exit 2|\{(?P<body>[^{}]*)\bexit 2;\s*\})\s*$")
+POWERSHELL_GUARD = re.compile(r";\s*if\s*\(\s*\$LASTEXITCODE\s+-ne\s+0\s*\)\s*\{\s*exit 2\s*\}\s*$", re.I)
+
+
+def guarded(command: str) -> bool:
+    """Whether a hook crash makes the command exit 2; a substring test also took `|| exit 20`."""
+    if re.search(r"(^|\s)#", command):
+        return False
+    bash = BASH_GUARD.search(command)
+    if bash:
+        return not re.search(r"\bexit\b", bash.group("body") or "")
+    return POWERSHELL_GUARD.search(command) is not None
+
+
 def old_guard(report: Report, subject: str, command: str, fix: str) -> None:
     """Warn about the guard before ec18454: install skips a config that has a Mezmo hook, so it stays until replaced."""
     if "hook failed; blocking" in command and "[ $s -eq 2 ]" not in command:
@@ -676,7 +693,7 @@ def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
     for g, h, _, handler in found:
         command = str(handler.get("command"))
         report.line("ok", "Codex hook", f"PreToolUse hook in {shown(path)}")
-        fail_closed(report, "Codex hook", "exit 2" in command, "|| exit 2 guard", "codex/hooks.example.json")
+        fail_closed(report, "Codex hook", guarded(command), GUARD, "codex/hooks.example.json")
         old_guard(
             report, "Codex guard", command,
             "run ./mezmo-governance uninstall codex, then install codex, then trust the new hook in /hooks",
@@ -756,7 +773,7 @@ def check_gemini(report: Report, version: Optional[tuple]) -> Optional[list]:
     for where, handler, script in found:
         command = str(handler.get("command"))
         report.line("ok", "Gemini CLI hook", f"BeforeTool hook in {shown(where)}")
-        fail_closed(report, "Gemini CLI hook", "exit 2" in command, "|| exit 2 guard", "gemini-cli/hooks/hooks.json")
+        fail_closed(report, "Gemini CLI hook", guarded(command), GUARD, "gemini-cli/hooks/hooks.json")
         if where == extension:
             fix = "run ./mezmo-governance uninstall gemini-cli, then install gemini-cli"
         else:
@@ -829,7 +846,7 @@ def check_copilot(report: Report, version: Optional[tuple]) -> Optional[list]:
                     "copy the command from copilot/hooks.example.json",
                 )
             # VS Code Local runs the tool when the hook exits other than 0 or 2; Copilot blocks it.
-            fail_closed(report, "Copilot hook", "exit 2" in command, "|| exit 2 guard", "copilot/hooks.example.json")
+            fail_closed(report, "Copilot hook", guarded(command), GUARD, "copilot/hooks.example.json")
             smokes.append(Smoke("Copilot", hook_path(command), event, ("preToolUse",)))
     return smokes if installed else None
 
@@ -1016,7 +1033,7 @@ def check_droid(report: Report, version: Optional[tuple]) -> Optional[list]:
     for *_, handler in found:
         command = str(handler.get("command"))
         report.line("ok", "Droid hook", f"PreToolUse hook in {shown(where)}")
-        fail_closed(report, "Droid hook", "exit 2" in command, "|| exit 2 guard", "droid/hooks.example.json")
+        fail_closed(report, "Droid hook", guarded(command), GUARD, "droid/hooks.example.json")
         smokes.append(Smoke("Droid", hook_path(command), event))
     return smokes
 
@@ -1075,7 +1092,7 @@ def check_windsurf(report: Report, version: Optional[tuple]) -> Optional[list]:
         for *_, handler in found:
             command = str(handler.get("command"))
             report.line("ok", "Windsurf hook", f"{gate} hook in {shown(path)}")
-            fail_closed(report, "Windsurf hook", "exit 2" in command, "|| exit 2 guard", "windsurf/hooks.example.json")
+            fail_closed(report, "Windsurf hook", guarded(command), GUARD, "windsurf/hooks.example.json")
             smokes.append(Smoke("Windsurf", hook_path(command), event))
     return smokes
 

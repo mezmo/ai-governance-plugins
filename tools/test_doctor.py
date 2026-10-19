@@ -618,6 +618,18 @@ class CodexTests(DoctorTestCase):
         self.install()
         self.assertEqual(self.lines(self.doctor(), "Codex guard"), [])
 
+    def test_a_guard_that_exits_20_does_not_fail_closed(self) -> None:
+        # The substring "exit 2" is in "exit 20", yet a crash then exits 20, and Codex runs the tool.
+        for suffix in (" || exit 20", " || { s=$?; [ $s -eq 2 ] || echo 'failed' >&2; exit 21; }"):
+            with self.subTest(suffix=suffix):
+                self.install(CODEX_COMMAND.split(" ||")[0] + suffix)
+
+                result = self.doctor()
+
+                self.assertEqual(result.returncode, 1, result.stdout)
+                line = self.lines(result, "Codex hook")[1]
+                self.assertTrue(line.startswith("FAIL") and "no || exit 2 guard" in line, result.stdout)
+
     def test_failures_in_codex_config(self) -> None:
         cases = [
             ({"command": CODEX_COMMAND.split(" ||")[0]}, "Codex hook", "no || exit 2 guard"),
@@ -1249,6 +1261,51 @@ class SmokeTests(DoctorTestCase):
         result = self.doctor()
 
         self.assertIn("older than 3.9", self.assertStatus(result, "python3", "FAIL"))
+
+
+# Each shipped config whose PreToolUse command carries a guard; copilot's also has the PowerShell form.
+GUARDED_CONFIGS = (
+    "codex/hooks.example.json", "codex/hooks/hooks.json", "gemini-cli/hooks/hooks.json", "gemini-cli/settings.example.json",
+    "copilot/hooks.example.json", "copilot/hooks/hooks.json", "droid/hooks.example.json", "droid/hooks/hooks.json",
+    "windsurf/hooks.example.json",
+)
+
+
+def strings(value: Any) -> list:
+    if isinstance(value, str):
+        return [value]
+    items = value.values() if isinstance(value, dict) else value if isinstance(value, list) else []
+    return [text for item in items for text in strings(item)]
+
+
+class GuardTests(unittest.TestCase):
+    def test_the_shipped_guards_pass_and_near_misses_do_not(self) -> None:
+        sys.path.insert(0, str(DOCTOR.parent))
+        self.addCleanup(sys.path.remove, str(DOCTOR.parent))
+        import doctor
+
+        shipped = [
+            text for path in GUARDED_CONFIGS for text in strings(json.loads((REPO / path).read_text(encoding="utf-8")))
+            if "exit" in text
+        ]
+        self.assertEqual(len(shipped), 14, shipped)
+        self.assertEqual(sum("$LASTEXITCODE" in text for text in shipped), 2)
+        for command in shipped:
+            with self.subTest(command=command):
+                self.assertTrue(doctor.guarded(command))
+        base = 'python3 "$HOME/.codex/hooks/mezmo_governance_hook.py"'
+        for suffix in (" || exit 2", " || { exit 2; }", " || { echo 'failed' >&2; exit 2; }", OLD_GUARD):
+            with self.subTest(kept=suffix):
+                self.assertTrue(doctor.guarded(base + suffix))
+        near_misses = (
+            "", " || exit 20", " || exit 21", " || exit 2; true", " && exit 2", " | exit 2", " # || exit 2",
+            " || echo exit 2", " || { exit 20; }", " || { exit 20; exit 2; }",
+            " || { s=$?; [ $s -eq 2 ] || echo 'failed' >&2; exit 20; }",
+            "; if ($LASTEXITCODE -ne 0) { exit 20 }", "; if ($LASTEXITCODE -ne 0) { exit 2 }; exit 0",
+        )
+        for suffix in near_misses:
+            with self.subTest(rejected=suffix):
+                self.assertFalse(doctor.guarded(base + suffix))
 
 
 class SourceTests(unittest.TestCase):
