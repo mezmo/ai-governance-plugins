@@ -266,12 +266,24 @@ class CliTest(unittest.TestCase):
         code, out, _ = self.run_cli("status", "--json", claude=claude)
         self.assertFalse(json.loads(out)["configured"])
 
-    def test_remove_twice_does_nothing_the_second_time(self):
+    def test_remove_overwrites_key_even_when_governance_is_disabled(self):
         claude = FakeClaude(key_set=True, enabled=False)
         code, out, _ = self.run_cli("remove", claude=claude)
         self.assertEqual(code, 0)
-        self.assertIn("nothing to remove", out)
-        self.assertFalse(any("--values-stdin" in c["args"] for c in claude.calls))
+        self.assertIn("keychain is overwritten", out)
+        self.assertEqual(json.loads(claude.calls[-1]["stdin"])["governance_access_key"], "off")
+        # The CLI cannot distinguish a removed placeholder from a saved secret.
+        code, out, err = self.run_cli("remove", claude=claude)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(claude.calls[-1]["stdin"])["governance_access_key"], "off")
+
+    def test_remove_reports_disabled_key_cleanup_failure_and_cleans_settings(self):
+        self.settings.write_text(json.dumps({"env": {"MEZMO_GOVERNANCE_TOKEN": KEY}}))
+        claude = FakeClaude(key_set=True, enabled=False, refuse="keychain locked")
+        code, out, err = self.run_cli("remove", claude=claude)
+        self.assertEqual(code, gc.EXIT_ERROR)
+        self.assertIn("Removal incomplete", err)
+        self.assertNotIn("env", json.loads(self.settings.read_text()))
 
     def test_status_switched_off_but_key_kept(self):
         code, out, _ = self.run_cli("status", "--json", claude=FakeClaude(key_set=True, enabled=False))

@@ -329,7 +329,9 @@ def main(
         if args.command == "remove":
             removed = []
             options, plugin_error = available_plugin_options(claude, args.plugin_id)
-            if options and ((options["key_set"] and options["enabled"]) or options["url"]):
+            # A disabled plugin can still hold a real token. The CLI hides sensitive
+            # values, so always overwrite a configured key, even on repeated removal.
+            if options and (options["key_set"] or options["url"]):
                 try:
                     save_plugin_options(claude, args.plugin_id, {
                         KEY_OPTION: REMOVED_KEY, URL_OPTION: "", ENABLED_OPTION: "false",
