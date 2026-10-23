@@ -8,6 +8,7 @@ allowed-tools:
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" *)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" *)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" *)
+  - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_common.py" *)
 ---
 
 # Set up Mezmo for Claude Code
@@ -22,21 +23,19 @@ All three take effect in new Claude Code sessions.
 
 Arguments: $ARGUMENTS
 
-## 1. Look at the current setup
+## 1. Check prerequisites before looking at configuration
+
+Before asking for or reading any token, run:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" status
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" preflight --store settings
 ```
 
-```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" status
-```
+Stop on failure and report the upgrade instruction. Python 3.9+ and Claude Code 2.1.295+
+are required. Do not upgrade automatically or bypass an old CLI with plaintext settings.
+This runtime-only check also works when preparing managed settings or using `--plugin-dir`.
 
-```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" status
-```
-
-If `python3` isn't found, tell the user the plugin needs Python 3.8 or later, and stop.
+If `python3` isn't found, tell the user the plugin needs Python 3.9 or later, and stop.
 
 ## 2. Ask what to set up
 
@@ -49,11 +48,47 @@ Unless the arguments already say, ask in one AskUserQuestion call:
 
 Never repeat a full key back to the user. Refer to keys by their first and last four characters, as the scripts do.
 
+### Pass new tokens through a private file
+
+Never put token text in a Bash command, including `--key`, `echo`, `printf`, a heredoc,
+inline environment assignment, or an expanded command substitution. Governance records
+Bash arguments. For each command that needs a new token:
+
+1. Finish prerequisite checks before requesting the token. Run
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_common.py" create-key-file`.
+   It prints only a path to an empty 0600 file inside a private 0700 directory.
+2. Have the user fill that file locally, or use Claude's Write file tool under its normal
+   permissions to write only the token to that exact existing file. Do not use Bash to
+   write the contents. Do not display or read the file back into the conversation.
+3. Pass the quoted path as `--key-file "<KEY_FILE>" --delete-key-file`. The script checks
+   ownership and permissions, rejects links, and removes the file after the action,
+   including an action failure. Use a fresh file for each command; the previous one is gone.
+4. If the command is interrupted, fails to parse, or reports cleanup failure, run
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_common.py" delete-key-file "<KEY_FILE>"`.
+   If that refuses, ask the user to remove it locally; never print its contents.
+
+This keeps the token out of governed Bash arguments. It does not remove tokens already
+shared in chat, secure every filesystem copy, or hide credentials in a child CLI's process
+arguments (notably `claude mcp add`). Prefer local user entry when avoiding transcript
+exposure matters. Existing environment variables and `--key` remain supported for other
+callers; the skill must use the file route for new tokens.
+
+
 ## 3. Governance
 
 Skip this section if the user didn't choose governance.
 
-### Access key and environment
+### Service account token and environment
+
+For Just me, before asking for the token, run `governance_config.py preflight` using the
+same full script path above. Exit 5 means an unsupported runtime: stop. Exit 4 means the
+plugin is not installed from a marketplace: offer installation, or explicitly ask whether
+to use `--store settings` (plaintext) on this supported runtime. Remember that choice for
+configure. Other failures mean the configuration could not be read: report them and stop.
+
+Only after that check succeeds, run `governance_config.py status` using the full script
+path to see existing configuration. For My organization, the runtime-only preflight is
+sufficient; target machines still need the supported runtime and installed plugin.
 
 Ask for the **service account token**. In Mezmo, an administrator registers an agent for Claude Code with a service account that has Governance permissions, attaches a policy, and creates that service account's token, a standard Mezmo service key, which Mezmo shows once. It is not a key of the agent. Register a separate agent for each coding tool, so policies and decisions stay separate. The token AURA reads from `MEZMO_GOVERNANCE_TOKEN` is the same kind of key.
 
@@ -64,6 +99,7 @@ Ask which environment:
 
 Before saving, tell the user what changes:
 
+- Governance sends tool arguments to Mezmo even when telemetry content capture is off. Use synthetic commands for verification.
 - Every Bash and MCP tool call waits for Mezmo Governance before it runs. Other built-in tools, such as Read and Edit, and the Claude desktop app's own servers aren't checked.
 - A call the policy denies is blocked with the policy's reason.
 - A call the policy sends to a person waits for their decision, up to about 10 minutes, and is blocked if nobody decides.
@@ -73,14 +109,15 @@ Before saving, tell the user what changes:
 ### Just me
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" configure --key <KEY> --url <URL>
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" configure --key-file "<KEY_FILE>" --delete-key-file --url <URL>
 ```
 
-Leave out `--url` for production. The script checks the key first, without recording anything, then saves it as a plugin option, which keeps the key in the system keychain.
+Leave out `--url` for production. The script checks prerequisites and validates the token without recording a decision. It then saves the token in the system keychain through plugin options.
 
 What each exit code means:
 
 - **0**: done. Report what the script printed.
+- **5**: unsupported runtime. Stop before asking for a token; show the upgrade instruction.
 - **3**: Mezmo Governance rejected the key, or couldn't be reached. Show the message. Nothing was saved.
 - **4**: the plugin isn't installed from a marketplace (for example, it was loaded with `--plugin-dir`), so it has no options to save. Ask whether to keep the key in the settings file's `env` instead, which stores it as plain text. If yes, run the same command with `--store settings`.
 - **2** or **1**: show the message.
@@ -92,16 +129,17 @@ Ask whether governance should be **required**. With `--required`, Claude Code bl
 Write the managed-settings document to a file, not to the transcript:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" managed --key <KEY> --url <URL> [--required] --output ./mezmo-managed-settings.json
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" managed --key-file "<KEY_FILE>" --delete-key-file --url <URL> [--required] --output ./mezmo-managed-settings.json
 ```
 
-Check the key with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" check --key <KEY> --url <URL>`.
+Check the key with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" check --key-file "<KEY_FILE>" --delete-key-file --url <URL>`.
 
 For governance to be enforced, the plugin itself also has to be installed and enabled on each machine. An administrator can add the marketplace with `extraKnownMarketplaces` and turn the plugin on with `enabledPlugins` (`"mezmo@mezmo": true`) in the same managed settings.
 
 ## 4. Telemetry
 
-Skip this section if the user didn't choose telemetry.
+Skip this section if the user didn't choose telemetry. First run
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" status`.
 
 ### Ingestion key
 
@@ -129,7 +167,7 @@ Build the flags: `--no-metrics`, `--no-logs` or `--no-traces` for each signal le
 ### Just me
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" configure --key <KEY> <flags>
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" configure --key-file "<KEY_FILE>" --delete-key-file <flags>
 ```
 
 What each exit code means:
@@ -142,28 +180,29 @@ What each exit code means:
 Then check the connection. The script reads the key from the settings:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" --signals <selected signals: traces logs metrics>
 ```
 
-The check sends Mezmo's connection check for traces, logs and metrics, then three small test records tagged `mezmo.test=true`. Report the results.
+Pass only the selected signals (Events is `logs`). The check probes those endpoints and sends one synthetic record per selected signal tagged `mezmo.test=true`. Report endpoint acceptance separately from destination arrival, which the checker cannot verify. Use `--all-signals` only when the user explicitly requests all three signals.
 
 ### My organization
 
 Add telemetry to the same managed-settings file as governance. The script replaces only its own keys:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" managed --key <KEY> <flags> --output ./mezmo-managed-settings.json
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" managed --key-file "<KEY_FILE>" --delete-key-file <flags> --output ./mezmo-managed-settings.json
 ```
 
-Check the key with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" --key <KEY>`.
+Check the key with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" --key-file "<KEY_FILE>" --delete-key-file --signals <selected signals>`.
 
 ## 5. Mezmo MCP
 
-Skip this section if the user didn't choose MCP. MCP is set up for this user, even when the rest is for an organization.
+Skip this section if the user didn't choose MCP. First run
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" status`. MCP is set up for this user, even when the rest is for an organization.
 
 Mezmo's MCP server lets Claude query Mezmo logs (root-cause analysis, patterns, histograms, correlated timelines), look at traces and AI investigations, and inspect and change Telemetry Pipelines.
 
-Ask for a **service key**, from **Settings > API Keys** in Mezmo. It's a different key from the ingestion key and the governance access key.
+Ask for a **service key**, from **Settings > API Keys** in Mezmo. It's a different key from the ingestion key and the governance service account token.
 
 Before adding it, tell the user:
 
@@ -171,7 +210,7 @@ Before adding it, tell the user:
 - Some of the server's tools change pipelines: create, update, delete, pause and publish. Claude Code asks before each MCP tool call unless the user allows them. With governance on, these calls also go through Mezmo Governance, under namespace `mezmo`, so a policy can send them to a person.
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" add --key <KEY>
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" add --key-file "<KEY_FILE>" --delete-key-file
 ```
 
 What each exit code means:
@@ -202,7 +241,7 @@ Don't run `sudo` or copy the file into a system directory yourself.
 Tell the user:
 
 - Start a new Claude Code session. The current one keeps its old settings.
-- Governance: decisions show up in Mezmo Governance under the agent for this access key. While a call waits for a person, a band above the prompt shows it, and the footer counts this session's checks. After each approved call, the hook appends a line to `~/.mezmo/governance-audit.jsonl`.
+- Governance: decisions show up in Mezmo Governance under the agent for this service account token. While a call waits for a person, a band above the prompt shows it, and the footer counts this session's checks. After each approved call, the hook appends a line to `~/.mezmo/governance-audit.jsonl`.
 - Telemetry: Mezmo routes the data once a pipeline has an **OpenTelemetry** source. In Mezmo, look for `service.name` = `claude-code`: metrics such as `claude_code.cost.usage` and `claude_code.token.usage`, events such as `claude_code.api_request` and `claude_code.tool_result`, and spans such as `claude_code.interaction`.
 - MCP: new sessions have the `mezmo` MCP server, and its tools are named `mcp__mezmo__<tool>`. To try it, ask Claude something like "what errors did my apps log in the last hour?"
 - `/mezmo:test` checks the setup again, and `/mezmo:remove` undoes it.

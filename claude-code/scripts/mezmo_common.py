@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import argparse
 import ipaddress
 import json
 import os
 import pathlib
+import shutil
+import stat
 import string
 import subprocess
+import sys
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -89,6 +94,107 @@ def key_from_settings(path: pathlib.Path) -> Optional[str]:
     return parse_otlp_headers(env.get("OTEL_EXPORTER_OTLP_HEADERS")).get(MEZMO_AUTH_HEADER) or None
 
 
+def add_key_arguments(parser: argparse.ArgumentParser, help_text: str) -> None:
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--key", help=help_text + " (prefer --key-file in governed sessions)")
+    group.add_argument("--key-file", type=pathlib.Path, help="Read a private UTF-8 key file; never put its contents in a shell command")
+    parser.add_argument("--delete-key-file", action="store_true", help="Delete the private key file after this action, including on failure")
+
+
+def _private_key_fd(path: pathlib.Path) -> Tuple[int, int]:
+    """Open without following the file or parent symlink; reject shared files before reading."""
+    directory = os.open(str(path.parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    fd = None
+    try:
+        parent = os.fstat(directory)
+        if parent.st_uid != os.getuid() or parent.st_mode & 0o077:
+            raise ValueError("Key file must be in a private directory owned by this user (mode 0700).")
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
+            raise ValueError("Key file must be a regular, unshared file owned by this user (mode 0600).")
+        return directory, fd
+    except Exception:
+        if fd is not None:
+            os.close(fd)
+        os.close(directory)
+        raise
+
+
+def read_key_file(path: pathlib.Path) -> str:
+    try:
+        directory, fd = _private_key_fd(path)
+        try:
+            with os.fdopen(fd, "rb") as stream:
+                raw = stream.read(16385)
+            if len(raw) > 16384:
+                raise ValueError("Key file is too large.")
+            key = raw.decode("utf-8").strip()
+            if not key or any(c in key for c in "\r\n\x00"):
+                raise ValueError("Key file must contain one nonempty token line.")
+            return key
+        finally:
+            os.close(directory)
+    except (OSError, UnicodeError):
+        raise ValueError("Could not read a private UTF-8 key file; check its ownership, permissions and path.") from None
+
+
+def key_argument(args: argparse.Namespace) -> Optional[str]:
+    if args.delete_key_file and not args.key_file:
+        raise ValueError("--delete-key-file requires --key-file.")
+    return read_key_file(args.key_file) if args.key_file else args.key
+
+
+def delete_key_file(path: pathlib.Path) -> None:
+    directory, fd = _private_key_fd(path)
+    try:
+        # Check that the path still names the opened file before unlinking.
+        current = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+        opened = os.fstat(fd)
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ValueError("Key file changed before cleanup; remove it manually.")
+        os.unlink(path.name, dir_fd=directory)
+    finally:
+        os.close(fd)
+        os.close(directory)
+    if path.parent.name.startswith("mezmo-key-"):
+        try:
+            path.parent.rmdir()  # Only an empty helper-created directory.
+        except OSError:
+            pass
+
+
+def cleanup_key_file(args: argparse.Namespace) -> None:
+    if getattr(args, "delete_key_file", False) and getattr(args, "key_file", None):
+        try:
+            delete_key_file(args.key_file)
+        except (OSError, ValueError):
+            print("Warning: private key-file cleanup failed. Remove the temporary file manually.", file=sys.stderr)
+
+
+def key_file_main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Prepare or remove a private temporary key file; accepts no secret arguments.")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("create-key-file")
+    remove = sub.add_parser("delete-key-file")
+    remove.add_argument("path", type=pathlib.Path)
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "create-key-file":
+            folder = pathlib.Path(tempfile.mkdtemp(prefix="mezmo-key-"))
+            os.chmod(folder, 0o700)
+            path = folder / "key"
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+            print(path)
+        else:
+            delete_key_file(args.path)
+        return 0
+    except (OSError, ValueError):
+        print("Could not prepare or remove the private key file. Check permissions; never print its contents.", file=sys.stderr)
+        return 1
+
+
 def resolve_key(explicit: Optional[str], environ: Mapping[str, str] = os.environ) -> Optional[str]:
     """An explicit --key, else MEZMO_INGESTION_KEY."""
     return explicit or environ.get(KEY_ENV_VAR) or None
@@ -139,13 +245,19 @@ def http_request(
         return err.code, err.read().decode("utf-8", "replace")
 
 
+def claude_executable() -> str:
+    selected = os.environ.get("CLAUDE_CODE_EXECPATH") or "claude"
+    found = shutil.which(selected)
+    return str(pathlib.Path(found).resolve()) if found else selected
+
+
 def run_claude(args: Sequence[str], stdin: Optional[str] = None) -> Tuple[int, str]:
     """Run the claude CLI and return (exit code, stdout and stderr).
 
     Inside a Claude Code session, use the binary running that session, which matches its
     version even when the `claude` on PATH is another install.
     """
-    binary = os.environ.get("CLAUDE_CODE_EXECPATH") or "claude"
+    binary = claude_executable()
     try:
         done = subprocess.run([binary, *args], input=stdin, capture_output=True, text=True, timeout=90)
     except FileNotFoundError:
@@ -153,3 +265,7 @@ def run_claude(args: Sequence[str], stdin: Optional[str] = None) -> Tuple[int, s
     except subprocess.TimeoutExpired:
         return 124, f"claude {' '.join(args[:2])} timed out."
     return done.returncode, (done.stdout or "") + (done.stderr or "")
+
+
+if __name__ == "__main__":
+    sys.exit(key_file_main())

@@ -5,6 +5,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -99,7 +100,7 @@ class CliTest(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         transport = transport or FakeTransport()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = check.main(list(args), environ=environ or {}, send=transport)
+            code = check.main(["--all-signals", *args], environ=environ or {}, send=transport)
         return code, out.getvalue(), err.getvalue()
 
     def test_success_with_key_from_environment(self):
@@ -134,6 +135,56 @@ class CliTest(unittest.TestCase):
         report = json.loads(out)
         self.assertEqual(report["key"], "0123…cdef")
         self.assertEqual(len(report["results"]), 3)
+
+
+class SelectedSignalsTest(unittest.TestCase):
+    def run_selected(self, env, args=(), managed=False, environ=None):
+        transport = FakeTransport()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp, "settings.json")
+            path.write_text(json.dumps({"env": env}))
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                    patch.object(check.cco, "managed_settings_with_otel", return_value=["managed"] if managed else []):
+                code = check.main(["--settings-file", str(path), *args], environ=environ or {}, send=transport)
+        return code, transport.calls, out.getvalue(), err.getvalue()
+
+    def test_configured_traces_only_and_check_only(self):
+        env = check.cco.build_env(check.cco.Options(key=KEY, metrics=False, logs=False))
+        for args, count in [((), 2), (("--check-only",), 1)]:
+            code, calls, out, err = self.run_selected(env, args)
+            self.assertEqual(code, 0, err)
+            self.assertEqual(len(calls), count)
+            self.assertTrue(all(c["url"].endswith("/traces") for c in calls))
+            if count == 1:
+                self.assertEqual(json.loads(calls[0]["body"]), {})
+            else:
+                self.assertIn("Destination arrival is not verified", out)
+
+    def test_startup_environment_can_disable_a_saved_signal(self):
+        env = check.cco.build_env(check.cco.Options(key=KEY))
+        code, calls, _, err = self.run_selected(env, environ={"OTEL_LOGS_EXPORTER": "none", "OTEL_METRICS_EXPORTER": "none"})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(c["url"].endswith("/traces") for c in calls))
+
+    def test_disabled_or_ambiguous_selection_never_sends(self):
+        env = check.cco.build_env(check.cco.Options(key=KEY))
+        for overrides, managed in [({"CLAUDE_CODE_ENABLE_TELEMETRY": "0"}, False),
+                                   ({"OTEL_TRACES_EXPORTER": "none", "OTEL_LOGS_EXPORTER": "none", "OTEL_METRICS_EXPORTER": "none"}, False),
+                                   ({}, True)]:
+            code, calls, _, _ = self.run_selected({**env, **overrides}, managed=managed)
+            self.assertEqual(code, 2)
+            self.assertEqual(calls, [])
+
+    def test_explicit_signals_and_all_signals(self):
+        env = {"OTEL_EXPORTER_OTLP_HEADERS": f"apikey={KEY}"}
+        for args, names in [(("--signals", "traces", "logs"), {"traces", "logs"}),
+                             (("--all-signals",), {"traces", "logs", "metrics"})]:
+            code, calls, _, err = self.run_selected(env, args)
+            self.assertEqual(code, 0, err)
+            self.assertEqual({c["url"].rsplit("/", 1)[-1] for c in calls}, names)
+            self.assertEqual(len(calls), 2 * len(names))
 
 
 if __name__ == "__main__":

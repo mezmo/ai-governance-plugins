@@ -1,13 +1,14 @@
 ---
 name: test
 description: Check the Mezmo setup for Claude Code. Shows the Mezmo Governance configuration with the governance hook's last result, the telemetry settings with a test of the ingestion key against Mezmo's OpenTelemetry endpoint, and whether Claude Code connects to Mezmo's MCP server. Use when the user asks why a tool call was blocked by Mezmo Governance, whether Mezmo governance, telemetry or MCP works, or why Claude data is missing in Mezmo.
-argument-hint: "[--check-only]"
+argument-hint: "[--check-only] [--signals traces logs metrics|--all-signals]"
 allowed-tools:
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" status*)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" check*)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" status*)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" *)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" status*)
+  - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_common.py" *)
 ---
 
 # Test the Mezmo setup
@@ -22,22 +23,23 @@ Arguments: $ARGUMENTS
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" status
    ```
 
-2. If the access key comes from settings or the environment, check it. This asks the service about a random decision and records nothing:
+2. If the service account token comes from settings or the environment, check it. This asks the service about a random decision and records nothing:
 
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" check
    ```
 
-   A key kept in the system keychain can't be read back. In that case the last result shows whether the hook is working, or the user can pass `--key` to check a key directly.
+   A key kept in the system keychain can't be read back. In that case the last result shows whether the hook is working, or the user can supply a private `--key-file` to check a token directly. Never put token text in Bash arguments. Follow setup's private-file procedure: create with `mezmo_common.py create-key-file`, fill via local user entry or Write (not Bash), and pass `--key-file "<KEY_FILE>" --delete-key-file`. If interrupted or parsing/cleanup fails, use `mezmo_common.py delete-key-file "<KEY_FILE>"`. File input protects Bash arguments, not past chat or all filesystem/process exposure.
 
 3. Explain the results using this table:
 
    | What you see | What to tell the user |
    | --- | --- |
+   | Plugin configuration unavailable / state unknown | Report available settings and session results, but do not claim governance is off. Repair Claude/keychain access; setup remains strict. |
    | Governance is off | Bash and MCP tool calls run without a check. Run `/mezmo:setup governance` to turn it on. |
-   | Off right after the plugin was reinstalled or its marketplace changed | Reinstalling deletes the saved access key. Run `/mezmo:setup governance` again. If tool calls are blocked with `HTTP 401` meanwhile, run `/reload-plugins` or start a new session first. |
+   | Off right after the plugin was reinstalled or its marketplace changed | Reinstalling deletes the saved service account token. Run `/mezmo:setup governance` again. If tool calls are blocked with `HTTP 401` meanwhile, run `/reload-plugins` or start a new session first. |
    | Required but not configured | Every Bash and MCP tool call is blocked until governance is configured. Ask their administrator for the service account token. |
-   | `HTTP 401` | Mezmo Governance rejected the access key. Rerun `/mezmo:setup governance` with a current key. |
+   | `HTTP 401` | Mezmo Governance rejected the service account token. Rerun `/mezmo:setup governance` with a current key. |
    | `ENOAGENT`, `EAGENTINACTIVE` or `EPOLICYUNASSIGNED` | The key is valid, but no active agent with a policy is registered for it. An administrator fixes this in Mezmo Governance. |
    | `approval still pending` | The policy sent the call to a person, and nobody decided in time. The decision is in Mezmo Governance. Approving it there lets the same call through when Claude retries it. |
    | `argument name 'max-results' isn't accepted` | The service only accepts plain identifiers as argument names. MCP tool calls with such names are blocked until the service accepts them. |
@@ -51,7 +53,7 @@ Arguments: $ARGUMENTS
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude_code_otel.py" status
    ```
 
-2. If telemetry is configured, test the endpoint and key. With `--check-only` in the arguments, nothing is published. Without it, three small test records tagged `mezmo.test=true` are sent.
+2. If telemetry is configured, test the endpoint and key. With `--check-only` in the arguments, nothing is published. Without it, one small test record per selected signal tagged `mezmo.test=true` is sent. By default, use the configured signals; `--signals` selects them explicitly and `--all-signals` deliberately tests all three. If configuration is ambiguous or disabled, resolve it or ask which signals to test; never silently broaden the selection.
 
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" $ARGUMENTS
@@ -96,3 +98,15 @@ Arguments: $ARGUMENTS
    | `✔ Connected` | Claude Code connects. New sessions have tools named `mcp__mezmo__<tool>`. |
    | Failed to connect, `401` | Mezmo rejected the service key. Run `/mezmo:setup mcp` with a current key and replace the server. |
    | A server called `mezmo` with another URL | Something else uses the name `mezmo`. `/mezmo:setup mcp` can replace it if it's in user scope. |
+
+## Verify arrival and an actual governed call
+
+Report endpoint acceptance as one step, not proof of destination arrival. Have the user
+find the printed `test.run_id` with `service.name=mezmo-claude-plugin` and `mezmo.test=true`
+in their pipeline destination. Then, in a new Claude session, ask for the harmless Bash
+command `printf 'mezmo-onboarding-test\n'` and confirm its decision under the intended
+Governance agent. Read/Edit/Write are intentionally not governed. Governance sends tool
+arguments even with telemetry content capture off. Actual Claude spans use
+`service.name=claude-code`; verify those separately. Mark each step not yet observed as
+unverified. Do not create tokens, change policies or pipelines, or select accounts without
+authorization.

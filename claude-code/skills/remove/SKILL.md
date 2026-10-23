@@ -50,3 +50,5 @@ This removes the user-scope `mezmo` MCP server, and its service key with it. Exi
 - Start a new Claude Code session for the change to take effect.
 - Uninstalling the plugin doesn't remove the telemetry settings or the MCP server. That's why this command exists.
 - Settings deployed through managed settings have to be removed by the administrator.
+
+If governance removal reports incomplete cleanup, explain which settings were removed and that the plugin token may remain. Do not claim governance is fully removed. Retry after Claude/keychain access is restored.

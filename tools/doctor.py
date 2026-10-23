@@ -1336,7 +1336,7 @@ def check_binary(report: Report, agent: Agent) -> Optional[tuple]:
     minimum = version_tuple(agent.minimum) if agent.minimum else None
     if minimum and version < minimum:
         report.line(
-            "warn", agent.name, f"{dotted(version)} is older than {agent.minimum}, which the fail-closed setting needs",
+            "FAIL" if agent.binary == "claude" else "warn", agent.name, f"{dotted(version)} is older than {agent.minimum}, which the fail-closed setting needs",
             f"upgrade {agent.binary}",
         )
     elif version < reference:

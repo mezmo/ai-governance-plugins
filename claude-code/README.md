@@ -74,6 +74,28 @@ To try the plugin for one session without installing it, run
 
 ## Verify
 
+Setup checks your Claude version before asking for a token. The marketplace can install
+the plugin on an older CLI, so installation alone does not mean it will work.
+`governance_config.py preflight` explains whether you need to upgrade, install the plugin,
+or fix Claude configuration access. An old CLI still needs an upgrade if you store the
+token in settings. The repository installer reports the binary and version it checks.
+
+For an end-to-end check after setup:
+
+1. Start a new Claude session. Run `/mezmo:test`; it tests only configured signals.
+   Use `/mezmo:test --signals traces` to select traces explicitly, `--all-signals` to
+   deliberately test all three, or `--check-only` to probe without publishing records.
+2. Find the printed `test.run_id`, `service.name=mezmo-claude-plugin`, and `mezmo.test=true`
+   in the pipeline destination. The checker confirms endpoint acceptance, not arrival.
+3. Ask Claude to run `printf 'mezmo-onboarding-test\n'` using Bash, then confirm its
+   decision under the intended Governance agent. Read/Edit/Write are not governed.
+4. Separately look for actual Claude spans under `service.name=claude-code`.
+
+Keep prompt, response and tool-detail capture off for this test. Governance still sends
+Bash/MCP arguments for authorization, independently of telemetry content capture.
+Choose your account and have your administrator prepare the token, policy and pipeline
+before testing. The checker does not set them up for you.
+
 To check the setup from the repository root, run `./mezmo-governance doctor claude-code` and
 `./mezmo-governance smoke claude-code`. `doctor` reads `MEZMO_GOVERNANCE_URL` and
 `MEZMO_GOVERNANCE_TOKEN` from the shell, not the key that setup saved, so export them first.
@@ -83,6 +105,29 @@ That passes when `claude plugin configure` shows a saved key with governance on,
 only in your shell gets a warning: Claude Code started from the Dock or another app may not see it.
 `smoke` uses its own mock.
 `/mezmo:test` checks the saved key from inside Claude Code.
+
+## Passing a token safely
+
+Setup uses `--key-file` so the token is not included in the Bash call sent to Governance.
+The shared helper `python3 scripts/mezmo_common.py create-key-file` creates an empty private
+file (0600) in a private directory (0700). Fill it locally, or through Claude's Write tool,
+then pass its path with `--key-file "<path>" --delete-key-file` to the setup/check script.
+Never fill it with a Bash command containing the token. Use a fresh file for each command.
+
+The scripts reject symlinks, hard links, shared permissions and files owned by another user.
+The delete flag removes the file on success or action failure. After interruption or an
+argument-parsing failure, use `python3 scripts/mezmo_common.py delete-key-file "<path>"`.
+Without the delete flag, the file is left for its owner to manage. Managed-settings commands
+using a key file require `--output`, so the resulting credentials are not printed.
+
+File input does not erase earlier chat, secure every copy on disk, or hide credentials in
+child-process arguments such as `claude mcp add`. Prefer filling the file yourself if the
+token should stay out of the conversation. Existing `--key` and environment options remain
+available, but do not put literal keys in governed Bash calls.
+
+If plugin/keychain access fails, `status` reports the plugin state as unknown while showing
+readable settings. `check` can still validate a supplied or readable token. `remove` cleans
+settings and reports incomplete removal if it cannot also clear the plugin token.
 
 ## Governance
 
@@ -219,7 +264,7 @@ inspect and change Telemetry Pipelines. You need a Mezmo service key, from Setti
 Mezmo. It's a different key from the ingestion key.
 
 `/mezmo:setup mcp` checks the key against `https://mcp.mezmo.com/mcp`, then runs the command
-Mezmo documents:
+Mezmo documents (inside the script; do not paste a literal key into a governed Bash call):
 
 ```bash
 claude mcp add --scope user --transport http mezmo https://mcp.mezmo.com/mcp --header "Authorization: Bearer <service key>"

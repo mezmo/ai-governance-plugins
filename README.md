@@ -111,7 +111,9 @@ deny. `--port` sets the port (default 8787).
    export MEZMO_GOVERNANCE_TOKEN="<service account token>"
    ```
 
-   Claude Code also reads these variables. After step 5 you can instead run
+   Claude Code needs Python 3.9+ and Claude Code 2.1.295+. Marketplace installation alone
+   does not check that the runtime can safely govern calls. Claude Code also reads these
+   variables. After step 5 you can instead run
    `/mezmo:setup governance`, which keeps the key in the system credential
    store. OpenCode 2.x takes them as plugin options in `opencode.json`
    (see [opencode/](opencode/)), because its tools run in a background

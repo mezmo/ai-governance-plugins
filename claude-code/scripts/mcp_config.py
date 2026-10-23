@@ -105,13 +105,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mcp_config.py", description="Add Mezmo's MCP server to Claude Code.")
     sub = parser.add_subparsers(dest="command", required=True)
     add = sub.add_parser("add", help="Check the service key, then add the server")
-    add.add_argument("--key", help=f"Mezmo service key (default: ${KEY_ENV})")
+    mc.add_key_arguments(add, f"Mezmo service key (default: ${KEY_ENV})")
     add.add_argument("--force", action="store_true", help="Replace a user-scope server that's already called mezmo")
     sub.add_parser("remove", help="Remove the server")
     status = sub.add_parser("status", help="Whether the server is set up and connects")
     status.add_argument("--json", action="store_true")
     check = sub.add_parser("check", help="Check a service key; adds nothing")
-    check.add_argument("--key", help=f"Mezmo service key (default: ${KEY_ENV})")
+    mc.add_key_arguments(check, f"Mezmo service key (default: ${KEY_ENV})")
     return parser
 
 
@@ -137,13 +137,13 @@ def main(
     args = _build_parser().parse_args(argv)
     try:
         if args.command == "check":
-            key = _key(args.key, environ)
+            key = _key(mc.key_argument(args), environ)
             result = check_key(key, send)
             print(f"{'ok  ' if result.ok else 'FAIL'}  {MCP_URL}  key {mc.mask(key)}  {result.detail}")
             return 0 if result.ok else EXIT_REJECTED
 
         if args.command == "add":
-            key = _key(args.key, environ)
+            key = _key(mc.key_argument(args), environ)
             result = check_key(key, send)
             if not result.ok:
                 print(f"Not added. {result.detail}", file=sys.stderr)
@@ -213,6 +213,8 @@ def main(
     except ValueError as err:
         print(f"Error: {err}", file=sys.stderr)
         return EXIT_USAGE
+    finally:
+        mc.cleanup_key_file(args)
     return EXIT_USAGE
 
 

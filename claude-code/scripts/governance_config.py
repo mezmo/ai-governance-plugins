@@ -2,12 +2,12 @@
 """Configure Mezmo Governance for the mezmo plugin's tool-call hook.
 
 The hook (governance_hook.py) reads MEZMO_GOVERNANCE_* environment variables first, then
-the plugin's options, which keep the access key in the system keychain.
+the plugin's options, which keep the service account token in the system keychain.
 
-  configure  check the access key, then save it (plugin options, or the settings file)
+  configure  check the service account token, then save it (plugin options, or the settings file)
   remove     clear the plugin options and the settings-file variables
   status     where the configuration comes from, and the hook's last result
-  check      ask the service whether it accepts the access key; records nothing
+  check      ask the service whether it accepts the service account token; records nothing
   managed    add the variables to a managed-settings document
 """
 
@@ -18,6 +18,7 @@ import dataclasses
 import json
 import os
 import pathlib
+import re
 import sys
 import uuid
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -42,7 +43,7 @@ SETTINGS_KEYS = (URL_ENV,) + KEY_ENVS + (REQUIRED_ENV,)
 # Written by governance_hook.py, one file per Claude Code session.
 DEFAULT_STATE_DIR = pathlib.Path.home() / ".mezmo" / "governance" / "sessions"
 
-EXIT_ERROR, EXIT_USAGE, EXIT_REJECTED, EXIT_NOT_INSTALLED = 1, 2, 3, 4
+EXIT_ERROR, EXIT_USAGE, EXIT_REJECTED, EXIT_NOT_INSTALLED, EXIT_UNSUPPORTED = 1, 2, 3, 4, 5
 
 Transport = Callable[..., Tuple[int, str]]
 ClaudeRunner = Callable[[Sequence[str], Optional[str]], Tuple[int, str]]
@@ -59,6 +60,31 @@ class NotInstalled(Exception):
     pass
 
 
+class UnsupportedRuntime(RuntimeError):
+    pass
+
+
+def preflight(claude: ClaudeRunner, plugin_id: str, store: str = "plugin") -> None:
+    """Check runtime and storage capability before reading or sending a token."""
+    if sys.version_info < (3, 9):
+        raise UnsupportedRuntime("Python 3.9 or later is required. Select a supported python3 first.")
+    binary = mc.claude_executable()
+    try:
+        code, output = claude(["--version"], None)
+    except OSError:
+        raise UnsupportedRuntime(f"Claude Code executable {binary} was not found. Install Claude Code 2.1.295 or later.")
+    if code == 127:
+        raise UnsupportedRuntime(f"Claude Code executable {binary} was not found. Install Claude Code 2.1.295 or later.")
+    match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", output)
+    if code or not match:
+        raise UnsupportedRuntime(f"Could not determine the version of {binary}. Check that executable with --version; 2.1.295 or later is required.")
+    print(f"Checked Claude Code executable {binary}: version {match.group(0)}.")
+    if tuple(map(int, match.groups())) < (2, 1, 295):
+        raise UnsupportedRuntime("Claude Code 2.1.295 or later is required for fail-closed governance. Upgrade before setup; plaintext settings do not fix older hook failure handling.")
+    if store == "plugin" and plugin_options(claude, plugin_id) is None:
+        raise NotInstalled(plugin_id)
+
+
 def authorization(key: str) -> str:
     return key if key.lower().startswith(("token ", "bearer ")) else f"Token {key}"
 
@@ -72,9 +98,9 @@ def check_access(key: str, url: str, send: Transport = mc.http_request) -> Check
     except OSError as err:
         return CheckResult(False, None, f"Couldn't reach Mezmo Governance at {url}: {err}")
     if status == 404:
-        return CheckResult(True, status, "Mezmo Governance accepted the access key. Nothing was recorded.")
+        return CheckResult(True, status, "Mezmo Governance accepted the service account token. Nothing was recorded.")
     if status in (401, 403):
-        return CheckResult(False, status, f"Mezmo Governance rejected the access key (HTTP {status}).")
+        return CheckResult(False, status, f"Mezmo Governance rejected the service account token (HTTP {status}).")
     if status == 402:
         return CheckResult(False, status, "The Mezmo plan doesn't include governance (HTTP 402).")
     return CheckResult(False, status, f"Unexpected answer from Mezmo Governance (HTTP {status}): {body.strip()[:200]}")
@@ -84,18 +110,33 @@ def plugin_options(claude: ClaudeRunner, plugin_id: str) -> Optional[Dict[str, A
     """{'key_set', 'enabled', 'url'} from `claude plugin configure --json`, or None if not installed."""
     code, output = claude(["plugin", "configure", plugin_id, "--json"], None)
     if code != 0:
-        return None
+        if "No installed plugin" in output:
+            return None
+        if "unknown command" in output.lower():
+            raise UnsupportedRuntime("This Claude Code does not support plugin configure. Install a supported official CLI before setup.")
+        raise RuntimeError("Could not read plugin configuration. Check claude plugin configure.")
     try:
         data = json.loads(output)
+        if not isinstance(data, dict):
+            raise ValueError()
     except ValueError:
-        return None
+        raise RuntimeError("Claude Code returned invalid plugin configuration JSON.")
     configured = data.get("configured") or []
     inputs = data.get("inputs") or {}
+    if not isinstance(configured, list) or not isinstance(inputs, dict):
+        raise RuntimeError("Claude Code returned invalid plugin configuration fields.")
     url = inputs.get(URL_OPTION) if URL_OPTION in configured else None
     enabled = inputs.get(ENABLED_OPTION, True)
     if isinstance(enabled, str):
         enabled = enabled.strip().lower() not in ("0", "false", "no", "off")
     return {"key_set": KEY_OPTION in configured, "enabled": bool(enabled), "url": url or None}
+
+
+def available_plugin_options(claude: ClaudeRunner, plugin_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    try:
+        return plugin_options(claude, plugin_id), None
+    except (RuntimeError, OSError):
+        return None, "Plugin configuration is unavailable; its saved token and enabled state are unknown."
 
 
 def save_plugin_options(claude: ClaudeRunner, plugin_id: str, values: Mapping[str, str]) -> None:
@@ -108,7 +149,10 @@ def save_plugin_options(claude: ClaudeRunner, plugin_id: str, values: Mapping[st
         refused = json.loads(output).get("refused", {}).get("message")
     except (ValueError, AttributeError):
         refused = None
-    raise RuntimeError(refused or output.strip()[:300] or f"claude plugin configure exited {code}")
+    detail = refused or output.strip()[:300] or f"claude plugin configure exited {code}"
+    if values.get(KEY_OPTION):
+        detail = detail.replace(values[KEY_OPTION], mc.mask(values[KEY_OPTION]))
+    raise RuntimeError(detail)
 
 
 def env_sources(settings: Mapping[str, Any], environ: Mapping[str, str], managed_files: Sequence[pathlib.Path]) -> List[Tuple[str, Dict[str, str]]]:
@@ -191,8 +235,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plugin-id", default=PLUGIN_ID, help=f"Installed plugin id (default: {PLUGIN_ID})")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    configure = sub.add_parser("configure", help="Check the access key, then save it")
-    configure.add_argument("--key", help="Service account token (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
+    pre = sub.add_parser("preflight", help="Check prerequisites without reading or sending a token")
+    pre.add_argument("--store", choices=("plugin", "settings"), default="plugin")
+
+    configure = sub.add_parser("configure", help="Check the service account token, then save it")
+    mc.add_key_arguments(configure, "Service account token (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
     configure.add_argument("--url", default=DEFAULT_URL, help=f"Authorize URL (default: {DEFAULT_URL})")
     configure.add_argument("--store", choices=("plugin", "settings"), default="plugin",
                            help="plugin: plugin options, key in the system keychain (default); settings: the settings file's env")
@@ -205,12 +252,12 @@ def _build_parser() -> argparse.ArgumentParser:
     status.add_argument("--state-dir", type=pathlib.Path,
                         help="Where the hook keeps session status files (default: ~/.mezmo/governance/sessions)")
 
-    check = sub.add_parser("check", help="Check the access key against the service; records nothing")
-    check.add_argument("--key", help="Access key to check (default: the configured one, when readable)")
+    check = sub.add_parser("check", help="Check the service account token against the service; records nothing")
+    mc.add_key_arguments(check, "Service account token to check (default: the configured one, when readable)")
     check.add_argument("--url", help="Authorize URL (default: the configured one)")
 
     managed = sub.add_parser("managed", help="Add the variables to a managed-settings document")
-    managed.add_argument("--key", help="Service account token (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
+    mc.add_key_arguments(managed, "Service account token (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
     managed.add_argument("--url", default=DEFAULT_URL)
     managed.add_argument("--required", action="store_true", help="Deny every Bash and MCP tool call when governance isn't configured")
     managed.add_argument("--output", type=pathlib.Path, help="Write, or merge into, this file instead of printing")
@@ -233,10 +280,15 @@ def main(
     settings_file = args.settings_file or mc.default_settings_path(environ)
     managed_files = default_managed_files() if managed_files is None else managed_files
     try:
+        if args.command in ("preflight", "configure"):
+            preflight(claude, args.plugin_id, args.store)
+            if args.command == "preflight":
+                print("Ready: Python 3.9+, Claude Code 2.1.295+, and the requested configuration store are available.")
+                return 0
         if args.command == "configure":
-            key = _key_from(args.key, environ)
+            key = _key_from(mc.key_argument(args), environ)
             if not key:
-                print("Error: no access key. Pass --key or set MEZMO_GOVERNANCE_ACCESS_KEY.", file=sys.stderr)
+                print("Error: no service account token. Pass --key or set MEZMO_GOVERNANCE_ACCESS_KEY.", file=sys.stderr)
                 return EXIT_USAGE
             if not args.skip_check:
                 result = check_access(key, args.url, send)
@@ -270,18 +322,23 @@ def main(
                 env[KEY_ENVS[0]] = key
                 cco.write_settings(settings_file, {**settings, "env": env})
                 where = f"the env block of {settings_file}"
-            print(f"Saved Mezmo Governance access key {mc.mask(key)} for {args.url} in {where}.")
+            print(f"Saved Mezmo Governance service account token {mc.mask(key)} for {args.url} in {where}.")
             print("Every Bash and MCP tool call is now checked with Mezmo Governance. Start a new Claude Code session to apply it.")
             return 0
 
         if args.command == "remove":
             removed = []
-            options = plugin_options(claude, args.plugin_id)
-            if options and ((options["key_set"] and options["enabled"]) or options["url"]):
-                save_plugin_options(claude, args.plugin_id, {
-                    KEY_OPTION: REMOVED_KEY, URL_OPTION: "", ENABLED_OPTION: "false",
-                })
-                removed.append(f"the {args.plugin_id} plugin options (the key in the keychain is overwritten)")
+            options, plugin_error = available_plugin_options(claude, args.plugin_id)
+            # A disabled plugin can still hold a real token. The CLI hides sensitive
+            # values, so always overwrite a configured key, even on repeated removal.
+            if options and (options["key_set"] or options["url"]):
+                try:
+                    save_plugin_options(claude, args.plugin_id, {
+                        KEY_OPTION: REMOVED_KEY, URL_OPTION: "", ENABLED_OPTION: "false",
+                    })
+                    removed.append(f"the {args.plugin_id} plugin options (the key in the keychain is overwritten)")
+                except (RuntimeError, OSError, NotInstalled):
+                    plugin_error = "Could not clear the plugin configuration; its saved token may remain."
             settings = cco.read_settings(settings_file)
             env = dict(settings.get("env") or {})
             dropped = [k for k in SETTINGS_KEYS if k in env]
@@ -291,22 +348,28 @@ def main(
                 updated = {**settings, "env": env} if env else {k: v for k, v in settings.items() if k != "env"}
                 cco.write_settings(settings_file, updated)
                 removed.append(f"{', '.join(dropped)} from {settings_file}")
-            print(f"Removed {' and '.join(removed)}." if removed else "Mezmo Governance had nothing to remove.")
+            print(f"Removed {' and '.join(removed)}." if removed else "No settings were removed." if plugin_error else "Mezmo Governance had nothing to remove.")
             still = [name for name, _ in env_sources({}, environ, managed_files)]
             if still:
                 print(f"Still set by {', '.join(still)}; only whoever set those can remove them.")
             print("Start a new Claude Code session to apply it.")
+            if plugin_error:
+                print(f"Removal incomplete: {plugin_error} Retry removal when Claude configuration is available.", file=sys.stderr)
+                return EXIT_ERROR
             return 0
 
         settings = cco.read_settings(settings_file)
         sources = env_sources(settings, environ, managed_files)
 
         if args.command == "status":
-            options = plugin_options(claude, args.plugin_id)
+            options, plugin_error = available_plugin_options(claude, args.plugin_id)
             report = resolve(sources, options)
+            if plugin_error and not report["configured"]:
+                report["configured"] = None
+            report["plugin_error"] = plugin_error
             report.pop("readable_key")
             report["required_by"] = is_required(sources)
-            report["plugin_installed"] = options is not None
+            report["plugin_installed"] = None if plugin_error else options is not None
             state_dir = args.state_dir or pathlib.Path(environ.get("MEZMO_GOVERNANCE_STATE_DIR") or DEFAULT_STATE_DIR)
             session = latest_session(pathlib.Path(state_dir).expanduser())
             report["latest_session"] = None if session is None else {
@@ -320,9 +383,12 @@ def main(
                 print(json.dumps(report, indent=2))
                 return 0
             if report["configured"]:
-                print("Mezmo Governance is on: every Bash and MCP tool call is checked before it runs.")
+                print("A Governance token is configured, but the plugin state is unknown." if plugin_error
+                      else "Mezmo Governance is on: every Bash and MCP tool call is checked before it runs.")
                 print(f"  URL:        {report['url']}")
-                print(f"  Access key: {report['key']}, from {report['source']}")
+                print(f"  Service account token: {report['key']}, from {report['source']}")
+            elif plugin_error:
+                print("Mezmo Governance state is unknown: plugin configuration could not be read.")
             elif report["required_by"]:
                 print(f"Mezmo Governance is required by {report['required_by']} but not configured: every Bash and MCP tool call is denied.")
             elif report["switched_off"]:
@@ -331,6 +397,8 @@ def main(
                 print("Mezmo Governance is off: tool calls run without a governance check.")
             if report["required_by"] and report["configured"]:
                 print(f"  Required by {report['required_by']}.")
+            if plugin_error:
+                print(f"  Warning: {plugin_error}")
             latest = report["latest_session"]
             if latest:
                 counts = latest["counts"]
@@ -348,10 +416,15 @@ def main(
             return 0
 
         if args.command == "check":
-            report = resolve(sources, plugin_options(claude, args.plugin_id))
-            key = _key_from(args.key, {}) or report["readable_key"]
+            # A readable token wins over plugin options, just as it does in the hook.
+            options, plugin_error = available_plugin_options(claude, args.plugin_id)
+            report = resolve(sources, options)
+            key = _key_from(mc.key_argument(args), {}) or report["readable_key"]
             if not key:
-                where = ("The access key is in the system keychain, where this script can't read it. Pass --key to "
+                if plugin_error:
+                    print(f"Cannot check the token: {plugin_error} Supply --key-file or a configured environment token.", file=sys.stderr)
+                    return EXIT_ERROR
+                where = ("The service account token is in the system keychain, where this script can't read it. Use --key-file to "
                          "check it, or see the hook's last result in status." if report["configured"]
                          else "Mezmo Governance isn't configured.")
                 print(f"Error: {where}", file=sys.stderr)
@@ -362,9 +435,11 @@ def main(
             return 0 if result.ok else EXIT_REJECTED
 
         if args.command == "managed":
-            key = _key_from(args.key, environ)
+            if args.key_file and not args.output:
+                raise ValueError("--output is required with --key-file; do not print managed credentials.")
+            key = _key_from(mc.key_argument(args), environ)
             if not key:
-                print("Error: no access key. Pass --key or set MEZMO_GOVERNANCE_ACCESS_KEY.", file=sys.stderr)
+                print("Error: no service account token. Pass --key or set MEZMO_GOVERNANCE_ACCESS_KEY.", file=sys.stderr)
                 return EXIT_USAGE
             env = {URL_ENV: args.url, KEY_ENVS[0]: key}
             if args.required:
@@ -380,14 +455,22 @@ def main(
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
             os.chmod(args.output, 0o600)
-            print(f"Added Mezmo Governance ({mc.mask(key)}) to {args.output}. It contains the access key; handle it like a secret.")
+            print(f"Added Mezmo Governance ({mc.mask(key)}) to {args.output}. It contains the service account token; handle it like a secret.")
             return 0
+    except UnsupportedRuntime as err:
+        print(f"Setup stopped: {err} No token was checked or saved.", file=sys.stderr)
+        return EXIT_UNSUPPORTED
+    except NotInstalled:
+        print(f"Plugin {args.plugin_id} is not installed. Install mezmo@mezmo, or explicitly choose --store settings for a supported --plugin-dir session (plaintext token).", file=sys.stderr)
+        return EXIT_NOT_INSTALLED
     except RuntimeError as err:
-        print(f"Error: claude plugin configure refused the values: {err}", file=sys.stderr)
-        return EXIT_ERROR
-    except (cco.SettingsError, OSError) as err:
         print(f"Error: {err}", file=sys.stderr)
         return EXIT_ERROR
+    except (cco.SettingsError, OSError, ValueError) as err:
+        print(f"Error: {err}", file=sys.stderr)
+        return EXIT_ERROR
+    finally:
+        mc.cleanup_key_file(args)
     return EXIT_USAGE
 
 
