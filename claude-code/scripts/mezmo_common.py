@@ -101,8 +101,15 @@ def add_key_arguments(parser: argparse.ArgumentParser, help_text: str) -> None:
     parser.add_argument("--delete-key-file", action="store_true", help="Delete the private key file after this action, including on failure")
 
 
+def _require_posix() -> None:
+    # O_NOFOLLOW, O_DIRECTORY, dir_fd and getuid are POSIX-only; Windows is not supported.
+    if os.name != "posix":
+        raise ValueError("Private key files need macOS or Linux; this platform is not supported.")
+
+
 def _private_key_fd(path: pathlib.Path) -> Tuple[int, int]:
     """Open without following the file or parent symlink; reject shared files before reading."""
+    _require_posix()
     directory = os.open(str(path.parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     fd = None
     try:
@@ -179,6 +186,11 @@ def key_file_main(argv: Optional[Sequence[str]] = None) -> int:
     remove = sub.add_parser("delete-key-file")
     remove.add_argument("path", type=pathlib.Path)
     args = parser.parse_args(argv)
+    try:
+        _require_posix()
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 1
     try:
         if args.command == "create-key-file":
             folder = pathlib.Path(tempfile.mkdtemp(prefix="mezmo-key-"))

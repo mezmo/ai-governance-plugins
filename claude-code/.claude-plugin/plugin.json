@@ -1,7 +1,7 @@
 {
   "name": "mezmo",
   "displayName": "Mezmo",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Check Claude Code's Bash and MCP tool calls with Mezmo Governance, send Claude Code telemetry to Mezmo, and connect Claude to Mezmo MCP.",
   "author": {
     "name": "Mezmo",
