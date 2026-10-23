@@ -58,8 +58,10 @@ Bash arguments. For each command that needs a new token:
    `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_common.py" create-key-file`.
    It prints only a path to an empty 0600 file inside a private 0700 directory.
 2. Have the user fill that file locally, or use Claude's Write file tool under its normal
-   permissions to write only the token to that exact existing file. Do not use Bash to
-   write the contents. Do not display or read the file back into the conversation.
+   permissions to write only the token to that exact existing file. Write refuses a file
+   it has not read, so first read the empty file with the Read tool, then write the token.
+   Do not use Bash to write the contents. Do not display or read the file back once it
+   holds the token.
 3. Pass the quoted path as `--key-file "<KEY_FILE>" --delete-key-file`. The script checks
    ownership and permissions, rejects links, and removes the file after the action,
    including an action failure. Use a fresh file for each command; the previous one is gone.

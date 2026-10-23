@@ -115,6 +115,7 @@ then pass its path with `--key-file "<path>" --delete-key-file` to the setup/che
 Never fill it with a Bash command containing the token. Use a fresh file for each command.
 
 The scripts reject symlinks, hard links, shared permissions and files owned by another user.
+Key files need macOS or Linux; on Windows the helper stops before a file is created.
 The delete flag removes the file on success or action failure. After interruption or an
 argument-parsing failure, use `python3 scripts/mezmo_common.py delete-key-file "<path>"`.
 Without the delete flag, the file is left for its owner to manage. Managed-settings commands

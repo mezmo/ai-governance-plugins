@@ -63,6 +63,15 @@ class KeyFileTests(unittest.TestCase):
             if path.exists():
                 mc.delete_key_file(path)
 
+    def test_windows_refuses_before_a_token_is_written(self):
+        # The helpers rely on POSIX-only calls; refuse at create so no token file is left behind.
+        with patch.object(mc.os, "name", "nt"):
+            code, out, err = self.capture(lambda: mc.key_file_main(["create-key-file"]))
+            self.assertEqual((code, out), (1, ""))
+            self.assertIn("macOS or Linux", err)
+            with self.assertRaisesRegex(ValueError, "macOS or Linux"):
+                mc.read_key_file(self.path)
+
     def test_read_keeps_file_unless_cleanup_requested(self):
         self.write_key(KEY + "\n")
         self.assertEqual(mc.read_key_file(self.path), KEY)
