@@ -447,6 +447,392 @@
   },
   {
     "input": {
+      "command": "env git push origin main && exec npm test"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "env git push origin main && exec npm test",
+          "command": "env git push origin main",
+          "program": "git",
+          "arg_1": "push",
+          "arg_2": "origin",
+          "arg_3": "main"
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "exec npm test",
+          "program": "npm",
+          "arg_1": "test"
+        },
+        "dependencies": [
+          0
+        ]
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "env -i ls"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "env -i ls",
+          "program": "env",
+          "arg_1": "ls",
+          "flag_i": true
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "env FOO=1 git push --force"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "env FOO=1 git push --force",
+          "command": "env FOO=1 git push --force",
+          "program": "env",
+          "arg_1": "FOO=1",
+          "arg_2": "git",
+          "arg_3": "push",
+          "flag_force": true
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "env FOO=1 git push --force",
+          "program": "git",
+          "arg_1": "push",
+          "flag_force": true
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "sudo git push --force origin main"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "sudo git push --force origin main",
+          "command": "sudo git push --force origin main",
+          "program": "sudo",
+          "arg_1": "git",
+          "arg_2": "push",
+          "arg_3": "origin",
+          "arg_4": "main",
+          "flag_force": true
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "sudo git push --force origin main",
+          "program": "git",
+          "arg_1": "push",
+          "arg_2": "origin",
+          "arg_3": "main",
+          "flag_force": true
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "sudo -u deploy -E npm test && ls"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "sudo -u deploy -E npm test && ls",
+          "command": "sudo -u deploy -E npm test",
+          "program": "sudo",
+          "arg_1": "deploy",
+          "arg_2": "npm",
+          "arg_3": "test",
+          "flag_u": true,
+          "flag_E": true
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "sudo -u deploy -E npm test",
+          "program": "npm",
+          "arg_1": "test"
+        }
+      },
+      {
+        "id": 2,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "ls",
+          "program": "ls"
+        },
+        "dependencies": [
+          1
+        ]
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "doas timeout 5 rm x"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "doas timeout 5 rm x",
+          "command": "doas timeout 5 rm x",
+          "program": "doas",
+          "arg_1": "timeout",
+          "arg_2": "5",
+          "arg_3": "rm",
+          "arg_4": "x"
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "doas timeout 5 rm x",
+          "program": "rm",
+          "arg_1": "x"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "sudo -s rm x"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "sudo -s rm x",
+          "program": "sudo",
+          "arg_1": "rm",
+          "arg_2": "x",
+          "flag_s": true
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "sudo PATH=/tmp ls"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "sudo PATH=/tmp ls",
+          "command": "sudo PATH=/tmp ls",
+          "program": "sudo",
+          "arg_1": "PATH=/tmp",
+          "arg_2": "ls"
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "sudo PATH=/tmp ls",
+          "program": "ls"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "eval \"git push --force; rm -rf x\" && ls"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "eval \"git push --force; rm -rf x\" && ls",
+          "command": "eval \"git push --force; rm -rf x\"",
+          "program": "eval",
+          "arg_1": "git push --force; rm -rf x"
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "git push --force",
+          "program": "git",
+          "arg_1": "push",
+          "flag_force": true
+        }
+      },
+      {
+        "id": 2,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "rm -rf x",
+          "program": "rm",
+          "arg_1": "x",
+          "flag_r": true,
+          "flag_f": true
+        },
+        "dependencies": [
+          1
+        ]
+      },
+      {
+        "id": 3,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "ls",
+          "program": "ls"
+        },
+        "dependencies": [
+          2
+        ]
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "eval -- echo a  b"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "eval -- echo a  b",
+          "command": "eval -- echo a  b",
+          "program": "eval",
+          "arg_1": "echo",
+          "arg_2": "a",
+          "arg_3": "b"
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "echo a b",
+          "program": "echo",
+          "arg_1": "a",
+          "arg_2": "b"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "eval 'echo $(id)'"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "eval 'echo $(id)'",
+          "command": "eval 'echo $(id)'",
+          "program": "eval",
+          "arg_1": "echo $(id)"
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "eval 'echo $(id)'"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "eval ''"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "eval ''",
+          "program": "eval",
+          "arg_1": ""
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo sudo ls"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": null
+  },
+  {
+    "input": {
+      "command": "eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval eval ls"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": null
+  },
+  {
+    "input": {
       "command": "cd /repo && git push origin main"
     },
     "tool_name": "Bash",
@@ -1093,10 +1479,22 @@
         "id": 0,
         "tool_name": "Bash",
         "arguments": {
+          "full_command": "sudo rm -rf /",
           "command": "sudo rm -rf /",
           "program": "sudo",
           "arg_1": "rm",
           "arg_2": "/",
+          "flag_r": true,
+          "flag_f": true
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "sudo rm -rf /",
+          "program": "rm",
+          "arg_1": "/",
           "flag_r": true,
           "flag_f": true
         }
@@ -1114,10 +1512,22 @@
         "id": 0,
         "tool_name": "Bash",
         "arguments": {
+          "full_command": "sudo rm -rf /tmp/x",
           "command": "sudo rm -rf /tmp/x",
           "program": "sudo",
           "arg_1": "rm",
           "arg_2": "/tmp/x",
+          "flag_r": true,
+          "flag_f": true
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "sudo rm -rf /tmp/x",
+          "program": "rm",
+          "arg_1": "/tmp/x",
           "flag_r": true,
           "flag_f": true
         }

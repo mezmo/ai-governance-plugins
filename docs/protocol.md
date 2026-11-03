@@ -88,7 +88,10 @@ Rules:
   input. Only the adapter writes `program`, `full_command`, `arg_<n>` and
   `flag_` fields: a call to a shell tool in the table below drops any the
   agent's input carries, whether it splits or goes whole. An item that runs
-  after the one before it lists that id in `dependencies`. `tool_namespace` and `tool_name` stay the agent's own, and
+  after the one before it lists that id in `dependencies`. A part that starts
+  with `sudo`, `doas`, `env` with an assignment, or `eval` keeps that wrapper as
+  its `program`, and the command it runs follows as items of its own, so a rule
+  that allows the wrapper doesn't pass that command. `tool_namespace` and `tool_name` stay the agent's own, and
   `request_id` and `decision_id` still hash the call's whole input. A command
   the adapter can't split goes as one item. Mezmo decides each item and answers
   with the strictest decision. See
