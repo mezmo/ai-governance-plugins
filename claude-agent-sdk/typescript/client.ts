@@ -225,7 +225,13 @@ const SHELL_KEYWORDS = new Set([
   "!", "{", "}", "[[", "]]", "case", "do", "done", "elif", "else", "esac", "fi", "for",
   "function", "if", "in", "select", "then", "until", "while",
 ]);
-const SIMPLE_WRAPPERS = new Set(["builtin", "command", "nohup", "time", "xargs"]);
+const SIMPLE_WRAPPERS = new Set(["builtin", "command", "exec", "nohup", "time", "xargs"]);
+// These run a command as someone else. They stay the program, and the command they run follows
+// as a part of its own (Scanner.read), as do env's with an assignment and eval's.
+const PRIVILEGE_WRAPPERS = new Set(["doas", "sudo"]);
+// Their options whose form is certain: these take no value, and these take the next word.
+const PRIVILEGE_FLAGS = new Set(["-E", "-H", "-P", "-S", "-b", "-k", "-n"]);
+const PRIVILEGE_OPTIONS = new Set(["-D", "-T", "-g", "-p", "-u"]);
 // Python's whitespace (str.isspace(), and \s in its patterns), as a character class body.
 // JavaScript's trim() and \s differ: they take U+FEFF and leave out U+001C-U+001F and U+0085.
 // Generated in Python 3.14 with [hex(c) for c in range(0x110000) if chr(c).isspace()].
@@ -254,7 +260,7 @@ export type BashPart = {
   program: string | null; // null when the part can't be fully read
   args: string[]; // positional arguments, flags left out
   flags: [string, FlagValue][]; // [name, true or the value written with it]
-  after: string | null; // the separator before it, null for the first part
+  after: string | null; // the separator before it, null if it has none
 };
 
 // The command can't be split safely: an unclosed quote, a substitution, a heredoc or a final backslash.
@@ -293,6 +299,8 @@ function skipWrappers(words: string[]): string[] {
     const [head, ...rest] = words;
     if (SIMPLE_WRAPPERS.has(head) && rest.length > 0 && !rest[0].startsWith("-")) {
       words = rest;
+    } else if (head === "env" && rest.length > 0 && !rest[0].startsWith("-") && !rest[0].includes("=")) {
+      words = rest;
     } else if (head === "nice" && rest.length > 0) {
       if (rest[0] === "-n" && rest.length > 2 && NICENESS.test(rest[1])) {
         words = rest.slice(2);
@@ -320,6 +328,32 @@ function skipWrappers(words: string[]): string[] {
     }
   }
   return words;
+}
+
+// What sudo, doas or env runs, past assignments, or [] if its options aren't certain.
+function commandRunBy(words: string[]): string[] {
+  let i = 1;
+  if (PRIVILEGE_WRAPPERS.has(words[0])) {
+    while (i < words.length && words[i] !== "--" && words[i].startsWith("-")) {
+      if (PRIVILEGE_FLAGS.has(words[i])) {
+        i += 1;
+      } else if (PRIVILEGE_OPTIONS.has(words[i]) && i + 1 < words.length) {
+        i += 2;
+      } else {
+        return [];
+      }
+    }
+    if (words[i] === "--") {
+      i += 1;
+    }
+  } else if (words[0] !== "env") {
+    return [];
+  }
+  while (i < words.length && words[i].includes("=")) {
+    i += 1;
+  }
+  const command = words.slice(i);
+  return command.length > 0 && !command[0].startsWith("-") ? command : [];
 }
 
 // The flags one word sets. Without knowing the tool, it reads them the common ways.
@@ -375,6 +409,7 @@ function readPart(words: string[]): [string | null, string[], [string, FlagValue
 
 class Scanner {
   text: string;
+  depth: number; // how many evals this text is inside
   i = 0;
   parts: BashPart[] = [];
   start = 0; // where the current part begins
@@ -384,8 +419,9 @@ class Scanner {
   readable = true;
   redirect: string | null = null; // a redirection waiting for its target
 
-  constructor(text: string) {
+  constructor(text: string, depth = 0) {
     this.text = text;
+    this.depth = depth;
   }
 
   // It steps by UTF-16 unit. Every character it acts on is ASCII, so the two halves of any
@@ -576,8 +612,55 @@ class Scanner {
     if (words.length === 0 && readable) {
       return;
     }
-    const [program, args, flags] = readable ? readPart(words) : [null, [], []];
-    this.parts.push({ text, program, args, flags, after: this.parts.length > 0 ? this.after : null });
+    const after = this.parts.length > 0 ? this.after : null;
+    if (readable) {
+      this.read(text, words, after);
+    } else {
+      this.parts.push({ text, program: null, args: [], flags: [], after });
+    }
+  }
+
+  // Add the part, then the command it runs when it starts with sudo, doas, env or eval. That
+  // command goes as a part of its own. Mezmo goes with the strictest answer, so a part added this
+  // way can only tighten a decision: a rule that allows sudo doesn't pass what sudo runs, and a
+  // rule on git sees sudo git.
+  read(text: string, words: string[], after: string | null): void {
+    // more parts go whole anyway
+    while (this.parts.length <= MAX_BASH_PARTS) {
+      const [program, args, flags] = readPart(words);
+      this.parts.push({ text, program, args, flags, after });
+      if (program === null) {
+        return;
+      }
+      words = skipWrappers(words);
+      after = null;
+      if (program === "eval") {
+        this.parts.push(...this.evaluated(text, words.slice(1)));
+        return;
+      }
+      words = commandRunBy(words);
+      if (words.length === 0) {
+        return;
+      }
+    }
+  }
+
+  // The parts of what eval runs: its words joined by spaces, after a first --, as bash does.
+  evaluated(text: string, words: string[]): BashPart[] {
+    if (this.depth >= MAX_BASH_PARTS) {
+      throw new Unsplittable(); // each eval adds a part, so this many go whole anyway
+    }
+    if (words[0] === "--") {
+      words = words.slice(1);
+    }
+    try {
+      return new Scanner(words.join(" "), this.depth + 1).run();
+    } catch (error) {
+      if (error instanceof Unsplittable) {
+        return [{ text, program: null, args: [], flags: [], after: null }];
+      }
+      throw error;
+    }
   }
 }
 

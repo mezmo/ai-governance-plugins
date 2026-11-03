@@ -201,8 +201,24 @@ So a policy that sends force pushes to a person needs a rule for each spelling: 
 
 The first part also carries `full_command`, the whole command as Claude wrote it, and the call's
 `description`. The wrappers Claude Code skips (`timeout`, `time`, `nice`, `nohup`, `stdbuf`,
-`command`, `builtin` and a bare `xargs`) are skipped here too, so `timeout 60 npm test` has
-`program` `npm`.
+`command`, `builtin` and a bare `xargs`) are skipped here too, as are `env` and `exec` without an
+option or assignment, so `timeout 60 npm test` has `program` `npm`.
+
+Some wrappers change how a command runs, so they stay the `program`, and the command they run
+follows as a part of its own, with no `dependencies` on the wrapper's part:
+
+| Written | Parts |
+| --- | --- |
+| `sudo git push --force` | `program` `sudo`, then `program` `git` with `flag_force` |
+| `doas -u deploy npm test` | `program` `doas`, then `program` `npm` |
+| `env FOO=1 git push` | `program` `env`, then `program` `git` |
+| `eval "git push; rm -rf x"` | `program` `eval`, then `git` and `rm`, from the string eval runs |
+
+Both parts carry the wrapper's text in `command`, except the parts of what `eval` runs, which
+carry their own. Since the strictest answer wins, a rule that allows `sudo` no longer passes
+whatever `sudo` runs: allow those commands too. A rule that sends `git push` to a person now
+catches `sudo git push`. `sudo` or `doas` with an option other than `-E`, `-H`, `-P`, `-S`, `-b`,
+`-k`, `-n`, `-D`, `-T`, `-g`, `-p` or `-u` (`sudo -s`, `sudo -i`) sends only its own part.
 
 A part the plugin can't fully read gets no `program`, `arg_` or `flag_` fields: one with a variable
 (`$HOME`), a redirect to a file, a subshell, an assignment such as `PATH=/tmp ls`, or a shell
