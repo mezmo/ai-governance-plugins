@@ -212,9 +212,7 @@ still matches. Mezmo decides every part and goes with the strictest answer. The
 field and flag tables, and what these fields can't stop, are in the Claude Code
 README's [Bash commands](../claude-code/README.md#bash-commands).
 
-On Windows the command goes whole, as one item, because the agent runs it in
-PowerShell or cmd. A non-bash shell on macOS or Linux, such as fish, isn't
-detected.
+A non-bash shell on macOS or Linux, such as fish, isn't detected.
 
 ## What the hook covers
 
