@@ -68,7 +68,26 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(first("\\rm notes"), ("rm", ["notes"]))
 
     def test_line_continuations_join(self):
-        self.assertEqual(read("curl -s \\\n  https://example.com"), [("curl -s    https://example.com", "curl", ["https://example.com"], None)])
+        # Bash drops a backslash-newline pair, so the two halves of a word it splits are one word.
+        # The part's text stays as written.
+        self.assertEqual(read("curl -s \\\n  https://example.com"), [("curl -s \\\n  https://example.com", "curl", ["https://example.com"], None)])
+        self.assertEqual(read("git pu\\\nsh --force origin main"), [("git pu\\\nsh --force origin main", "git", ["push", "origin", "main"], None)])
+        self.assertEqual(first('echo "pu\\\nsh"'), ("echo", ["push"]))
+        self.assertEqual(read("ls \\\n#c"), [("ls \\\n#c", "ls", [], None)])
+
+    def test_a_line_continuation_stays_inside_single_quotes(self):
+        self.assertEqual(first("echo 'pu\\\nsh'"), ("echo", ["pu\\\nsh"]))
+
+    def test_a_line_continuation_can_split_an_operator(self):
+        self.assertEqual(read("true &\\\n& ls"), [("true", "true", [], None), ("ls", "ls", [], "&&")])
+        self.assertEqual(read("ls |\\\n& cat")[1][3], "|&")
+        self.assertEqual(first("npm test 2\\\n>/dev/null"), ("npm", ["test"]))
+
+    def test_a_newline_after_an_escaped_backslash_still_separates(self):
+        self.assertEqual(read("echo a\\\\\nrm -rf x"), [("echo a\\\\", "echo", ["a\\"], None), ("rm -rf x", "rm", ["x"], "\n")])
+
+    def test_a_comment_ends_at_its_newline_even_after_a_backslash(self):
+        self.assertEqual(read("ls # note \\\nrm -rf x"), [("ls # note \\", "ls", [], None), ("rm -rf x", "rm", ["x"], "\n")])
 
     def test_comments_are_ignored(self):
         self.assertEqual(read("ls # then && rm -rf x"), [("ls # then && rm -rf x", "ls", [], None)])
@@ -149,6 +168,9 @@ class WholeCommandTests(unittest.TestCase):
         for command in (
             "echo 'unclosed", 'echo "unclosed', "echo $(whoami)", "echo `id`", 'echo "$(id)"', 'echo "`id`"',
             "diff <(ls a) <(ls b)", "tee >(gzip > out.gz)", "cat <<EOF\nrm -rf /\nEOF", "", "   ", "# only a comment",
+            # A line continuation inside the operator doesn't hide it.
+            "cat <\\\n<EOF\nrm -rf /\nEOF", "echo $\\\n(whoami)", 'echo "$\\\n(id)"', "diff <\\\n(ls a) b",
+            "rm\\", "ls && rm -rf x \\",
         ):
             with self.subTest(command=command):
                 self.assertIsNone(hook.split_command(command))

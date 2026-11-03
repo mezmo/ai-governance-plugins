@@ -28,6 +28,16 @@ CASES: list[tuple[dict, str, str]] = [
     bash("ls # then && rm -rf x"),
     bash("ls \\\n -la"),
     bash("curl -s \\\n  https://example.com"),
+    # Bash drops a backslash-newline pair, except inside single quotes and comments.
+    bash("git pu\\\nsh --force origin main"),
+    bash("echo 'pu\\\nsh' \"pu\\\nsh\""),
+    bash("echo a\\\\\nrm -rf x"),
+    bash("ls # note \\\nrm -rf x"),
+    bash("true &\\\n& ls |\\\n& cat 2\\\n>/dev/null"),
+    bash("cat <\\\n<EOF\nrm -rf /\nEOF"),
+    bash("echo $\\\n(whoami)"),
+    bash('echo "$\\\n(id)"'),
+    bash("ls && rm\\"),
     bash("cd /repo && git push origin main"),
     # Flags.
     bash("git push --force origin main"),

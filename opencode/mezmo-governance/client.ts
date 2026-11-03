@@ -257,14 +257,14 @@ export type BashPart = {
   after: string | null; // the separator before it, null for the first part
 };
 
-// The command can't be split safely: an unclosed quote, a substitution or a heredoc.
+// The command can't be split safely: an unclosed quote, a substitution, a heredoc or a final backslash.
 class Unsplittable extends Error {}
 
 // The command's parts, or null when it can't be split safely or holds nothing to run.
 export function splitCommand(command: string): BashPart[] | null {
   let parts: BashPart[];
   try {
-    parts = new Scanner(command.replaceAll("\\\n", " ")).run();
+    parts = new Scanner(command).run();
   } catch (error) {
     if (error instanceof Unsplittable) {
       return null;
@@ -455,11 +455,15 @@ class Scanner {
         this.i = i + 1;
         return;
       }
-      if (c === "`" || text.startsWith("$(", i)) {
+      if (c === "`" || (c === "$" && text.startsWith("(", this.nextAt(i)))) {
         throw new Unsplittable();
       }
       if (c === "$") {
         this.readable = false;
+      }
+      if (c === "\\" && text.startsWith("\n", i + 1)) {
+        i += 2; // a line continuation, which bash drops here too
+        continue;
       }
       if (c === "\\" && i + 1 < text.length && '$`"\\'.includes(text[i + 1])) {
         i += 1;
@@ -472,18 +476,19 @@ class Scanner {
   }
 
   escaped(): void {
-    if (this.i + 1 < this.text.length) {
+    if (this.text.startsWith("\n", this.i + 1)) {
+      this.i += 2; // a line continuation: bash drops it, so a word it splits stays one word
+    } else if (this.i + 1 < this.text.length) {
       this.add(this.text[this.i + 1]);
       this.i += 2;
     } else {
-      this.add("\\");
-      this.i += 1;
+      throw new Unsplittable(); // bash drops it, or joins it to whatever the agent runs after the command
     }
   }
 
   dollar(): void {
     // $( and $(( can hold separators of their own, so the command can't be split.
-    if (this.text.startsWith("$(", this.i)) {
+    if (this.text.startsWith("(", this.nextAt(this.i))) {
       throw new Unsplittable();
     }
     this.readable = false;
@@ -494,14 +499,15 @@ class Scanner {
   separator(): void {
     const text = this.text;
     const i = this.i;
-    if (text.startsWith("&>", i)) {
+    const j = this.nextAt(i);
+    const two = text[i] + text.slice(j, j + 1);
+    if (two === "&>") {
       this.redirection();
       return;
     }
-    const two = text.slice(i, i + 2);
-    const sep = two === "&&" || two === "||" || two === "|&" ? two : text[i];
+    const [sep, end] = two === "&&" || two === "||" || two === "|&" ? [two, j + 1] : [text[i], i + 1];
     this.endPart(i);
-    this.i = this.start = i + sep.length;
+    this.i = this.start = end;
     this.after = sep;
   }
 
@@ -512,12 +518,24 @@ class Scanner {
     } else {
       this.endWord();
     }
-    const op = REDIRECTIONS.find((candidate) => this.text.startsWith(candidate, this.i)) as string;
+    const at = [this.i, this.nextAt(this.i)];
+    at.push(this.nextAt(at[1]));
+    const ahead = at.map((j) => this.text.slice(j, j + 1)).join("");
+    const op = REDIRECTIONS.find((candidate) => ahead.startsWith(candidate)) as string;
     if (op === "<(" || op === ">(" || op === "<<") {
       throw new Unsplittable(); // a process substitution, or a heredoc whose lines aren't commands
     }
-    this.i += op.length;
+    this.i = at[op.length - 1] + 1;
     this.redirect = op;
+  }
+
+  // Where the character after the one at i is. Bash drops line continuations, even inside &&.
+  nextAt(i: number): number {
+    i += 1;
+    while (this.text.startsWith("\\\n", i)) {
+      i += 2;
+    }
+    return i;
   }
 
   endWord(): void {
