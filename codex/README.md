@@ -185,6 +185,14 @@ every part and goes with the strictest answer. The field and flag tables, and
 what these fields can't stop, are in the Claude Code README's
 [Bash commands](../claude-code/README.md#bash-commands).
 
+Existing rules on the shell tool's input may need rewriting. When a command has
+more than one part, `command` holds one part, the whole command is in
+`full_command` (a one-part command has no `full_command`, and its `command` is
+the whole command), and the call's other input, such as `cwd` or `description`,
+is on the first part only. So a rule that matches a compound command's exact
+`command` string, or that looks for another input field on a later part,
+silently stops matching.
+
 On Windows the command goes whole, as one item, because the agent runs it in
 PowerShell or cmd. A non-bash shell on macOS or Linux, such as fish, isn't
 detected.
