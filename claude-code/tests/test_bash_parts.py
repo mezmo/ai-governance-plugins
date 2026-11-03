@@ -1,9 +1,12 @@
+import json
 import pathlib
 import sys
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+import bash_parts_cases  # noqa: E402
 import governance_hook as hook  # noqa: E402
 
 
@@ -149,6 +152,27 @@ class WholeCommandTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertIsNone(hook.split_command(command))
+
+
+class ItemBuilderTests(unittest.TestCase):
+    def test_tool_name_and_command_field_are_inputs(self):
+        items = hook.bash_items({"command_line": "cd /repo && ls", "cwd": "/repo"}, "run_command", "command_line")
+        self.assertEqual([item["tool_name"] for item in items], ["run_command", "run_command"])
+        self.assertEqual(items[0]["arguments"], {
+            "full_command": "cd /repo && ls", "command_line": "cd /repo && ls", "cwd": "/repo",
+            "command": "cd /repo", "program": "cd", "arg_1": "/repo",
+        })
+        self.assertEqual(items[1]["arguments"], {"command": "ls", "program": "ls"})
+        self.assertEqual(items[1]["dependencies"], [0])
+
+    def test_a_missing_command_field_goes_whole(self):
+        self.assertIsNone(hook.bash_items({"command": "ls"}, "run_command", "command_line"))
+
+
+class SharedCasesTests(unittest.TestCase):
+    def test_the_cases_file_is_current(self):
+        path = pathlib.Path(__file__).with_name("bash_parts_cases.json")
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), bash_parts_cases.expected(hook))
 
 
 if __name__ == "__main__":
