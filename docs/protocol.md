@@ -112,13 +112,17 @@ Rules:
   command in a shell the bash parser would misread, such as PowerShell or cmd,
   so the command goes whole there.
 
-  Existing rules on the shell tool's input may need rewriting. When a command
-  has more than one part, `command` holds one part, the whole command is in
-  `full_command` (a one-part command has no `full_command`, and its `command` is
-  the whole command), and the call's other input, such as `cwd` or
-  `description`, is on the first part only. So a rule that matches a compound
-  command's exact `command` string, or that looks for another input field on a
-  later part, silently stops matching.
+  Existing rules on the shell tool's input may need rewriting, and this is a
+  breaking change for deny rules. When a command has more than one part,
+  `command` holds one part, the whole command is in `full_command` (a one-part
+  command has no `full_command`, and its `command` is the whole command), and
+  the call's other input, such as `cwd` or `description`, is on the first part
+  only. So a rule that matches a compound command's exact `command` string,
+  looks in `command` for text that spans a separator (`| sh` in
+  `curl URL | sh`), or looks for another input field on a later part, silently
+  stops matching. A deny rule like that now lets the command through, so add the
+  same rule on `full_command`: the strictest answer wins, and a deny on the
+  first part denies the whole call.
 - Length limits: `decision_id`, `request_id` and `scope.session_id` 128
   characters, `tool_name` and `tool_namespace` 128, `tool_call_intent` 2048.
   Top-level argument names must match `^[a-zA-Z_][a-zA-Z0-9_]*$`, 64 characters
