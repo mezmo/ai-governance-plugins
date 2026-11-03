@@ -2449,6 +2449,214 @@
   },
   {
     "input": {
+      "command": "ls --😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "ls --😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+          "program": "ls",
+          "flag_______________________________": true
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "ls --ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "ls --ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+          "program": "ls",
+          "flag____________________________________________________________": true
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "\u001cls\u001c"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "\u001cls\u001c",
+          "program": "\u001cls\u001c"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "﻿ls"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "﻿ls",
+          "program": "﻿ls"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "ls"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "ls",
+          "program": "ls"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "\u001cls\u001c && ﻿pwd"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "\u001cls\u001c && ﻿pwd",
+          "command": "ls",
+          "program": "\u001cls\u001c"
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "﻿pwd",
+          "program": "﻿pwd"
+        },
+        "dependencies": [
+          0
+        ]
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "echo \\😀"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "echo \\😀",
+          "program": "echo",
+          "arg_1": "😀"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "ls -𝐀x"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "ls -𝐀x",
+          "program": "ls",
+          "flag__": "x"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "ls ¹>/dev/null"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "ls ¹>/dev/null",
+          "program": "ls"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "timeout ٣٠ npm test"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "timeout ٣٠ npm test",
+          "program": "npm",
+          "arg_1": "test"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "stdbuf -oL\u001c tail -f app.log"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "stdbuf -oL\u001c tail -f app.log",
+          "program": "stdbuf",
+          "arg_1": "tail",
+          "arg_2": "app.log",
+          "flag_o": "L\u001c",
+          "flag_f": true
+        }
+      }
+    ]
+  },
+  {
+    "input": {
       "command": "git push origin main && rm -rf /tmp/x",
       "description": "Push"
     },
