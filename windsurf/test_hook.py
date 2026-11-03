@@ -317,6 +317,21 @@ class ShellCommandPartsTests(unittest.TestCase):
         self.assertEqual(whole["items"], [{"id": 0, "tool_namespace": "windsurf", "tool_name": "run_command",
                                            "arguments": {"command_line": self.COMMAND, "cwd": "/repo"}}])
 
+    def test_the_inputs_own_part_fields_never_reach_mezmo(self) -> None:
+        # Only the parser sets these, so a part it can't read never looks read, split or whole.
+        tool_info = {"command_line": "ls $DIR", "cwd": "/repo",
+                     "program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls"}
+        event = hook_event("pre_run_command", tool_info)
+        with patch.object(hook.os, "name", "nt"):
+            whole = hook.approval_payload(event)
+        split = hook.approval_payload(event)
+
+        self.assertEqual(whole["items"], [{"id": 0, "tool_namespace": "windsurf", "tool_name": "run_command",
+                                           "arguments": {"command_line": "ls $DIR", "cwd": "/repo"}}])
+        self.assertEqual(split["items"], [{"id": 0, "tool_namespace": "windsurf", "tool_name": "run_command",
+                                           "arguments": {"command": "ls $DIR", "command_line": "ls $DIR", "cwd": "/repo"}}])
+        self.assertTrue(whole["request_id"].endswith("#" + hook.call_digest("windsurf", "run_command", tool_info)))
+
     def test_an_mcp_tool_named_run_command_goes_whole(self) -> None:
         event = hook_event("pre_mcp_tool_use", {
             "mcp_server_name": "box", "mcp_tool_name": "run_command",

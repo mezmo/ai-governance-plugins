@@ -127,7 +127,7 @@ test("tool.execute.before blocks non-object arguments with the governance messag
 
 const COMPOUND = "cd /repo && rm -rf build";
 
-async function itemsSent(tool: string) {
+async function itemsSent(tool: string, more: Record<string, unknown> = {}) {
   let sent: Record<string, any> = {};
   await withRuntime(
     async (_url, init) => {
@@ -135,7 +135,7 @@ async function itemsSent(tool: string) {
       return { status: 200, text: async () => '{"approved":true}' };
     },
     async (hooks) => {
-      await hooks["tool.execute.before"]({ ...INPUT, tool }, { args: { command: COMPOUND } });
+      await hooks["tool.execute.before"]({ ...INPUT, tool }, { args: { command: COMPOUND, ...more } });
     },
   );
   return sent;
@@ -157,6 +157,21 @@ test("tool.execute.before sends a bash command whole on Windows", async () => {
   try {
     const sent = await itemsSent("bash");
     assert.deepEqual(sent.items.map((item: any) => item.arguments), [{ command: COMPOUND }]);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+});
+
+test("tool.execute.before never sends the parser's field names from a bash call's input", async () => {
+  // Only the parser sets these, so a part it can't read never looks read, split or whole.
+  const injected = { program: "ls", arg_1: "x", flag_f: true, full_command: "ls" };
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    const sent = await itemsSent("bash", injected);
+    assert.deepEqual(sent.items.map((item: any) => item.arguments), [{ command: COMPOUND }]);
+    // The ids still hash the input as OpenCode sent it.
+    assert.equal(sent.request_id, `opencode:ses_1:call_1#${callDigest("bash", { command: COMPOUND, ...injected })}`);
   } finally {
     Object.defineProperty(process, "platform", platform);
   }

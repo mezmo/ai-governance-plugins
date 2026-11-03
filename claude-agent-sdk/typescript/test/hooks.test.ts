@@ -274,8 +274,20 @@ test("a Bash call splits on Windows too", () =>
     }
   }));
 
+test("a Bash call never sends the parser's field names from its input", () =>
+  withEnv(ENV, async () => {
+    // Only the parser sets these, so a part it can't read never looks read, split or whole.
+    for (const command of ["rm -rf $(pwd)", "ls $DIR"]) {
+      const toolInput = { command, program: "ls", arg_1: "x", flag_f: true, full_command: "ls" };
+      const body = await itemsSent({ tool_input: toolInput });
+      assert.deepEqual(body.items.map((item: any) => item.arguments), [{ command }], command);
+      // The ids still hash the input as the SDK sent it.
+      assert.equal(body.request_id, `claude_agent_sdk:sess-1:toolu_01#${callDigest("Bash", toolInput)}`);
+    }
+  }));
+
 test("other tools go whole, whatever their input", () =>
   withEnv(ENV, async () => {
-    const body = await itemsSent({ tool_name: "Task" });
-    assert.deepEqual(body.items.map((item: any) => item.arguments), [{ command: COMPOUND }]);
+    const body = await itemsSent({ tool_name: "Task", tool_input: { command: COMPOUND, program: "ls" } });
+    assert.deepEqual(body.items.map((item: any) => item.arguments), [{ command: COMPOUND, program: "ls" }]);
   }));

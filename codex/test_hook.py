@@ -755,6 +755,7 @@ BASH_PARTS_DEFINITIONS = (
     "_flags_of",
     "_read_part",
     "_Scanner",
+    "drop_part_fields",
     "bash_items",
 )
 # The eight Python hook adapters are standalone copies. These shared parts must stay
@@ -913,6 +914,18 @@ class ShellCommandPartsTests(unittest.TestCase):
         items = hook.approval_payload(event)["items"]
         self.assertEqual(items, [{"id": 0, "tool_namespace": "codex", "tool_name": "Bash",
                                   "arguments": {"command": ["rm", "-rf", "build"]}}])
+
+    def test_the_inputs_own_part_fields_never_reach_mezmo(self):
+        # Only the parser sets these, so a part it can't read never looks read, split or whole.
+        tool_input = {"command": "ls $DIR", "program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls"}
+        event = self.event()
+        event["tool_input"] = tool_input
+        with patch.object(hook.os, "name", "nt"):
+            whole = hook.approval_payload(event)
+        for payload in (whole, hook.approval_payload(event)):
+            self.assertEqual(payload["items"], [{"id": 0, "tool_namespace": "codex", "tool_name": "Bash",
+                                                 "arguments": {"command": "ls $DIR"}}])
+        self.assertTrue(whole["request_id"].endswith("#" + hook.call_digest("codex", "Bash", tool_input)))
 
     def test_splitting_leaves_the_request_id_to_the_whole_input(self):
         parts = hook.approval_payload(self.event())

@@ -376,6 +376,22 @@ class ShellCommandPartsTests(unittest.TestCase):
                 if "tool_use_id" in event:  # VS Code Local sends one, so the parts and the whole call are one decision
                     self.assertEqual(split["decision_id"], whole["decision_id"])
 
+    def test_the_inputs_own_part_fields_never_reach_mezmo(self) -> None:
+        # Only the parser sets these, so a part it can't read never looks read, split or whole.
+        tool_input = {"command": "ls $DIR", "program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls"}
+        for event, tool_name, event_name in (
+            ({**self.cli_call(), "toolArgs": json.dumps(tool_input)}, "bash", "preToolUse"),
+            ({**self.vscode_call(), "tool_input": tool_input}, "run_in_terminal", "PreToolUse"),
+        ):
+            with self.subTest(tool=tool_name):
+                with patch.object(hook.os, "name", "nt"):
+                    whole = hook.approval_payload(event, event_name)
+                for payload in (whole, hook.approval_payload(event, event_name)):
+                    self.assertEqual(payload["items"], [{"id": 0, "tool_namespace": "copilot", "tool_name": tool_name,
+                                                         "arguments": {"command": "ls $DIR"}}])
+                digest = "#" + hook.call_digest("copilot", tool_name, tool_input)
+                self.assertTrue(whole["request_id"].endswith(digest))
+
 
 class PollingTests(unittest.TestCase):
     @patch.dict(os.environ, ENV)

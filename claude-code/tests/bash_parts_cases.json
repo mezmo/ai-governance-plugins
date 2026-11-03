@@ -2694,6 +2694,119 @@
   },
   {
     "input": {
+      "command": "$X && ls",
+      "program": "ls",
+      "arg_1": "x",
+      "flag_f": true,
+      "full_command": "ls"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "$X && ls",
+          "command": "$X"
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "ls",
+          "program": "ls"
+        },
+        "dependencies": [
+          0
+        ]
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "$X",
+      "program": "ls",
+      "arg_1": "x",
+      "flag_f": true,
+      "full_command": "ls"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "$X"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "rm -rf $(pwd)",
+      "program": "ls",
+      "arg_1": "x",
+      "flag_f": true,
+      "full_command": "ls"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": null
+  },
+  {
+    "input": {
+      "command": "rm -rf build",
+      "program": "ls",
+      "arg_2": "x",
+      "flag_v": true,
+      "full_command": "ls"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "rm -rf build",
+          "program": "rm",
+          "arg_1": "build",
+          "flag_r": true,
+          "flag_f": true
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "ls",
+      "arg_": "kept",
+      "arg_x": "kept",
+      "flags": "kept",
+      "programs": "kept"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "ls",
+          "arg_": "kept",
+          "arg_x": "kept",
+          "flags": "kept",
+          "programs": "kept",
+          "program": "ls"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
       "command_line": "cd /repo && ls",
       "cwd": "/repo"
     },

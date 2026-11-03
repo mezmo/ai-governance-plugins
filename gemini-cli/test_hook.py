@@ -286,6 +286,20 @@ class ShellCommandPartsTests(unittest.TestCase):
         self.assertEqual(whole["items"], [{"id": 0, "tool_namespace": "gemini_cli", "tool_name": "run_shell_command",
                                            "arguments": {"command": self.COMMAND}}])
 
+    def test_the_inputs_own_part_fields_never_reach_mezmo(self) -> None:
+        # Only the parser sets these, so a part it can't read never looks read, split or whole.
+        tool_input = {"command": "ls $DIR", "program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls"}
+        event = self.event()
+        event["tool_input"] = tool_input
+        with patch.object(hook.os, "name", "nt"):
+            whole = hook.approval_payload(event)
+
+        for payload in (whole, hook.approval_payload(event)):
+            self.assertEqual(payload["items"], [{"id": 0, "tool_namespace": "gemini_cli", "tool_name": "run_shell_command",
+                                                 "arguments": {"command": "ls $DIR"}}])
+        digest = "#" + hook.call_digest("gemini_cli", "run_shell_command", tool_input)
+        self.assertTrue(whole["request_id"].endswith(digest))
+
     def test_an_mcp_tool_named_run_shell_command_goes_whole(self) -> None:
         event = self.event()
         event["mcp_context"] = {"server_name": "box", "tool_name": "run_shell_command"}
