@@ -582,13 +582,16 @@ class _Scanner:
         self.parts.append(BashPart(text, program, args, flags, self.after if self.parts else None))
 
 
-def bash_items(arguments: Mapping[str, Any]) -> Optional[List[Dict[str, Any]]]:
-    """One item per part of a Bash command, or None to send the call whole.
+def bash_items(
+    arguments: Mapping[str, Any], tool_name: str = "Bash", command_field: str = "command"
+) -> Optional[List[Dict[str, Any]]]:
+    """One item per part of a shell command, or None to send the call whole.
 
-    The first item leads with the call's own input and the whole command, then each item has
-    its part's fields. A parser failure only means the call goes whole: it never blocks it.
+    The first item leads with the agent's input as received and the whole command, then each
+    item has its part's fields. A parser failure only means the call goes whole: it never
+    blocks it.
     """
-    command = arguments.get("command")
+    command = arguments.get(command_field)
     if not isinstance(command, str):
         return None
     try:
@@ -613,7 +616,7 @@ def bash_items(arguments: Mapping[str, Any]) -> Optional[List[Dict[str, Any]]]:
                 field = "flag_" + re.sub(r"[^A-Za-z0-9_]", "_", name)
                 if len(field) <= ARGUMENT_NAME_MAX:
                     fields[field] = value
-        item: Dict[str, Any] = {"id": index, "tool_namespace": AGENT, "tool_name": "Bash", "arguments": fields}
+        item: Dict[str, Any] = {"id": index, "tool_namespace": AGENT, "tool_name": tool_name, "arguments": fields}
         if index and part.after in SEQUENTIAL_SEPARATORS:
             item["dependencies"] = [index - 1]
         items.append(item)
