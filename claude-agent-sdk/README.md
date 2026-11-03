@@ -209,6 +209,20 @@ A deny returns:
 
 The agent sees the reason as the tool result.
 
+### Shell commands
+
+A `claude_agent_sdk:Bash` call goes to Mezmo as one item per part of its
+command, split where Claude Code splits Bash commands (`&&`, `||`, `;`, `|`,
+`|&`, `&` and new lines). Each part carries `command` and, when the hooks can
+read it, `program`, `arg_1` to `arg_10` and a `flag_<name>` field per flag.
+The first part also carries `full_command` and the call's other input. Mezmo
+decides every part and goes with the strictest answer. The field and flag
+tables, and what these fields can't stop, are in the Claude Code README's
+[Bash commands](../claude-code/README.md#bash-commands).
+
+The `Bash` tool runs bash on every OS, Git Bash on Windows, so commands split
+there too.
+
 ## Troubleshooting
 
 `doctor` does not check this library: its setup lives in app code. The

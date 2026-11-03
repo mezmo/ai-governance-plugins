@@ -27,6 +27,7 @@ from mezmo_governance_claude_agent_sdk.client import call_digest  # noqa: E402
 from mezmo_governance_claude_agent_sdk.hooks import (  # noqa: E402
     PRE_TOOL_USE_TIMEOUT_SECONDS,
     create_pre_tool_use,
+    hook_payload,
     mezmo_governance_hooks,
     post_tool_use,
 )
@@ -120,6 +121,20 @@ class PreToolUseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((item["tool_namespace"], item["tool_name"]), ("claude_agent_sdk", "Bash"))
 
     @patch.dict(os.environ, ENV)
+    async def test_a_bash_command_is_sent_as_one_item_per_part(self) -> None:
+        http = FakeHttp([(200, {"approved": True})])
+        tool_input = {"command": "cd /repo && rm -rf build"}
+        event = pre_event(tool_name="Bash", tool_input=tool_input)
+        self.assertEqual(await create_pre_tool_use(http=http)(event, "toolu_01", {"signal": None}), {})
+        payload = http.calls[0][2]
+        assert payload is not None
+        self.assertEqual([item["arguments"]["command"] for item in payload["items"]], ["cd /repo", "rm -rf build"])
+        self.assertEqual(
+            payload["request_id"],
+            "claude_agent_sdk:sess-1:toolu_01#" + call_digest("claude_agent_sdk", "Bash", tool_input),
+        )
+
+    @patch.dict(os.environ, ENV)
     async def test_denied_call_carries_the_reason(self) -> None:
         http = FakeHttp([(200, {"approved": False, "reason": "deletes need a person"})])
         output = await create_pre_tool_use(http=http)(pre_event(), "toolu_01", {"signal": None})
@@ -194,6 +209,83 @@ class PreToolUseTests(unittest.IsolatedAsyncioTestCase):
         output = await create_pre_tool_use(http=http)(pre_event(), "toolu_01", {"signal": None})
         self.assertIn("could not authorize this exact tool call", reason(output))
         self.assertIn("boom", reason(output))
+
+
+class ShellCommandPartsTests(unittest.TestCase):
+    def input(self, tool_name: str = "Bash", **tool_input: Any) -> dict[str, Any]:
+        tool_input = tool_input or {"command": "cd /repo && rm -rf build", "description": "Clean"}
+        return {"session_id": "s", "tool_name": tool_name, "tool_input": tool_input}
+
+    def test_a_bash_call_goes_as_parts(self) -> None:
+        items = hook_payload(self.input(), "t")["items"]
+        self.assertEqual(
+            items,
+            [
+                {
+                    "id": 0,
+                    "tool_namespace": "claude_agent_sdk",
+                    "tool_name": "Bash",
+                    "arguments": {
+                        "full_command": "cd /repo && rm -rf build",
+                        "description": "Clean",
+                        "command": "cd /repo",
+                        "program": "cd",
+                        "arg_1": "/repo",
+                    },
+                },
+                {
+                    "id": 1,
+                    "tool_namespace": "claude_agent_sdk",
+                    "tool_name": "Bash",
+                    "arguments": {
+                        "command": "rm -rf build",
+                        "program": "rm",
+                        "arg_1": "build",
+                        "flag_r": True,
+                        "flag_f": True,
+                    },
+                    "dependencies": [0],
+                },
+            ],
+        )
+
+    def test_the_call_splits_on_every_os(self) -> None:
+        # The Bash tool runs bash, Git Bash on Windows, so the host's OS doesn't matter.
+        split = hook_payload(self.input(), "t")
+        with patch("os.name", "nt"):
+            on_windows = hook_payload(self.input(), "t")
+        self.assertEqual(on_windows, split)
+        self.assertEqual(len(on_windows["items"]), 2)
+
+    def test_splitting_leaves_the_request_id_to_the_whole_input(self) -> None:
+        tool_input = {"command": "cd /repo && rm -rf build", "description": "Clean"}
+        payload = hook_payload(self.input(), "t")
+        self.assertTrue(
+            payload["request_id"].endswith("#" + call_digest("claude_agent_sdk", "Bash", tool_input))
+        )
+
+    def test_an_mcp_tool_goes_whole(self) -> None:
+        items = hook_payload(self.input("mcp__box__Bash"), "t")["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["tool_namespace"], "box")
+
+    def test_a_command_that_is_not_a_string_goes_whole(self) -> None:
+        items = hook_payload(self.input(command=["rm", "-rf", "build"]), "t")["items"]
+        self.assertEqual(
+            items,
+            [
+                {
+                    "id": 0,
+                    "tool_namespace": "claude_agent_sdk",
+                    "tool_name": "Bash",
+                    "arguments": {"command": ["rm", "-rf", "build"]},
+                }
+            ],
+        )
+
+    def test_another_built_in_tool_goes_whole(self) -> None:
+        items = hook_payload(self.input("Write", command="a && b"), "t")["items"]
+        self.assertEqual(len(items), 1)
 
 
 class RawHandler(BaseHTTPRequestHandler):

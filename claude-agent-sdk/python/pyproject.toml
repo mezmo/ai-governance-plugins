@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mezmo-governance-claude-agent-sdk"
-version = "0.1.0"
+version = "0.2.0"
 description = "Claude Agent SDK hooks that gate tool calls through Mezmo Governance"
 license = "Apache-2.0"
 requires-python = ">=3.10"
