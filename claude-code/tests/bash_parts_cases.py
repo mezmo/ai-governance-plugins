@@ -129,6 +129,17 @@ CASES: list[tuple[dict, str, str]] = [
     bash("echo héllo -é"),
     bash("ls ²>/dev/null"),
     bash("ls --" + "é" * 62),
+    bash("ls --" + "😀" * 30),
+    bash("ls --" + "é" * 59),
+    bash("\x1cls\x1c"),
+    bash("\ufeffls"),
+    bash("\x85ls"),
+    bash("\x1cls\x1c && \ufeffpwd\x85"),
+    bash("echo \\😀"),
+    bash("ls -𝐀x"),
+    bash("ls ¹>/dev/null"),
+    bash("timeout ٣٠ npm test"),
+    bash("stdbuf -oL\x1c tail -f app.log"),
     # The input's other fields travel with the first item.
     ({"command": "git push origin main && rm -rf /tmp/x", "description": "Push"}, "Bash", "command"),
     # Another agent's shell tool, with its own tool and field names.
