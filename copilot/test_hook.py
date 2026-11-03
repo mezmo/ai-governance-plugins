@@ -318,6 +318,65 @@ class CopilotGovernanceHookTests(unittest.TestCase):
         self.assertIn("disk full", stderr.getvalue())
 
 
+class ShellCommandPartsTests(unittest.TestCase):
+    COMMAND = "cd /repo && rm -rf build"
+
+    def parts(self, tool_name: str) -> list[dict[str, Any]]:
+        return [
+            {"id": 0, "tool_namespace": "copilot", "tool_name": tool_name, "arguments": {
+                "full_command": "cd /repo && rm -rf build", "command": "cd /repo", "program": "cd", "arg_1": "/repo"}},
+            {"id": 1, "tool_namespace": "copilot", "tool_name": tool_name, "arguments": {
+                "command": "rm -rf build", "program": "rm", "arg_1": "build", "flag_r": True, "flag_f": True},
+             "dependencies": [0]},
+        ]
+
+    def cli_call(self, tool_name: str = "bash") -> dict[str, Any]:
+        event = hook_event("preToolUse")
+        event["toolName"] = tool_name
+        event["toolArgs"] = json.dumps({"command": self.COMMAND})
+        return event
+
+    def vscode_call(self, tool_name: str = "run_in_terminal") -> dict[str, Any]:
+        event = vscode_event()
+        event["tool_name"] = tool_name
+        event["tool_input"] = {"command": self.COMMAND}
+        return event
+
+    def test_a_shell_call_goes_as_parts_in_either_payload(self) -> None:
+        for tool_name in ("bash", "Bash"):
+            with self.subTest(payload="cli", tool=tool_name):
+                items = hook.approval_payload(self.cli_call(tool_name), "preToolUse")["items"]
+                self.assertEqual(items, self.parts(tool_name))
+        for tool_name in ("run_in_terminal", "bash", "Bash"):
+            with self.subTest(payload="vscode", tool=tool_name):
+                items = hook.approval_payload(self.vscode_call(tool_name), "PreToolUse")["items"]
+                self.assertEqual(items, self.parts(tool_name))
+
+    def test_a_powershell_call_goes_whole(self) -> None:
+        for payload, event in (("cli", self.cli_call("powershell")), ("vscode", self.vscode_call("powershell"))):
+            with self.subTest(payload=payload):
+                items = hook.approval_payload(event, "preToolUse")["items"]
+                self.assertEqual(items, [{"id": 0, "tool_namespace": "copilot", "tool_name": "powershell",
+                                          "arguments": {"command": self.COMMAND}}])
+
+    def test_splitting_leaves_the_identity_to_the_whole_input(self) -> None:
+        for event, tool_name, event_name in (
+            (self.cli_call(), "bash", "preToolUse"),
+            (self.vscode_call(), "run_in_terminal", "PreToolUse"),
+        ):
+            with self.subTest(tool=tool_name):
+                split = hook.approval_payload(event, event_name)
+                with patch.object(hook.os, "name", "nt"):
+                    whole = hook.approval_payload(event, event_name)
+                digest = "#" + hook.call_digest("copilot", tool_name, {"command": self.COMMAND})
+                self.assertTrue(split["request_id"].endswith(digest))
+                self.assertTrue(whole["request_id"].endswith(digest))
+                self.assertEqual(whole["items"], [{"id": 0, "tool_namespace": "copilot", "tool_name": tool_name,
+                                                   "arguments": {"command": self.COMMAND}}])
+                if "tool_use_id" in event:  # VS Code Local sends one, so the parts and the whole call are one decision
+                    self.assertEqual(split["decision_id"], whole["decision_id"])
+
+
 class PollingTests(unittest.TestCase):
     @patch.dict(os.environ, ENV)
     def test_a_call_sent_for_approval_polls_until_mezmo_decides(self) -> None:

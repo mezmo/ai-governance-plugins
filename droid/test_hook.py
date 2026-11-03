@@ -252,6 +252,44 @@ class DroidGovernanceHookTests(unittest.TestCase):
         self.assertIn("disk full", stderr.getvalue())
 
 
+class ShellCommandPartsTests(unittest.TestCase):
+    COMMAND = "cd /repo && rm -rf build"
+
+    def event(self, tool_name: str = "Execute") -> dict[str, Any]:
+        event = shell_event("PreToolUse")
+        event["tool_name"] = tool_name
+        event["tool_input"] = {"command": self.COMMAND}
+        return event
+
+    def test_an_execute_call_goes_as_parts(self) -> None:
+        items = hook.approval_payload(self.event())["items"]
+
+        self.assertEqual(items, [
+            {"id": 0, "tool_namespace": "droid", "tool_name": "Execute", "arguments": {
+                "full_command": "cd /repo && rm -rf build", "command": "cd /repo", "program": "cd", "arg_1": "/repo"}},
+            {"id": 1, "tool_namespace": "droid", "tool_name": "Execute", "arguments": {
+                "command": "rm -rf build", "program": "rm", "arg_1": "build", "flag_r": True, "flag_f": True},
+             "dependencies": [0]},
+        ])
+
+    def test_splitting_leaves_the_identity_to_the_whole_input(self) -> None:
+        digest = "#" + hook.call_digest("droid", "Execute", {"command": self.COMMAND})
+        split = hook.approval_payload(self.event())
+        with patch.object(hook.os, "name", "nt"):
+            whole = hook.approval_payload(self.event())
+
+        self.assertTrue(split["request_id"].endswith(digest))
+        self.assertTrue(whole["request_id"].endswith(digest))
+        self.assertEqual(whole["items"], [{"id": 0, "tool_namespace": "droid", "tool_name": "Execute",
+                                           "arguments": {"command": self.COMMAND}}])
+
+    def test_an_mcp_tool_named_execute_goes_whole(self) -> None:
+        items = hook.approval_payload(self.event("mcp__box__Execute"))["items"]
+
+        self.assertEqual(items, [{"id": 0, "tool_namespace": "box", "tool_name": "Execute",
+                                  "arguments": {"command": self.COMMAND}}])
+
+
 class PollingTests(unittest.TestCase):
     @patch.dict(os.environ, ENV)
     def test_a_call_sent_for_approval_polls_until_mezmo_decides(self) -> None:
