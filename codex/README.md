@@ -174,6 +174,21 @@ Trust the hooks in `codex` `/hooks` first: Zed shows no hook status, so an untru
 is skipped without a sign. Set `CODEX_PATH` in `agent_servers.codex-acp.env` to your
 installed `codex`; the adapter bundles an older one. Verified live in Zed 1.24.2.
 
+### Shell commands
+
+A `codex:Bash` call goes to Mezmo as one item per part of its command, split
+where Claude Code splits Bash commands (`&&`, `||`, `;`, `|`, `|&`, `&` and new
+lines). Each part carries `command` and, when the plugin can read it,
+`program`, `arg_1` to `arg_10` and a `flag_<name>` field per flag. The first
+part also carries `full_command` and the call's other input. Mezmo decides
+every part and goes with the strictest answer. The field and flag tables, and
+what these fields can't stop, are in the Claude Code README's
+[Bash commands](../claude-code/README.md#bash-commands).
+
+On Windows the command goes whole, as one item, because the agent runs it in
+PowerShell or cmd. A non-bash shell on macOS or Linux, such as fish, isn't
+detected.
+
 ## Windows
 
 The example command uses POSIX shell syntax (`${VAR:-default}`, `$HOME`) and
