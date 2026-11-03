@@ -74,13 +74,39 @@ Rules:
 - Each item needs `tool_name`. Plugins always send `tool_namespace`. If you omit
   it, Mezmo treats it as `"default"`. `arguments` is the JSON object the tool will
   receive. `id` is `0` for the single-item requests these plugins send.
-- The Claude Code plugin sends a Bash call as one item per part of the command,
-  with ids from `0`, up to 50 parts (Mezmo takes 100 items). Each item's
-  `arguments` hold the part's `command` and, when the plugin could read it,
-  `program`, `arg_1` to `arg_10`, and a `flag_<name>` field per flag. The first item also holds `full_command`
-  and the call's other input. An item that runs after the one before it lists
-  that id in `dependencies`. Mezmo decides each item and answers with the
-  strictest decision. See [claude-code/README.md](../claude-code/README.md#bash-commands).
+- An adapter whose agent has a shell tool sends each call to it as one item per
+  part of the command, with ids from `0`, up to 50 parts (Mezmo takes 100
+  items). Each item's `arguments` hold the part's `command` and, when the
+  adapter could read it, `program`, `arg_1` to `arg_10`, and a `flag_<name>`
+  field per flag. The first item also holds `full_command` and the call's other
+  input. An item that runs after the one before it lists that id in
+  `dependencies`. `tool_namespace` and `tool_name` stay the agent's own, and
+  `request_id` and `decision_id` still hash the call's whole input. A command
+  the adapter can't split goes as one item. Mezmo decides each item and answers
+  with the strictest decision. See
+  [claude-code/README.md](../claude-code/README.md#bash-commands). Only a call
+  in the adapter's own namespace splits, so an MCP tool that happens to be
+  called `shell` goes whole.
+
+  | Adapter | Shell tool | Command field | On Windows |
+  | --- | --- | --- | --- |
+  | Claude Code | `Bash` | `command` | Splits |
+  | Claude Agent SDK (Python and TypeScript) | `Bash` | `command` | Splits |
+  | Codex | `Bash` | `command` | Whole |
+  | GitHub Copilot | `bash` (CLI), `run_in_terminal` (VS Code), `Bash` (VS Code, Claude-format `PreToolUse` entry) | `command` | Whole. `powershell` is always whole |
+  | Cursor | `Shell` | `command` | Whole |
+  | Droid | `Execute` | `command` | Whole |
+  | Gemini CLI | `run_shell_command` | `command` | Whole |
+  | Goose | `shell` | `command` | Whole |
+  | Windsurf | `run_command` | `command_line` | Whole |
+  | Antigravity CLI | `run_command` | `CommandLine` | Whole |
+  | OpenCode | `shell` (2.x), `bash` (1.x) | `command` | Whole |
+  | Pi | `bash` | `command` | Whole. `powershell` is always whole |
+
+  Claude Code and the Claude Agent SDK run bash on every OS (Git Bash on
+  Windows), so they split everywhere. The other agents run commands in
+  PowerShell or cmd on Windows, which the bash parser would misread, so the
+  command goes whole there.
 - Length limits: `decision_id`, `request_id` and `scope.session_id` 128
   characters, `tool_name` and `tool_namespace` 128, `tool_call_intent` 2048.
   Top-level argument names must match `^[a-zA-Z_][a-zA-Z0-9_]*$`, 64 characters

@@ -86,7 +86,7 @@ test("tool_call returns nothing when Mezmo approves", async () => {
     },
   );
   assert.equal(sent.request_id, `pi:sess-1:call-1#${callDigest("bash", { command: "ls" })}`);
-  assert.deepEqual(sent.items[0].arguments, { command: "ls" });
+  assert.deepEqual(sent.items[0].arguments, { command: "ls", program: "ls" });
 });
 
 test("without a Pi session id, the session is one random id per process", async () => {
@@ -188,4 +188,46 @@ test("tool_result leaves arguments_changed out when the input is unchanged", asy
     await pi.toolResult({ toolName: "bash", toolCallId: "call-4", input, content: [], isError: false });
     assert.equal((await auditLine(audit)).arguments_changed, undefined);
   });
+});
+
+const COMPOUND = "cd /repo && rm -rf build";
+
+async function itemsSent(toolName: string, command: string) {
+  let sent: Record<string, any> = {};
+  await withRuntime(
+    async (_url, init) => {
+      sent = JSON.parse(String(init?.body));
+      return { status: 200, text: async () => '{"approved":true}' };
+    },
+    async () => {
+      await fakePi().toolCall({ toolName, toolCallId: "call-1", input: { command } });
+    },
+  );
+  return sent;
+}
+
+test("tool_call sends a bash command as one item per part", async () => {
+  const sent = await itemsSent("bash", COMPOUND);
+  assert.equal(sent.items.length, 2);
+  assert.equal(sent.items[0].arguments.command, "cd /repo");
+  assert.equal(sent.items[1].arguments.program, "rm");
+  assert.deepEqual(sent.items[1].dependencies, [0]);
+  // Splitting leaves the ids alone: they hash the call's whole input.
+  assert.equal(sent.request_id, `pi:sess-1:call-1#${callDigest("bash", { command: COMPOUND })}`);
+});
+
+test("tool_call sends a bash command whole on Windows", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    const sent = await itemsSent("bash", COMPOUND);
+    assert.deepEqual(sent.items.map((item: any) => item.arguments), [{ command: COMPOUND }]);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+});
+
+test("tool_call sends a powershell command whole", async () => {
+  const sent = await itemsSent("powershell", COMPOUND);
+  assert.deepEqual(sent.items.map((item: any) => item.arguments), [{ command: COMPOUND }]);
 });

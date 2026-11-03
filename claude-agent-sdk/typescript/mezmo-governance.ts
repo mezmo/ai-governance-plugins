@@ -86,6 +86,8 @@ export function createMezmoGovernanceHooks(options: { fetchImpl?: FetchLike } = 
         toolName: requiredString(input.tool_name, "tool_name"),
         arguments: argumentsObject(input.tool_input),
         eventName: "PreToolUse",
+        // The Bash tool runs bash on every OS (Git Bash on Windows), so it splits everywhere.
+        shellCommandField: input.tool_name === "Bash" ? "command" : undefined,
       });
       const decision = await authorize(payload, { fetchImpl: options.fetchImpl });
       if (decision.approved) {
