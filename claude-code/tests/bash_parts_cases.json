@@ -273,6 +273,180 @@
   },
   {
     "input": {
+      "command": "git pu\\\nsh --force origin main"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "git pu\\\nsh --force origin main",
+          "program": "git",
+          "arg_1": "push",
+          "arg_2": "origin",
+          "arg_3": "main",
+          "flag_force": true
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "echo 'pu\\\nsh' \"pu\\\nsh\""
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "echo 'pu\\\nsh' \"pu\\\nsh\"",
+          "program": "echo",
+          "arg_1": "pu\\\nsh",
+          "arg_2": "push"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "echo a\\\\\nrm -rf x"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "echo a\\\\\nrm -rf x",
+          "command": "echo a\\\\",
+          "program": "echo",
+          "arg_1": "a\\"
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "rm -rf x",
+          "program": "rm",
+          "arg_1": "x",
+          "flag_r": true,
+          "flag_f": true
+        },
+        "dependencies": [
+          0
+        ]
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "ls # note \\\nrm -rf x"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "ls # note \\\nrm -rf x",
+          "command": "ls # note \\",
+          "program": "ls"
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "rm -rf x",
+          "program": "rm",
+          "arg_1": "x",
+          "flag_r": true,
+          "flag_f": true
+        },
+        "dependencies": [
+          0
+        ]
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "true &\\\n& ls |\\\n& cat 2\\\n>/dev/null"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": [
+      {
+        "id": 0,
+        "tool_name": "Bash",
+        "arguments": {
+          "full_command": "true &\\\n& ls |\\\n& cat 2\\\n>/dev/null",
+          "command": "true",
+          "program": "true"
+        }
+      },
+      {
+        "id": 1,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "ls",
+          "program": "ls"
+        },
+        "dependencies": [
+          0
+        ]
+      },
+      {
+        "id": 2,
+        "tool_name": "Bash",
+        "arguments": {
+          "command": "cat 2\\\n>/dev/null",
+          "program": "cat"
+        }
+      }
+    ]
+  },
+  {
+    "input": {
+      "command": "cat <\\\n<EOF\nrm -rf /\nEOF"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": null
+  },
+  {
+    "input": {
+      "command": "echo $\\\n(whoami)"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": null
+  },
+  {
+    "input": {
+      "command": "echo \"$\\\n(id)\""
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": null
+  },
+  {
+    "input": {
+      "command": "ls && rm\\"
+    },
+    "tool_name": "Bash",
+    "command_field": "command",
+    "items": null
+  },
+  {
+    "input": {
       "command": "cd /repo && git push origin main"
     },
     "tool_name": "Bash",

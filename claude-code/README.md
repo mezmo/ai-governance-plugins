@@ -210,7 +210,9 @@ A part the plugin can't fully read gets no `program`, `arg_` or `flag_` fields: 
 keyword. A rule that allows by `program` can't match it, so it falls to your other rules or the
 policy's default. Write those allow rules with `eq` or `in`, because `neq` and `nin` also match a
 part with no `program`. A command the plugin can't split at all (a `$(...)` substitution,
-backticks or a heredoc) goes as one call with only Claude's input, as before.
+backticks, a heredoc or a backslash at the very end) goes as one call with only Claude's input, as
+before. A backslash at the end of a line joins the two lines, as in bash, so `pu\` at the end of
+one line and `sh` at the start of the next read as `push`.
 
 These fields are a guardrail, not a boundary. `git -C . push`, `bash -c "…"`, a script or a
 Makefile gets past a rule that sends `git push` to a person, and an option's value lands among the

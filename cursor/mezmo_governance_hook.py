@@ -311,13 +311,13 @@ class BashPart(NamedTuple):
 
 
 class Unsplittable(Exception):
-    """The command can't be split safely: an unclosed quote, a substitution or a heredoc."""
+    """The command can't be split safely: an unclosed quote, a substitution, a heredoc or a final backslash."""
 
 
 def split_command(command: str) -> Optional[List[BashPart]]:
     """The command's parts, or None when it can't be split safely or holds nothing to run."""
     try:
-        parts = _Scanner(command.replace("\\\n", " ")).run()
+        parts = _Scanner(command).run()
     except Unsplittable:
         return None
     return parts or None
@@ -458,10 +458,13 @@ class _Scanner:
                 self.add("".join(chars))
                 self.i = i + 1
                 return
-            if c == "`" or text.startswith("$(", i):
+            if c == "`" or (c == "$" and text.startswith("(", self.next_at(i))):
                 raise Unsplittable
             if c == "$":
                 self.readable = False
+            if c == "\\" and text.startswith("\n", i + 1):
+                i += 2  # a line continuation, which bash drops here too
+                continue
             if c == "\\" and i + 1 < len(text) and text[i + 1] in '$`"\\':
                 i += 1
                 c = text[i]
@@ -470,16 +473,17 @@ class _Scanner:
         raise Unsplittable
 
     def escaped(self) -> None:
-        if self.i + 1 < len(self.text):
+        if self.text.startswith("\n", self.i + 1):
+            self.i += 2  # a line continuation: bash drops it, so a word it splits stays one word
+        elif self.i + 1 < len(self.text):
             self.add(self.text[self.i + 1])
             self.i += 2
         else:
-            self.add("\\")
-            self.i += 1
+            raise Unsplittable  # bash drops it, or joins it to whatever the agent runs after the command
 
     def dollar(self) -> None:
         # $( and $(( can hold separators of their own, so the command can't be split.
-        if self.text.startswith("$(", self.i):
+        if self.text.startswith("(", self.next_at(self.i)):
             raise Unsplittable
         self.readable = False
         self.add("$")
@@ -487,13 +491,14 @@ class _Scanner:
 
     def separator(self) -> None:
         text, i = self.text, self.i
-        if text.startswith("&>", i):
+        j = self.next_at(i)
+        two = text[i] + text[j : j + 1]
+        if two == "&>":
             self.redirection()
             return
-        two = text[i : i + 2]
-        sep = two if two in ("&&", "||", "|&") else text[i]
+        sep, end = (two, j + 1) if two in ("&&", "||", "|&") else (text[i], i + 1)
         self.end_part(i)
-        self.i = self.start = i + len(sep)
+        self.i = self.start = end
         self.after = sep
 
     def redirection(self) -> None:
@@ -502,11 +507,20 @@ class _Scanner:
             self.word = None
         else:
             self.end_word()
-        op = next(op for op in REDIRECTIONS if self.text.startswith(op, self.i))
+        at = [self.i, self.next_at(self.i)]
+        at.append(self.next_at(at[1]))
+        op = next(op for op in REDIRECTIONS if "".join(self.text[j : j + 1] for j in at).startswith(op))
         if op in ("<(", ">(", "<<"):
             raise Unsplittable  # a process substitution, or a heredoc whose lines aren't commands
-        self.i += len(op)
+        self.i = at[len(op) - 1] + 1
         self.redirect = op
+
+    def next_at(self, i: int) -> int:
+        """Where the character after the one at i is. Bash drops line continuations, even inside &&."""
+        i += 1
+        while self.text.startswith("\\\n", i):
+            i += 2
+        return i
 
     def end_word(self) -> None:
         if self.word is None:
