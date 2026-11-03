@@ -172,6 +172,22 @@ Post-tool events only append the local JSONL audit log. Cursor sends
 failed call. The audit log keeps up to 2000 characters of each tool result, which can hold
 secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
+### Shell commands
+
+A `cursor:Shell` call, from either the `preToolUse` or the
+`beforeShellExecution` event, goes to Mezmo as one item per part of its
+command, split where Claude Code splits Bash commands (`&&`, `||`, `;`, `|`,
+`|&`, `&` and new lines). Each part carries `command` and, when the plugin can
+read it, `program`, `arg_1` to `arg_10` and a `flag_<name>` field per flag. The
+first part also carries `full_command` and the call's other input. Mezmo
+decides every part and goes with the strictest answer. The field and flag
+tables, and what these fields can't stop, are in the Claude Code README's
+[Bash commands](../claude-code/README.md#bash-commands).
+
+On Windows the command goes whole, as one item, because the agent runs it in
+PowerShell or cmd. A non-bash shell on macOS or Linux, such as fish, isn't
+detected.
+
 ## Troubleshooting
 
 Run `./mezmo-governance doctor --probe cursor` from the repository root.
