@@ -183,6 +183,21 @@ OpenCode sends built-in tools in namespace `opencode`. The shell tool is
 the plugin sent `opencode:shell` and `opencode:read`. Write policy for both
 shell names if you run both majors.
 
+### Shell commands
+
+An `opencode:shell` (2.x) or `opencode:bash` (1.x) call goes to Mezmo as one
+item per part of its command, split where Claude Code splits Bash commands
+(`&&`, `||`, `;`, `|`, `|&`, `&` and new lines). Each part carries `command`
+and, when the plugin can read it, `program`, `arg_1` to `arg_10` and a
+`flag_<name>` field per flag. The first part also carries `full_command` and
+the call's other input. Mezmo decides every part and goes with the strictest
+answer. The field and flag tables, and what these fields can't stop, are in the
+Claude Code README's [Bash commands](../claude-code/README.md#bash-commands).
+
+On Windows the command goes whole, as one item, because the agent runs it in
+PowerShell or cmd. A non-bash shell on macOS or Linux, such as fish, isn't
+detected.
+
 ## Troubleshooting
 
 `doctor` does not check this library: its setup lives in app code. The

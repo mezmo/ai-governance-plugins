@@ -30,7 +30,7 @@ test("tool.execute.before returns when Mezmo approves", async () => {
     },
   );
   assert.equal(sent.request_id, `opencode:ses_1:call_1#${callDigest("bash", { command: "ls" })}`);
-  assert.deepEqual(sent.items[0].arguments, { command: "ls" });
+  assert.deepEqual(sent.items[0].arguments, { command: "ls", program: "ls" });
 });
 
 test("tool.execute.before throws the reason when Mezmo denies", async () => {
@@ -123,4 +123,46 @@ test("tool.execute.before blocks non-object arguments with the governance messag
       /could not authorize this exact tool call, so OpenCode blocked it: tool arguments must be a JSON object/,
     );
   });
+});
+
+const COMPOUND = "cd /repo && rm -rf build";
+
+async function itemsSent(tool: string) {
+  let sent: Record<string, any> = {};
+  await withRuntime(
+    async (_url, init) => {
+      sent = JSON.parse(String(init?.body));
+      return { status: 200, text: async () => '{"approved":true}' };
+    },
+    async (hooks) => {
+      await hooks["tool.execute.before"]({ ...INPUT, tool }, { args: { command: COMPOUND } });
+    },
+  );
+  return sent;
+}
+
+test("tool.execute.before sends a bash command as one item per part", async () => {
+  const sent = await itemsSent("bash");
+  assert.equal(sent.items.length, 2);
+  assert.equal(sent.items[0].arguments.command, "cd /repo");
+  assert.equal(sent.items[1].arguments.program, "rm");
+  assert.deepEqual(sent.items[1].dependencies, [0]);
+  // Splitting leaves the ids alone: they hash the call's whole input.
+  assert.equal(sent.request_id, `opencode:ses_1:call_1#${callDigest("bash", { command: COMPOUND })}`);
+});
+
+test("tool.execute.before sends a bash command whole on Windows", async () => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    const sent = await itemsSent("bash");
+    assert.deepEqual(sent.items.map((item: any) => item.arguments), [{ command: COMPOUND }]);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+});
+
+test("tool.execute.before leaves other tools whole", async () => {
+  const sent = await itemsSent("task");
+  assert.deepEqual(sent.items.map((item: any) => item.arguments), [{ command: COMPOUND }]);
 });

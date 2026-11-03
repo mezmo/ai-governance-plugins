@@ -237,3 +237,45 @@ test("post-tool hooks write one audit line and never block", async () => {
     assert.match(errors.join("\n"), /could not write the local audit log/);
   });
 });
+
+const COMPOUND = "cd /repo && rm -rf build";
+
+async function itemsSent(overrides: Record<string, unknown> = {}) {
+  const { fetchImpl, seen } = fakeFetch([{ status: 200, body: '{"approved": true}' }]);
+  await pre(fetchImpl)(
+    preEvent({ tool_name: "Bash", tool_input: { command: COMPOUND }, ...overrides }),
+    "toolu_01",
+    SIGNAL,
+  );
+  return seen[0].body as Record<string, any>;
+}
+
+test("a Bash call goes as one item per part of its command", () =>
+  withEnv(ENV, async () => {
+    const body = await itemsSent();
+    assert.equal(body.items.length, 2);
+    assert.equal(body.items[0].tool_namespace, "claude_agent_sdk");
+    assert.equal(body.items[0].tool_name, "Bash");
+    assert.equal(body.items[0].arguments.command, "cd /repo");
+    assert.equal(body.items[1].arguments.program, "rm");
+    assert.deepEqual(body.items[1].dependencies, [0]);
+    // Splitting leaves the ids alone: they hash the call's whole input.
+    assert.equal(body.request_id, `claude_agent_sdk:sess-1:toolu_01#${callDigest("Bash", { command: COMPOUND })}`);
+  }));
+
+test("a Bash call splits on Windows too", () =>
+  withEnv(ENV, async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    try {
+      assert.equal((await itemsSent()).items.length, 2);
+    } finally {
+      Object.defineProperty(process, "platform", platform);
+    }
+  }));
+
+test("other tools go whole, whatever their input", () =>
+  withEnv(ENV, async () => {
+    const body = await itemsSent({ tool_name: "Task" });
+    assert.deepEqual(body.items.map((item: any) => item.arguments), [{ command: COMPOUND }]);
+  }));
