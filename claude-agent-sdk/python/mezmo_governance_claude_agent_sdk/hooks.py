@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mezmo_governance_claude_agent_sdk.bash_parts import bash_items
+from mezmo_governance_claude_agent_sdk.bash_parts import bash_items, drop_part_fields
 from mezmo_governance_claude_agent_sdk.client import (
     AGENT,
     GovernanceError,
@@ -74,6 +74,9 @@ def hook_payload(input_data: Any, tool_use_id: str | None) -> dict[str, Any]:
         parts = bash_items(arguments)
         if parts:
             payload["items"] = parts
+        else:
+            # Sent whole, it still never takes the parser's field names from the input.
+            payload["items"][0]["arguments"] = drop_part_fields(arguments)
     return payload
 
 

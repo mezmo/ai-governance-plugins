@@ -142,6 +142,12 @@ CASES: list[tuple[dict, str, str]] = [
     bash("stdbuf -oL\x1c tail -f app.log"),
     # The input's other fields travel with the first item.
     ({"command": "git push origin main && rm -rf /tmp/x", "description": "Push"}, "Bash", "command"),
+    # Except the names the parser writes, which only it may set: a part it can't read stays unread.
+    ({"command": "$X && ls", "program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls"}, "Bash", "command"),
+    ({"command": "$X", "program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls"}, "Bash", "command"),
+    ({"command": "rm -rf $(pwd)", "program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls"}, "Bash", "command"),
+    ({"command": "rm -rf build", "program": "ls", "arg_2": "x", "flag_v": True, "full_command": "ls"}, "Bash", "command"),
+    ({"command": "ls", "arg_": "kept", "arg_x": "kept", "flags": "kept", "programs": "kept"}, "Bash", "command"),
     # Another agent's shell tool, with its own tool and field names.
     ({"command_line": "cd /repo && ls", "cwd": "/repo"}, "run_command", "command_line"),
     ({"CommandLine": "ls", "Cwd": "/"}, "run_command", "CommandLine"),

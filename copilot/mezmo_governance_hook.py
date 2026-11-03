@@ -506,14 +506,31 @@ class _Scanner:
         self.parts.append(BashPart(text, program, args, flags, self.after if self.parts else None))
 
 
+def drop_part_fields(arguments: Mapping[str, Any]) -> Dict[str, Any]:
+    """A shell call's input without program, full_command, arg_<digits> or any flag_ name.
+
+    Only the parser writes these. Taken from the agent's input, they could make a part it can't
+    read look read, so a shell call never carries them from there, whether it goes as parts or
+    whole.
+    """
+    return {
+        name: value
+        for name, value in arguments.items()
+        if name not in ("program", "full_command")
+        and not name.startswith("flag_")
+        and not re.fullmatch(r"arg_[0-9]+", name)
+    }
+
+
 def bash_items(
     arguments: Mapping[str, Any], tool_name: str = "Bash", command_field: str = "command"
 ) -> Optional[List[Dict[str, Any]]]:
     """One item per part of a shell command, or None to send the call whole.
 
     The first item leads with the agent's input as received and the whole command, then each
-    item has its part's fields. A parser failure only means the call goes whole: it never
-    blocks it.
+    item has its part's fields. The input's own program, full_command, arg_<digits> and flag_
+    names are dropped, since only the parser sets those (drop_part_fields). A parser failure
+    only means the call goes whole: it never blocks it.
     """
     command = arguments.get(command_field)
     if not isinstance(command, str):
@@ -524,7 +541,7 @@ def bash_items(
         return None
     if not parts or len(parts) > MAX_BASH_PARTS:
         return None
-    rest = {name: value for name, value in arguments.items() if name != "command"}
+    rest = {name: value for name, value in drop_part_fields(arguments).items() if name != "command"}
     items = []
     for index, part in enumerate(parts):
         if len(parts) == 1:
@@ -552,12 +569,8 @@ SHELL_TOOLS = {"bash": "command", "run_in_terminal": "command", "Bash": "command
 
 
 def shell_command_field(tool_call: NormalizedToolCall) -> Optional[str]:
-    """The input field holding the command of a shell tool the agent runs, else None.
-
-    On Windows the agent runs commands in PowerShell or cmd, which the bash parser would misread,
-    so the call goes whole there.
-    """
-    if tool_call.namespace != AGENT or os.name == "nt":
+    """The input field holding the command of a shell tool the agent runs, else None."""
+    if tool_call.namespace != AGENT:
         return None
     return SHELL_TOOLS.get(tool_call.name)
 
@@ -566,12 +579,16 @@ def approval_payload(event: Mapping[str, Any], event_name: str) -> dict[str, Any
     tool_call = normalize_tool_call(event)
     identity = call_identity(event, tool_call)
     field = shell_command_field(tool_call)
-    items = (bash_items(tool_call.arguments, tool_call.name, field) if field else None) or [
+    # On Windows the agent runs commands in PowerShell or cmd, which the bash parser would
+    # misread, so a shell call goes whole there.
+    splits = field is not None and os.name != "nt"
+    items = (bash_items(tool_call.arguments, tool_call.name, field) if splits else None) or [
         {
             "id": 0,
             "tool_namespace": tool_call.namespace,
             "tool_name": tool_call.name,
-            "arguments": tool_call.arguments,
+            # Split or whole, a shell call never takes the parser's field names from the input.
+            "arguments": drop_part_fields(tool_call.arguments) if field else tool_call.arguments,
         }
     ]
     return {

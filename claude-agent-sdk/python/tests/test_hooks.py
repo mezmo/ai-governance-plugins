@@ -283,9 +283,32 @@ class ShellCommandPartsTests(unittest.TestCase):
             ],
         )
 
+    def test_the_inputs_own_part_fields_never_reach_mezmo(self) -> None:
+        # Only the parser sets these, so a part it can't read never looks read, split or whole.
+        injected = {"program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls"}
+        for command in ("rm -rf $(pwd)", "ls $DIR"):
+            with self.subTest(command=command):
+                tool_input = {"command": command, **injected}
+                payload = hook_payload(self.input(**tool_input), "t")
+                self.assertEqual(
+                    payload["items"],
+                    [
+                        {
+                            "id": 0,
+                            "tool_namespace": "claude_agent_sdk",
+                            "tool_name": "Bash",
+                            "arguments": {"command": command},
+                        }
+                    ],
+                )
+                self.assertTrue(
+                    payload["request_id"].endswith("#" + call_digest("claude_agent_sdk", "Bash", tool_input))
+                )
+
     def test_another_built_in_tool_goes_whole(self) -> None:
-        items = hook_payload(self.input("Write", command="a && b"), "t")["items"]
+        items = hook_payload(self.input("Write", command="a && b", program="ls"), "t")["items"]
         self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["arguments"], {"command": "a && b", "program": "ls"})
 
 
 class RawHandler(BaseHTTPRequestHandler):

@@ -563,10 +563,26 @@ class Scanner {
   }
 }
 
+// A shell call's input without program, full_command, arg_<digits> or any flag_ name.
+//
+// Only the parser writes these. Taken from the agent's input, they could make a part it can't
+// read look read, so a shell call never carries them from there, whether it goes as parts or
+// whole.
+export function dropPartFields(args: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(args).filter(
+      ([name]) =>
+        name !== "program" && name !== "full_command" && !name.startsWith("flag_") && !/^arg_[0-9]+$/.test(name),
+    ),
+  );
+}
+
 // One item per part of a shell command, or null to send the call whole.
 //
 // The first item leads with the agent's input as received and the whole command, then each item
-// has its part's fields. A parser failure only means the call goes whole: it never blocks it.
+// has its part's fields. The input's own program, full_command, arg_<digits> and flag_ names are
+// dropped, since only the parser sets those (dropPartFields). A parser failure only means the
+// call goes whole: it never blocks it.
 export function bashItems(
   args: Record<string, unknown>,
   toolName = "Bash",
@@ -585,7 +601,7 @@ export function bashItems(
   if (!parts || parts.length > MAX_BASH_PARTS) {
     return null;
   }
-  const rest = Object.fromEntries(Object.entries(args).filter(([name]) => name !== "command"));
+  const rest = Object.fromEntries(Object.entries(dropPartFields(args)).filter(([name]) => name !== "command"));
   const items: Record<string, unknown>[] = [];
   for (const [index, part] of parts.entries()) {
     let fields: Record<string, unknown>;
@@ -623,19 +639,22 @@ export function approvalPayload(params: {
   toolName: string;
   arguments: Record<string, unknown>;
   eventName?: string;
-  // The field holding the command, when the call is to the agent's shell tool: the command then
-  // goes as parts.
+  // The field holding the command, when the call is to the agent's shell tool. The command then
+  // goes as parts, unless splitShellCommand is false, as on a host whose shell the parser would
+  // misread. Split or whole, the call never takes the parser's field names from its input.
   shellCommandField?: string;
+  splitShellCommand?: boolean;
 }) {
   const identity = callIdentity(params.sessionId, params.toolCallId, params.toolName, params.arguments);
   const tool = splitToolName(params.toolName);
   const isShell = Boolean(params.shellCommandField) && tool.namespace === AGENT;
-  const items = (isShell ? bashItems(params.arguments, tool.name, params.shellCommandField) : null) ?? [
+  const splits = isShell && params.splitShellCommand !== false;
+  const items = (splits ? bashItems(params.arguments, tool.name, params.shellCommandField) : null) ?? [
     {
       id: 0,
       tool_namespace: tool.namespace,
       tool_name: tool.name,
-      arguments: params.arguments,
+      arguments: isShell ? dropPartFields(params.arguments) : params.arguments,
     },
   ];
   return {

@@ -192,7 +192,7 @@ test("tool_result leaves arguments_changed out when the input is unchanged", asy
 
 const COMPOUND = "cd /repo && rm -rf build";
 
-async function itemsSent(toolName: string, command: string) {
+async function itemsSent(toolName: string, command: string, more: Record<string, unknown> = {}) {
   let sent: Record<string, any> = {};
   await withRuntime(
     async (_url, init) => {
@@ -200,7 +200,7 @@ async function itemsSent(toolName: string, command: string) {
       return { status: 200, text: async () => '{"approved":true}' };
     },
     async () => {
-      await fakePi().toolCall({ toolName, toolCallId: "call-1", input: { command } });
+      await fakePi().toolCall({ toolName, toolCallId: "call-1", input: { command, ...more } });
     },
   );
   return sent;
@@ -225,6 +225,23 @@ test("tool_call sends a bash command whole on Windows", async () => {
   } finally {
     Object.defineProperty(process, "platform", platform);
   }
+});
+
+test("tool_call never sends the parser's field names from a bash call's input", async () => {
+  // Only the parser sets these, so a part it can't read never looks read, split or whole.
+  const injected = { program: "ls", arg_1: "x", flag_f: true, full_command: "ls" };
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    const sent = await itemsSent("bash", COMPOUND, injected);
+    assert.deepEqual(sent.items.map((item: any) => item.arguments), [{ command: COMPOUND }]);
+    // The ids still hash the input as Pi sent it.
+    assert.equal(sent.request_id, `pi:sess-1:call-1#${callDigest("bash", { command: COMPOUND, ...injected })}`);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+  const sent = await itemsSent("bash", "ls $DIR", injected);
+  assert.deepEqual(sent.items.map((item: any) => item.arguments), [{ command: "ls $DIR" }]);
 });
 
 test("tool_call sends a powershell command whole", async () => {

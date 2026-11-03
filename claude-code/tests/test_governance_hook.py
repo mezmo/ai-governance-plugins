@@ -949,6 +949,21 @@ class BashPartsTests(unittest.TestCase):
         names = [name for name in item["arguments"] if name.startswith("arg_")]
         self.assertEqual(names, [f"arg_{n}" for n in range(1, hook.MAX_BASH_ARGS + 1)])
 
+    def test_only_the_parser_writes_its_field_names(self) -> None:
+        # A part it can't read must not look read, so the input's own names never reach Mezmo.
+        injected = {"program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls", "arg_x": "kept"}
+        items = self.items("$X && ls", **injected)
+        self.assertEqual(items[0]["arguments"], {"full_command": "$X && ls", "arg_x": "kept", "command": "$X"})
+        self.assertEqual(items[1]["arguments"], {"command": "ls", "program": "ls"})
+        (item,) = self.items("rm -rf $(pwd)", **injected)
+        self.assertEqual(item["arguments"], {"command": "rm -rf $(pwd)", "arg_x": "kept"})
+        # The ids still hash the call as Claude Code sent it, and other tools keep their input.
+        digest = hook.call_digest("claude_code", "Bash", {"command": "rm -rf $(pwd)", **injected})
+        self.assertTrue(hook.approval_payload(bash_event("rm -rf $(pwd)", **injected))["request_id"].endswith("#" + digest))
+        event = {**hook_event("PreToolUse"), "tool_name": "mcp__terminal__run", "tool_input": {"program": "ls"}}
+        (item,) = hook.approval_payload(event)["items"]
+        self.assertEqual(item["arguments"], {"program": "ls"})
+
     def test_mcp_calls_stay_one_item(self) -> None:
         event = {**hook_event("PreToolUse"), "tool_name": "mcp__terminal__run", "tool_input": {"command": "ls && pwd"}}
         (item,) = hook.approval_payload(event)["items"]

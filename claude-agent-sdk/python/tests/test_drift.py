@@ -47,6 +47,7 @@ BASH_PARTS_DEFINITIONS = (
     "_flags_of",
     "_read_part",
     "_Scanner",
+    "drop_part_fields",
     "bash_items",
 )
 

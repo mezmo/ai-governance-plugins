@@ -70,3 +70,21 @@ test("an MCP tool goes whole even with a command field", () => {
   });
   assert.equal(payload.items.length, 1);
 });
+
+test("a shell call sent whole still leaves out the parser's field names", () => {
+  const call = {
+    sessionId: "sess-1",
+    toolCallId: "call-1",
+    toolName: "bash",
+    arguments: { command: "cd /repo && rm -rf build", program: "ls", arg_1: "x", flag_f: true, full_command: "ls" },
+  };
+  const whole = approvalPayload({ ...call, shellCommandField: "command", splitShellCommand: false });
+  assert.deepEqual(whole.items, [
+    { id: 0, tool_namespace: AGENT, tool_name: "bash", arguments: { command: "cd /repo && rm -rf build" } },
+  ]);
+  assert.equal(whole.request_id, approvalPayload(call).request_id);
+  // Any other call keeps its input as it is.
+  assert.deepEqual(approvalPayload(call).items[0].arguments, call.arguments);
+  const mcp = approvalPayload({ ...call, toolName: "mcp__box__bash", shellCommandField: "command" });
+  assert.deepEqual(mcp.items[0].arguments, call.arguments);
+});

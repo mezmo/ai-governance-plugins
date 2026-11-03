@@ -189,3 +189,19 @@ test("execute.before sends a shell command whole on Windows", async () => {
   }
   assert.deepEqual(sent[0].items.map((item: any) => item.arguments), [{ command: "cd /repo && rm -rf build" }]);
 });
+
+test("execute.before never sends the parser's field names from a shell call's input", async () => {
+  // Only the parser sets these, so a part it can't read never looks read, split or whole.
+  const sent: any[] = [];
+  const input = { command: "cd /repo && rm -rf build", program: "ls", arg_1: "x", flag_f: true, full_command: "ls" };
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    await withV2(recording(sent), async (hooks) => {
+      await hooks["execute.before"]({ ...BASE, tool: "shell", input });
+    });
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+  assert.deepEqual(sent[0].items.map((item: any) => item.arguments), [{ command: "cd /repo && rm -rf build" }]);
+});
