@@ -587,7 +587,7 @@ SHELL_TOOLS = {"Shell": "command"}
 def shell_command_field(tool_call: NormalizedToolCall) -> Optional[str]:
     """The input field holding the command of a shell tool the agent runs, else None.
 
-    On Windows Codex runs commands in PowerShell or cmd, which the bash parser would misread,
+    On Windows the agent runs commands in PowerShell or cmd, which the bash parser would misread,
     so the call goes whole there.
     """
     if tool_call.namespace != AGENT or os.name == "nt":

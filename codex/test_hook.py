@@ -731,6 +731,32 @@ class PythonFloorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+# The shell-command parser is copied from the Claude Code hook, whole, into every adapter.
+BASH_PARTS_DEFINITIONS = (
+    "MAX_BASH_PARTS",
+    "MAX_BASH_ARGS",
+    "ARGUMENT_NAME_MAX",
+    "SEQUENTIAL_SEPARATORS",
+    "SHELL_KEYWORDS",
+    "SIMPLE_WRAPPERS",
+    "ASSIGNMENT",
+    "GLOB",
+    "DURATION",
+    "NICENESS",
+    "STDBUF_OPTION",
+    "FILE_DESCRIPTOR",
+    "LETTERS",
+    "REDIRECTIONS",
+    "FlagValue",
+    "BashPart",
+    "Unsplittable",
+    "split_command",
+    "_skip_wrappers",
+    "_flags_of",
+    "_read_part",
+    "_Scanner",
+    "bash_items",
+)
 # The eight Python hook adapters are standalone copies. These shared parts must stay
 # identical so a fix in one copy reaches the others.
 SHARED_DEFINITIONS = (
@@ -769,6 +795,8 @@ SHARED_DEFINITIONS = (
     "result_preview",
     "result_has_known_error",
     "append_audit",
+    *BASH_PARTS_DEFINITIONS,
+    "shell_command_field",
 )
 SIBLING_ADAPTERS = ("cursor", "gemini-cli", "copilot", "goose", "droid", "windsurf", "antigravity")
 # The Claude Code hook is its own port (typing spellings, its own config and status file),
@@ -795,32 +823,6 @@ CLAUDE_CODE_SHARED_DEFINITIONS = (
     "decision_from_post_body",
     "result_preview",
     "append_audit",
-)
-# The shell-command parser is copied from the Claude Code hook, whole.
-BASH_PARTS_DEFINITIONS = (
-    "MAX_BASH_PARTS",
-    "MAX_BASH_ARGS",
-    "ARGUMENT_NAME_MAX",
-    "SEQUENTIAL_SEPARATORS",
-    "SHELL_KEYWORDS",
-    "SIMPLE_WRAPPERS",
-    "ASSIGNMENT",
-    "GLOB",
-    "DURATION",
-    "NICENESS",
-    "STDBUF_OPTION",
-    "FILE_DESCRIPTOR",
-    "LETTERS",
-    "REDIRECTIONS",
-    "FlagValue",
-    "BashPart",
-    "Unsplittable",
-    "split_command",
-    "_skip_wrappers",
-    "_flags_of",
-    "_read_part",
-    "_Scanner",
-    "bash_items",
 )
 
 
