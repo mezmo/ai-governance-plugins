@@ -288,6 +288,46 @@ class WindsurfGovernanceHookTests(unittest.TestCase):
         self.assertIn("disk full", stderr.getvalue())
 
 
+class ShellCommandPartsTests(unittest.TestCase):
+    COMMAND = "cd /repo && rm -rf build"
+
+    def event(self) -> dict[str, Any]:
+        return hook_event("pre_run_command", {"command_line": self.COMMAND, "cwd": "/repo"})
+
+    def test_a_shell_call_goes_as_parts_and_keeps_command_line(self) -> None:
+        items = hook.approval_payload(self.event())["items"]
+
+        self.assertEqual(items, [
+            {"id": 0, "tool_namespace": "windsurf", "tool_name": "run_command", "arguments": {
+                "full_command": "cd /repo && rm -rf build", "command_line": "cd /repo && rm -rf build", "cwd": "/repo",
+                "command": "cd /repo", "program": "cd", "arg_1": "/repo"}},
+            {"id": 1, "tool_namespace": "windsurf", "tool_name": "run_command", "arguments": {
+                "command": "rm -rf build", "program": "rm", "arg_1": "build", "flag_r": True, "flag_f": True},
+             "dependencies": [0]},
+        ])
+
+    def test_splitting_leaves_the_identity_to_the_whole_input(self) -> None:
+        digest = "#" + hook.call_digest("windsurf", "run_command", {"command_line": self.COMMAND, "cwd": "/repo"})
+        split = hook.approval_payload(self.event())
+        with patch.object(hook.os, "name", "nt"):
+            whole = hook.approval_payload(self.event())
+
+        self.assertTrue(split["request_id"].endswith(digest))
+        self.assertTrue(whole["request_id"].endswith(digest))
+        self.assertEqual(whole["items"], [{"id": 0, "tool_namespace": "windsurf", "tool_name": "run_command",
+                                           "arguments": {"command_line": self.COMMAND, "cwd": "/repo"}}])
+
+    def test_an_mcp_tool_named_run_command_goes_whole(self) -> None:
+        event = hook_event("pre_mcp_tool_use", {
+            "mcp_server_name": "box", "mcp_tool_name": "run_command",
+            "mcp_tool_arguments": {"command_line": self.COMMAND}})
+
+        items = hook.approval_payload(event)["items"]
+
+        self.assertEqual(items, [{"id": 0, "tool_namespace": "box", "tool_name": "run_command",
+                                  "arguments": {"command_line": self.COMMAND}}])
+
+
 class PollingTests(unittest.TestCase):
     @patch.dict(os.environ, ENV)
     def test_a_call_sent_for_approval_polls_until_mezmo_decides(self) -> None:
