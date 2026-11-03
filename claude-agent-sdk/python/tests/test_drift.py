@@ -11,6 +11,7 @@ PACKAGE = Path(__file__).resolve().parents[1] / "mezmo_governance_claude_agent_s
 REPO = Path(__file__).resolve().parents[3]
 LANGCHAIN_CLIENT = REPO / "langchain" / "mezmo_governance" / "client.py"
 CODEX_HOOK = REPO / "codex" / "mezmo_governance_hook.py"
+CLAUDE_CODE_HOOK = REPO / "claude-code" / "scripts" / "governance_hook.py"
 # The audit and deny helpers in hooks.py match the Codex hook's, whose deny
 # output has the same hookSpecificOutput shape as the SDK's.
 HOOK_DEFINITIONS = (
@@ -21,6 +22,32 @@ HOOK_DEFINITIONS = (
     "result_has_known_error",
     "append_audit",
     "deny_output",
+)
+# bash_parts.py is a copy of the shell-command parser in the Claude Code hook.
+BASH_PARTS_DEFINITIONS = (
+    "MAX_BASH_PARTS",
+    "MAX_BASH_ARGS",
+    "ARGUMENT_NAME_MAX",
+    "SEQUENTIAL_SEPARATORS",
+    "SHELL_KEYWORDS",
+    "SIMPLE_WRAPPERS",
+    "ASSIGNMENT",
+    "GLOB",
+    "DURATION",
+    "NICENESS",
+    "STDBUF_OPTION",
+    "FILE_DESCRIPTOR",
+    "LETTERS",
+    "REDIRECTIONS",
+    "FlagValue",
+    "BashPart",
+    "Unsplittable",
+    "split_command",
+    "_skip_wrappers",
+    "_flags_of",
+    "_read_part",
+    "_Scanner",
+    "bash_items",
 )
 
 
@@ -60,6 +87,16 @@ class DriftTests(unittest.TestCase):
         ours = top_level_definitions(PACKAGE / "hooks.py")
         theirs = top_level_definitions(CODEX_HOOK)
         for name in HOOK_DEFINITIONS:
+            with self.subTest(definition=name):
+                self.assertIn(name, ours)
+                self.assertEqual(ours[name], theirs.get(name))
+
+    def test_shell_command_parser_matches_claude_codes(self) -> None:
+        if not CLAUDE_CODE_HOOK.is_file():
+            self.skipTest("the Claude Code adapter is not checked out next to this one")
+        ours = top_level_definitions(PACKAGE / "bash_parts.py")
+        theirs = top_level_definitions(CLAUDE_CODE_HOOK)
+        for name in BASH_PARTS_DEFINITIONS:
             with self.subTest(definition=name):
                 self.assertIn(name, ours)
                 self.assertEqual(ours[name], theirs.get(name))
