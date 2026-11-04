@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from mezmo_governance_claude_agent_sdk.bash_parts import bash_items, drop_part_fields
 from mezmo_governance_claude_agent_sdk.client import (
     AGENT,
     GovernanceError,
@@ -59,12 +60,24 @@ def hook_payload(input_data: Any, tool_use_id: str | None) -> dict[str, Any]:
         raise GovernanceError("tool_input must be a JSON object")
     # A call without an id gets a random one, so it never reuses a decision.
     call_id = tool_use_id_from(input_data, tool_use_id) or f"generated-{uuid.uuid4()}"
-    return approval_payload(
-        session_id=required_string(input_data.get("session_id"), "session_id"),
+    session_id = required_string(input_data.get("session_id"), "session_id")
+    tool_name = required_string(input_data.get("tool_name"), "tool_name")
+    payload = approval_payload(
+        session_id=session_id,
         tool_call_id=call_id,
-        tool_name=required_string(input_data.get("tool_name"), "tool_name"),
+        tool_name=tool_name,
         arguments=arguments,
     )
+    # The Bash tool runs bash on every OS (Git Bash on Windows), so it splits everywhere. The
+    # ids above hash the whole input, so splitting never changes them.
+    if split_tool_name(tool_name) == (AGENT, "Bash"):
+        parts = bash_items(arguments)
+        if parts:
+            payload["items"] = parts
+        else:
+            # Sent whole, it still never takes the parser's field names from the input.
+            payload["items"][0]["arguments"] = drop_part_fields(arguments)
+    return payload
 
 
 def audit_log_path() -> Path:

@@ -319,6 +319,63 @@ class AntigravityGovernanceHookTests(unittest.TestCase):
         self.assertIn("disk full", stderr.getvalue())
 
 
+class ShellCommandPartsTests(unittest.TestCase):
+    COMMAND = "cd /repo && rm -rf build"
+
+    def event(self) -> dict[str, Any]:
+        event = hook_event("PreToolUse")
+        event["toolCall"] = {"name": "run_command", "args": {"CommandLine": self.COMMAND, "Cwd": "/repo"}}
+        return event
+
+    def test_a_shell_call_goes_as_parts_and_keeps_command_line(self) -> None:
+        items = hook.approval_payload("PreToolUse", self.event())["items"]
+
+        self.assertEqual(items, [
+            {"id": 0, "tool_namespace": "antigravity", "tool_name": "run_command", "arguments": {
+                "full_command": "cd /repo && rm -rf build", "CommandLine": "cd /repo && rm -rf build", "Cwd": "/repo",
+                "command": "cd /repo", "program": "cd", "arg_1": "/repo"}},
+            {"id": 1, "tool_namespace": "antigravity", "tool_name": "run_command", "arguments": {
+                "command": "rm -rf build", "program": "rm", "arg_1": "build", "flag_r": True, "flag_f": True},
+             "dependencies": [0]},
+        ])
+
+    def test_splitting_leaves_the_identity_to_the_whole_input(self) -> None:
+        digest = "#" + hook.call_digest("antigravity", "run_command", {"CommandLine": self.COMMAND, "Cwd": "/repo"})
+        split = hook.approval_payload("PreToolUse", self.event())
+        with patch.object(hook.os, "name", "nt"):
+            whole = hook.approval_payload("PreToolUse", self.event())
+
+        self.assertTrue(split["request_id"].endswith(digest))
+        self.assertTrue(whole["request_id"].endswith(digest))
+        self.assertEqual(whole["items"], [{"id": 0, "tool_namespace": "antigravity", "tool_name": "run_command",
+                                           "arguments": {"CommandLine": self.COMMAND, "Cwd": "/repo"}}])
+
+    def test_the_inputs_own_part_fields_never_reach_mezmo(self) -> None:
+        # Only the parser sets these, so a part it can't read never looks read, split or whole.
+        args = {"CommandLine": "ls $DIR", "Cwd": "/repo", "program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls"}
+        event = hook_event("PreToolUse")
+        event["toolCall"] = {"name": "run_command", "args": args}
+        with patch.object(hook.os, "name", "nt"):
+            whole = hook.approval_payload("PreToolUse", event)
+        split = hook.approval_payload("PreToolUse", event)
+
+        self.assertEqual(whole["items"], [{"id": 0, "tool_namespace": "antigravity", "tool_name": "run_command",
+                                           "arguments": {"CommandLine": "ls $DIR", "Cwd": "/repo"}}])
+        self.assertEqual(split["items"], [{"id": 0, "tool_namespace": "antigravity", "tool_name": "run_command",
+                                           "arguments": {"command": "ls $DIR", "CommandLine": "ls $DIR", "Cwd": "/repo"}}])
+        self.assertTrue(whole["request_id"].endswith("#" + hook.call_digest("antigravity", "run_command", args)))
+
+    def test_an_mcp_tool_named_run_command_goes_whole(self) -> None:
+        event = hook_event("PreToolUse")
+        event["toolCall"] = {"name": "call_mcp_tool", "args": {
+            "ServerName": "box", "ToolName": "run_command", "Arguments": {"CommandLine": self.COMMAND}}}
+
+        items = hook.approval_payload("PreToolUse", event)["items"]
+
+        self.assertEqual(items, [{"id": 0, "tool_namespace": "box", "tool_name": "run_command",
+                                  "arguments": {"CommandLine": self.COMMAND}}])
+
+
 class PollingTests(unittest.TestCase):
     @patch.dict(os.environ, ENV)
     def test_a_call_sent_for_approval_polls_until_mezmo_decides(self) -> None:

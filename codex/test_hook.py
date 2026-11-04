@@ -731,6 +731,37 @@ class PythonFloorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+# The shell-command parser is copied from the Claude Code hook, whole, into every adapter.
+BASH_PARTS_DEFINITIONS = (
+    "MAX_BASH_PARTS",
+    "MAX_BASH_ARGS",
+    "ARGUMENT_NAME_MAX",
+    "SEQUENTIAL_SEPARATORS",
+    "SHELL_KEYWORDS",
+    "SIMPLE_WRAPPERS",
+    "PRIVILEGE_WRAPPERS",
+    "PRIVILEGE_FLAGS",
+    "PRIVILEGE_OPTIONS",
+    "ASSIGNMENT",
+    "GLOB",
+    "DURATION",
+    "NICENESS",
+    "STDBUF_OPTION",
+    "FILE_DESCRIPTOR",
+    "LETTERS",
+    "REDIRECTIONS",
+    "FlagValue",
+    "BashPart",
+    "Unsplittable",
+    "split_command",
+    "_skip_wrappers",
+    "_command_run_by",
+    "_flags_of",
+    "_read_part",
+    "_Scanner",
+    "drop_part_fields",
+    "bash_items",
+)
 # The eight Python hook adapters are standalone copies. These shared parts must stay
 # identical so a fix in one copy reaches the others.
 SHARED_DEFINITIONS = (
@@ -769,6 +800,8 @@ SHARED_DEFINITIONS = (
     "result_preview",
     "result_has_known_error",
     "append_audit",
+    *BASH_PARTS_DEFINITIONS,
+    "shell_command_field",
 )
 SIBLING_ADAPTERS = ("cursor", "gemini-cli", "copilot", "goose", "droid", "windsurf", "antigravity")
 # The Claude Code hook is its own port (typing spellings, its own config and status file),
@@ -841,6 +874,67 @@ class SharedCoreDriftTests(unittest.TestCase):
         for name in CLAUDE_CODE_SHARED_DEFINITIONS:
             with self.subTest(definition=name):
                 self.assertEqual(claude_code.get(name), reference[name])
+
+    def test_bash_parts_match_the_claude_code_hook(self) -> None:
+        path = HOOK_PATH.parent.parent / CLAUDE_CODE_HOOK
+        if not path.is_file():
+            self.skipTest("the Claude Code hook is not checked out next to this one")
+        ours, claude_code = top_level_definitions(HOOK_PATH), top_level_definitions(path)
+        for name in BASH_PARTS_DEFINITIONS:
+            with self.subTest(definition=name):
+                self.assertEqual(ours.get(name), claude_code[name])
+
+
+class ShellCommandPartsTests(unittest.TestCase):
+    def event(self, tool_name="Bash", command="cd /repo && rm -rf build"):
+        return {"hook_event_name": "PreToolUse", "session_id": "s", "tool_use_id": "t",
+                "tool_name": tool_name, "tool_input": {"command": command}}
+
+    def test_a_bash_call_goes_as_parts(self):
+        items = hook.approval_payload(self.event())["items"]
+        self.assertEqual(items, [
+            {"id": 0, "tool_namespace": "codex", "tool_name": "Bash", "arguments": {
+                "full_command": "cd /repo && rm -rf build", "command": "cd /repo", "program": "cd", "arg_1": "/repo"}},
+            {"id": 1, "tool_namespace": "codex", "tool_name": "Bash", "arguments": {
+                "command": "rm -rf build", "program": "rm", "arg_1": "build", "flag_r": True, "flag_f": True},
+             "dependencies": [0]},
+        ])
+
+    def test_windows_sends_the_call_whole_with_the_same_identity(self):
+        split = hook.approval_payload(self.event())
+        with patch.object(hook.os, "name", "nt"):
+            whole = hook.approval_payload(self.event())
+        self.assertEqual(whole["items"], [{"id": 0, "tool_namespace": "codex", "tool_name": "Bash",
+                                           "arguments": {"command": "cd /repo && rm -rf build"}}])
+        self.assertEqual((split["decision_id"], split["request_id"]), (whole["decision_id"], whole["request_id"]))
+
+    def test_an_mcp_tool_goes_whole(self):
+        items = hook.approval_payload(self.event("mcp__box__Bash"))["items"]
+        self.assertEqual(len(items), 1)
+
+    def test_a_command_that_is_not_a_string_goes_whole(self):
+        event = self.event()
+        event["tool_input"] = {"command": ["rm", "-rf", "build"]}
+        items = hook.approval_payload(event)["items"]
+        self.assertEqual(items, [{"id": 0, "tool_namespace": "codex", "tool_name": "Bash",
+                                  "arguments": {"command": ["rm", "-rf", "build"]}}])
+
+    def test_the_inputs_own_part_fields_never_reach_mezmo(self):
+        # Only the parser sets these, so a part it can't read never looks read, split or whole.
+        tool_input = {"command": "ls $DIR", "program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls"}
+        event = self.event()
+        event["tool_input"] = tool_input
+        with patch.object(hook.os, "name", "nt"):
+            whole = hook.approval_payload(event)
+        for payload in (whole, hook.approval_payload(event)):
+            self.assertEqual(payload["items"], [{"id": 0, "tool_namespace": "codex", "tool_name": "Bash",
+                                                 "arguments": {"command": "ls $DIR"}}])
+        self.assertTrue(whole["request_id"].endswith("#" + hook.call_digest("codex", "Bash", tool_input)))
+
+    def test_splitting_leaves_the_request_id_to_the_whole_input(self):
+        parts = hook.approval_payload(self.event())
+        self.assertTrue(parts["request_id"].endswith(
+            "#" + hook.call_digest("codex", "Bash", {"command": "cd /repo && rm -rf build"})))
 
 
 PRE_EVENT = "PreToolUse"

@@ -396,6 +396,57 @@ class CursorToolOutputTests(unittest.TestCase):
         self.assertIn("demo-pod", record["result_preview"])
 
 
+class ShellCommandPartsTests(unittest.TestCase):
+    COMMAND = "cd /repo && rm -rf build"
+    PARTS = [
+        {"id": 0, "tool_namespace": "cursor", "tool_name": "Shell", "arguments": {
+            "full_command": "cd /repo && rm -rf build", "command": "cd /repo", "program": "cd", "arg_1": "/repo"}},
+        {"id": 1, "tool_namespace": "cursor", "tool_name": "Shell", "arguments": {
+            "command": "rm -rf build", "program": "rm", "arg_1": "build", "flag_r": True, "flag_f": True},
+         "dependencies": [0]},
+    ]
+
+    def event(self, name: str) -> dict[str, Any]:
+        event = hook_event(name)
+        if name == "beforeShellExecution":
+            event["command"] = self.COMMAND
+        else:
+            event["tool_name"] = "Shell"
+            event["tool_input"] = {"command": self.COMMAND}
+        return event
+
+    def test_a_shell_call_goes_as_parts_on_either_event(self) -> None:
+        for name in ("beforeShellExecution", "preToolUse"):
+            with self.subTest(event=name):
+                self.assertEqual(hook.approval_payload(self.event(name))["items"], self.PARTS)
+
+    def test_splitting_leaves_the_identity_to_the_whole_input(self) -> None:
+        digest = "#" + hook.call_digest("cursor", "Shell", {"command": self.COMMAND})
+        for name in ("beforeShellExecution", "preToolUse"):
+            with self.subTest(event=name):
+                split = hook.approval_payload(self.event(name))
+                with patch.object(hook.os, "name", "nt"):
+                    whole = hook.approval_payload(self.event(name))
+                self.assertTrue(split["request_id"].endswith(digest))
+                self.assertTrue(whole["request_id"].endswith(digest))
+                self.assertEqual(whole["items"], [
+                    {"id": 0, "tool_namespace": "cursor", "tool_name": "Shell", "arguments": {"command": self.COMMAND}}])
+                if name == "preToolUse":  # it carries a call id, so the parts and the whole call are one decision
+                    self.assertEqual(split["decision_id"], whole["decision_id"])
+
+    def test_the_inputs_own_part_fields_never_reach_mezmo(self) -> None:
+        # Only the parser sets these, so a part it can't read never looks read, split or whole.
+        tool_input = {"command": "ls $DIR", "program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls"}
+        event = self.event("preToolUse")
+        event["tool_input"] = tool_input
+        with patch.object(hook.os, "name", "nt"):
+            whole = hook.approval_payload(event)
+        for payload in (whole, hook.approval_payload(event)):
+            self.assertEqual(payload["items"], [{"id": 0, "tool_namespace": "cursor", "tool_name": "Shell",
+                                                 "arguments": {"command": "ls $DIR"}}])
+        self.assertTrue(whole["request_id"].endswith("#" + hook.call_digest("cursor", "Shell", tool_input)))
+
+
 class PollingTests(unittest.TestCase):
     @patch.dict(os.environ, ENV)
     def test_a_call_sent_for_approval_polls_until_mezmo_decides(self) -> None:

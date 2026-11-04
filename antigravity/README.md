@@ -161,6 +161,22 @@ and `Arguments`. The hook sends it with the server as the namespace, the
 server's tool name, and the tool's own arguments. The hook denies a call to an
 MCP server named `antigravity`: its tools would pass as built-ins.
 
+### Shell commands
+
+An `antigravity:run_command` call goes to Mezmo as one item per part of its
+command, split where Claude Code splits Bash commands (`&&`, `||`, `;`, `|`,
+`|&`, `&` and new lines). Each part carries `command` and, when the plugin can
+read it, `program`, `arg_1` to `arg_10` and a `flag_<name>` field per flag. The
+first part also carries `full_command` and the call's other input. The first
+part keeps `CommandLine` as Antigravity sent it, so a rule on `CommandLine`
+still matches. Mezmo decides every part and goes with the strictest answer. The
+field and flag tables, and what these fields can't stop, are in the Claude Code
+README's [Bash commands](../claude-code/README.md#bash-commands).
+
+On Windows the command goes whole, as one item, because the agent runs it in
+PowerShell or cmd. A non-bash shell on macOS or Linux, such as fish, isn't
+detected.
+
 ## What the hook sends
 
 The payload names no event, so the `hooks.json` command passes `PreToolUse` or

@@ -49,7 +49,7 @@ test("execute.before resolves when Mezmo approves", async () => {
   assert.match(sent[0].request_id, CALL_1);
   assert.equal(sent[0].origin.reason, "execute.before");
   assert.equal(sent[0].items[0].tool_name, "bash");
-  assert.deepEqual(sent[0].items[0].arguments, { command: "ls" });
+  assert.deepEqual(sent[0].items[0].arguments, { command: "ls", program: "ls" });
 });
 
 test("execute.before rejects with the reason when Mezmo denies", async () => {
@@ -163,4 +163,45 @@ test("execute.after never rejects", async () => {
   await withV2(decision({ approved: true }), async (hooks) => {
     await hooks["execute.after"]({ ...BASE, input: { n: 1n }, status: "completed", result: {} });
   });
+});
+
+test("execute.before sends a shell command as one item per part", async () => {
+  const sent: any[] = [];
+  await withV2(recording(sent), async (hooks) => {
+    await hooks["execute.before"]({ ...BASE, tool: "shell", input: { command: "cd /repo && rm -rf build" } });
+  });
+  assert.equal(sent[0].items.length, 2);
+  assert.equal(sent[0].items[0].tool_name, "shell");
+  assert.equal(sent[0].items[1].arguments.program, "rm");
+  assert.deepEqual(sent[0].items[1].dependencies, [0]);
+});
+
+test("execute.before sends a shell command whole on Windows", async () => {
+  const sent: any[] = [];
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    await withV2(recording(sent), async (hooks) => {
+      await hooks["execute.before"]({ ...BASE, tool: "shell", input: { command: "cd /repo && rm -rf build" } });
+    });
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+  assert.deepEqual(sent[0].items.map((item: any) => item.arguments), [{ command: "cd /repo && rm -rf build" }]);
+});
+
+test("execute.before never sends the parser's field names from a shell call's input", async () => {
+  // Only the parser sets these, so a part it can't read never looks read, split or whole.
+  const sent: any[] = [];
+  const input = { command: "cd /repo && rm -rf build", program: "ls", arg_1: "x", flag_f: true, full_command: "ls" };
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    await withV2(recording(sent), async (hooks) => {
+      await hooks["execute.before"]({ ...BASE, tool: "shell", input });
+    });
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+  }
+  assert.deepEqual(sent[0].items.map((item: any) => item.arguments), [{ command: "cd /repo && rm -rf build" }]);
 });

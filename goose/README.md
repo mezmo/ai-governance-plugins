@@ -154,6 +154,34 @@ The hook also denies `delegate` without asking Mezmo. A subagent that
 in 1.54.0 before this rule: with `shell` and `write` denied, a delegated
 `shell` call wrote a file, and Mezmo saw only `delegate`.
 
+### Shell commands
+
+A `goose:shell` call goes to Mezmo as one item per part of its command, split
+where Claude Code splits Bash commands (`&&`, `||`, `;`, `|`, `|&`, `&` and new
+lines). Each part carries `command` and, when the plugin can read it,
+`program`, `arg_1` to `arg_10` and a `flag_<name>` field per flag. The first
+part also carries `full_command` and the call's other input. Mezmo decides
+every part and goes with the strictest answer. The field and flag tables, and
+what these fields can't stop, are in the Claude Code README's
+[Bash commands](../claude-code/README.md#bash-commands).
+
+Existing rules on the shell tool's input may need rewriting, and this is a
+breaking change for deny rules. When a command has more than one part,
+`command` holds one part, the whole command is in `full_command` (a one-part
+command has no `full_command`, and its `command` is the whole command), and the
+call's other input, such as `cwd` or `description`, is on the first part only.
+So a rule that matches a compound command's exact `command` string, looks in
+`command` for text that spans a separator (`| sh` in `curl URL | sh`), or looks
+for another input field on a later part, silently stops matching. A deny rule
+like that now lets the command through, so add the same rule on `full_command`:
+the strictest answer wins, and a deny on the first part denies the whole call.
+
+On Windows the command goes whole, as one item, because the agent runs it in
+PowerShell or cmd. A non-bash shell on macOS or Linux, such as fish, isn't
+detected.
+
+Code Mode's `execute_bash` is still denied outright.
+
 ## What the hook sends
 
 Allow prints nothing. Deny:

@@ -61,6 +61,12 @@ function sessionId(ctx: ExtensionContext): string {
 // call whose arguments a later extension changed.
 const MAX_PENDING = 1000;
 
+// The input field holding the command of Pi's bash tool, whose commands go as parts. Pi's
+// powershell tool never splits.
+function shellCommandField(toolName: string): string | undefined {
+  return toolName === "bash" ? "command" : undefined;
+}
+
 export default function mezmoGovernance(pi: ExtensionAPI) {
   const approved = new Map<string, string>();
 
@@ -74,6 +80,9 @@ export default function mezmoGovernance(pi: ExtensionAPI) {
         toolName: event.toolName,
         arguments: args,
         eventName: "tool_call",
+        shellCommandField: shellCommandField(event.toolName),
+        // On Windows bash may be a shell the parser would misread, so the call goes whole there.
+        splitShellCommand: process.platform !== "win32",
       });
       const decision = await authorize(payload);
       if (!decision.approved) {

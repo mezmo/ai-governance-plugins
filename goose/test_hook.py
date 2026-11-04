@@ -318,6 +318,60 @@ class GooseGovernanceHookTests(unittest.TestCase):
         self.assertIn("disk full", stderr.getvalue())
 
 
+class ShellCommandPartsTests(unittest.TestCase):
+    COMMAND = "cd /repo && rm -rf build"
+
+    def event(self) -> dict[str, Any]:
+        event = shell_event("PreToolUse")
+        event["tool_input"] = {"command": self.COMMAND}
+        return event
+
+    def test_a_shell_call_goes_as_parts(self) -> None:
+        items = hook.approval_payload(self.event())["items"]
+
+        self.assertEqual(items, [
+            {"id": 0, "tool_namespace": "goose", "tool_name": "shell", "arguments": {
+                "full_command": "cd /repo && rm -rf build", "command": "cd /repo", "program": "cd", "arg_1": "/repo"}},
+            {"id": 1, "tool_namespace": "goose", "tool_name": "shell", "arguments": {
+                "command": "rm -rf build", "program": "rm", "arg_1": "build", "flag_r": True, "flag_f": True},
+             "dependencies": [0]},
+        ])
+
+    def test_splitting_leaves_the_identity_to_the_whole_input(self) -> None:
+        digest = "#" + hook.call_digest("goose", "shell", {"command": self.COMMAND})
+        split = hook.approval_payload(self.event())
+        with patch.object(hook.os, "name", "nt"):
+            whole = hook.approval_payload(self.event())
+
+        self.assertTrue(split["request_id"].endswith(digest))
+        self.assertTrue(whole["request_id"].endswith(digest))
+        self.assertEqual(split["decision_id"], whole["decision_id"])
+        self.assertEqual(whole["items"], [{"id": 0, "tool_namespace": "goose", "tool_name": "shell",
+                                           "arguments": {"command": self.COMMAND}}])
+
+    def test_the_inputs_own_part_fields_never_reach_mezmo(self) -> None:
+        # Only the parser sets these, so a part it can't read never looks read, split or whole.
+        tool_input = {"command": "ls $DIR", "program": "ls", "arg_1": "x", "flag_f": True, "full_command": "ls"}
+        event = self.event()
+        event["tool_input"] = tool_input
+        with patch.object(hook.os, "name", "nt"):
+            whole = hook.approval_payload(event)
+
+        for payload in (whole, hook.approval_payload(event)):
+            self.assertEqual(payload["items"], [{"id": 0, "tool_namespace": "goose", "tool_name": "shell",
+                                                 "arguments": {"command": "ls $DIR"}}])
+        self.assertTrue(whole["request_id"].endswith("#" + hook.call_digest("goose", "shell", tool_input)))
+
+    def test_an_extension_tool_named_shell_goes_whole(self) -> None:
+        event = self.event()
+        event["tool_name"] = event["matcher_context"] = "developer__shell"
+
+        items = hook.approval_payload(event)["items"]
+
+        self.assertEqual(items, [{"id": 0, "tool_namespace": "developer", "tool_name": "shell",
+                                  "arguments": {"command": self.COMMAND}}])
+
+
 class PollingTests(unittest.TestCase):
     @patch.dict(os.environ, ENV)
     def test_a_call_sent_for_approval_polls_until_mezmo_decides(self) -> None:

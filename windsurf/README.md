@@ -200,6 +200,20 @@ Mezmo sees each built-in action with namespace `windsurf`:
 An MCP tool arrives with its server as the namespace. The hook denies a call
 from an MCP server named `windsurf`: its tools would pass as built-ins.
 
+### Shell commands
+
+A `windsurf:run_command` call goes to Mezmo as one item per part of its
+command, split where Claude Code splits Bash commands (`&&`, `||`, `;`, `|`,
+`|&`, `&` and new lines). Each part carries `command` and, when the plugin can
+read it, `program`, `arg_1` to `arg_10` and a `flag_<name>` field per flag. The
+first part also carries `full_command` and the call's other input. The first
+part keeps `command_line` as Windsurf sent it, so a rule on `command_line`
+still matches. Mezmo decides every part and goes with the strictest answer. The
+field and flag tables, and what these fields can't stop, are in the Claude Code
+README's [Bash commands](../claude-code/README.md#bash-commands).
+
+A non-bash shell on macOS or Linux, such as fish, isn't detected.
+
 ## What the hook covers
 
 The hook gates these four Cascade hooks, one for each kind of action:

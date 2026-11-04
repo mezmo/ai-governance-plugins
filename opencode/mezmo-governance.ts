@@ -39,6 +39,14 @@ type AfterOutput = {
 const MAX_PENDING = 1000;
 type Approved = Map<string, string>;
 
+// The shell tools whose commands go as parts, with the input field holding the command: OpenCode
+// 1.x names it bash and 2.x shell.
+const SHELL_TOOLS: Record<string, string> = { bash: "command", shell: "command" };
+
+function shellCommandField(toolName: string): string | undefined {
+  return Object.hasOwn(SHELL_TOOLS, toolName) ? SHELL_TOOLS[toolName] : undefined;
+}
+
 // Ask Mezmo about one call; throw to stop it. Returns the approved arguments
 // as JSON so the after hook can tell whether they changed.
 async function gate(
@@ -50,7 +58,16 @@ async function gate(
 ): Promise<string> {
   try {
     const args = argumentsObject(rawArgs ?? {});
-    const payload = approvalPayload({ sessionId, toolCallId, toolName, arguments: args, eventName });
+    const payload = approvalPayload({
+      sessionId,
+      toolCallId,
+      toolName,
+      arguments: args,
+      eventName,
+      shellCommandField: shellCommandField(toolName),
+      // On Windows the shell may be one the parser would misread, so the call goes whole there.
+      splitShellCommand: process.platform !== "win32",
+    });
     const decision = await authorize(payload);
     if (!decision.approved) {
       const detail = decision.reason || "Policy denied the call.";
