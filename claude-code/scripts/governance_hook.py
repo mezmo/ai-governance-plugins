@@ -316,10 +316,10 @@ def origin(event: Mapping[str, Any]) -> Dict[str, Any]:
 # allows by them can't match it, and a command it can't even split is sent whole, as before.
 #
 # It splits where Claude Code splits commands for its own Bash permission rules (on &&, ||, ;,
-# |, |&, & and newlines) and skips the wrappers those rules strip. Like those rules, it can't
-# see through sh -c, scripts, aliases, or an option whose value is a separate word (the prod
-# in kubectl -n prod lands among the arguments). It lives in this file because the hook is
-# installed as one copied file.
+# |, |&, & and newlines) and skips the wrappers those rules strip, plus env and exec. Like those
+# rules, it can't see through sh -c, scripts, aliases, or an option whose value is a separate
+# word (the prod in kubectl -n prod lands among the arguments). It lives in this file because
+# the hook is installed as one copied file.
 
 # A part after one of these runs once the part before it has finished.
 SEQUENTIAL_SEPARATORS = frozenset({"&&", "||", ";", "\n"})
@@ -328,7 +328,13 @@ SHELL_KEYWORDS = frozenset({
     "!", "{", "}", "[[", "]]", "case", "do", "done", "elif", "else", "esac", "fi", "for",
     "function", "if", "in", "select", "then", "until", "while",
 })
-SIMPLE_WRAPPERS = frozenset({"builtin", "command", "nohup", "time", "xargs"})
+SIMPLE_WRAPPERS = frozenset({"builtin", "command", "exec", "nohup", "time", "xargs"})
+# These run a command as someone else. They stay the program, and the command they run follows
+# as a part of its own (_Scanner.read), as do env's with an assignment and eval's.
+PRIVILEGE_WRAPPERS = frozenset({"doas", "sudo"})
+# Their options whose form is certain: these take no value, and these take the next word.
+PRIVILEGE_FLAGS = frozenset({"-E", "-H", "-P", "-S", "-b", "-k", "-n"})
+PRIVILEGE_OPTIONS = frozenset({"-D", "-T", "-g", "-p", "-u"})
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")
 GLOB = re.compile(r"[*?\[]")
 DURATION = re.compile(r"\d+(\.\d+)?[smhd]?")
@@ -348,7 +354,7 @@ class BashPart(NamedTuple):
     program: Optional[str]  # None when the part can't be fully read
     args: Tuple[str, ...]  # positional arguments, flags left out
     flags: Tuple[Tuple[str, FlagValue], ...]  # (name, True or the value written with it)
-    after: Optional[str]  # the separator before it, None for the first part
+    after: Optional[str]  # the separator before it, None if it has none
 
 
 class Unsplittable(Exception):
@@ -370,6 +376,8 @@ def _skip_wrappers(words: Sequence[str]) -> List[str]:
     while words:
         head, rest = words[0], words[1:]
         if head in SIMPLE_WRAPPERS and rest and not rest[0].startswith("-"):
+            words = rest
+        elif head == "env" and rest and not rest[0].startswith("-") and "=" not in rest[0]:
             words = rest
         elif head == "nice" and rest:
             if rest[0] == "-n" and len(rest) > 2 and NICENESS.fullmatch(rest[1]):
@@ -393,6 +401,27 @@ def _skip_wrappers(words: Sequence[str]) -> List[str]:
         else:
             break
     return words
+
+
+def _command_run_by(words: Sequence[str]) -> List[str]:
+    """What sudo, doas or env runs, past assignments, or [] if its options aren't certain."""
+    i = 1
+    if words[0] in PRIVILEGE_WRAPPERS:
+        while i < len(words) and words[i] != "--" and words[i].startswith("-"):
+            if words[i] in PRIVILEGE_FLAGS:
+                i += 1
+            elif words[i] in PRIVILEGE_OPTIONS and i + 1 < len(words):
+                i += 2
+            else:
+                return []
+        if words[i : i + 1] == ["--"]:
+            i += 1
+    elif words[0] != "env":
+        return []
+    while i < len(words) and "=" in words[i]:
+        i += 1
+    command = list(words[i:])
+    return command if command and not command[0].startswith("-") else []
 
 
 def _flags_of(word: str) -> List[Tuple[str, FlagValue]]:
@@ -433,8 +462,9 @@ def _read_part(words: Sequence[str]) -> Tuple[Optional[str], Tuple[str, ...], Tu
 
 
 class _Scanner:
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, depth: int = 0) -> None:
         self.text = text
+        self.depth = depth  # how many evals this text is inside
         self.i = 0
         self.parts: List[BashPart] = []
         self.start = 0  # where the current part begins
@@ -590,8 +620,42 @@ class _Scanner:
         # A part with nothing to run is dropped, unless it does something unreadable (> file).
         if not words and readable:
             return
-        program, args, flags = _read_part(words) if readable else (None, (), ())
-        self.parts.append(BashPart(text, program, args, flags, self.after if self.parts else None))
+        after = self.after if self.parts else None
+        if readable:
+            self.read(text, words, after)
+        else:
+            self.parts.append(BashPart(text, None, (), (), after))
+
+    def read(self, text: str, words: Sequence[str], after: Optional[str]) -> None:
+        """Add the part, then the command it runs when it starts with sudo, doas, env or eval.
+
+        That command goes as a part of its own. Mezmo goes with the strictest answer, so a part
+        added this way can only tighten a decision: a rule that allows sudo doesn't pass what sudo
+        runs, and a rule on git sees sudo git.
+        """
+        while len(self.parts) <= MAX_BASH_PARTS:  # more parts go whole anyway
+            program, args, flags = _read_part(words)
+            self.parts.append(BashPart(text, program, args, flags, after))
+            if program is None:
+                return
+            words, after = _skip_wrappers(words), None
+            if program == "eval":
+                self.parts.extend(self.evaluated(text, words[1:]))
+                return
+            words = _command_run_by(words)
+            if not words:
+                return
+
+    def evaluated(self, text: str, words: Sequence[str]) -> List[BashPart]:
+        """The parts of what eval runs: its words joined by spaces, after a first --, as bash does."""
+        if self.depth >= MAX_BASH_PARTS:
+            raise Unsplittable  # each eval adds a part, so this many go whole anyway
+        if words[:1] == ["--"]:
+            words = words[1:]
+        try:
+            return _Scanner(" ".join(words), self.depth + 1).run()
+        except Unsplittable:
+            return [BashPart(text, None, (), (), None)]
 
 
 def drop_part_fields(arguments: Mapping[str, Any]) -> Dict[str, Any]:

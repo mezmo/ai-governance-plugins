@@ -21,6 +21,10 @@ def first(command):
     return program, args
 
 
+def programs(command):
+    return [program for _, program, _, _ in read(command)]
+
+
 class SplitTests(unittest.TestCase):
     def test_one_command(self):
         self.assertEqual(read("git status"), [("git status", "git", ["status"], None)])
@@ -52,6 +56,9 @@ class SplitTests(unittest.TestCase):
             ("xargs rm", "rm", []),
             ("stdbuf -oL tail -f app.log", "tail", ["app.log"]),
             ("timeout 5 nice git gc", "git", ["gc"]),
+            # And env and exec, which run the command as it is.
+            ("env git push", "git", ["push"]),
+            ("exec npm test", "npm", ["test"]),
         ):
             with self.subTest(command=command):
                 self.assertEqual(first(command), (program, args))
@@ -59,6 +66,8 @@ class SplitTests(unittest.TestCase):
     def test_a_wrapper_with_options_it_cannot_read_stays_the_program(self):
         self.assertEqual(first("timeout -s KILL 10 npm test")[0], "timeout")
         self.assertEqual(first("xargs -0 rm")[0], "xargs")
+        self.assertEqual(first("env -i ls")[0], "env")
+        self.assertEqual(first("exec -a name ls")[0], "exec")
 
     def test_sudo_and_paths_stay_as_written(self):
         self.assertEqual(first("sudo rm -rf /tmp/x"), ("sudo", ["rm", "/tmp/x"]))
@@ -138,6 +147,61 @@ class FlagTests(unittest.TestCase):
         self.assertEqual(flags("rm -- -f"), {})
         self.assertEqual(flags("cat -"), {})
         self.assertEqual(dict(hook.split_command("rm -rf $DIR")[0].flags), {})
+
+
+class RunByTests(unittest.TestCase):
+    """sudo, doas, env with an assignment and eval stay the program, and the command they run follows.
+
+    That command goes as a part of its own, right after theirs, with no separator before it.
+    """
+
+    def test_sudo_and_doas_also_send_the_command_they_run(self):
+        self.assertEqual(read("sudo git push --force origin main"), [
+            ("sudo git push --force origin main", "sudo", ["git", "push", "origin", "main"], None),
+            ("sudo git push --force origin main", "git", ["push", "origin", "main"], None),
+        ])
+        self.assertEqual(programs("doas timeout 5 rm x && ls"), ["doas", "rm", "ls"])
+        self.assertEqual(programs("sudo -u deploy -E -n npm test"), ["sudo", "npm"])
+        self.assertEqual(programs("sudo -- sudo ls"), ["sudo", "sudo", "ls"])
+        self.assertEqual(programs("nohup sudo PATH=/tmp ls"), ["sudo", "ls"])
+
+    def test_sudo_with_options_it_cannot_read_sends_only_itself(self):
+        for command in ("sudo -s rm x", "sudo -i", "sudo -l", "sudo -e notes", "sudo -uroot ls", "sudo -u", "sudo"):
+            with self.subTest(command=command):
+                self.assertEqual(programs(command), ["sudo"])
+
+    def test_env_with_an_assignment_also_sends_the_command_it_runs(self):
+        self.assertEqual(programs("env FOO=1 GIT_DIR=x git push --force"), ["env", "git"])
+        self.assertEqual(programs("env FOO=1"), ["env"])
+
+    def test_eval_also_sends_the_command_it_runs(self):
+        self.assertEqual(read('eval "git push --force; rm -rf x" && ls'), [
+            ('eval "git push --force; rm -rf x"', "eval", ["git push --force; rm -rf x"], None),
+            ("git push --force", "git", ["push"], None),
+            ("rm -rf x", "rm", ["x"], ";"),
+            ("ls", "ls", [], "&&"),
+        ])
+        # Bash joins eval's words with spaces and drops a first --.
+        self.assertEqual(read("eval -- echo a  b")[1], ("echo a b", "echo", ["a", "b"], None))
+        self.assertEqual(programs("eval \"sudo eval 'rm x'\""), ["eval", "sudo", "eval", "rm"])
+        self.assertEqual(programs("eval ''"), ["eval"])
+
+    def test_what_a_wrapper_runs_can_be_unreadable(self):
+        self.assertEqual(programs("eval 'echo $(id)'"), ["eval", None])
+        self.assertEqual(programs("sudo '*.sh'"), ["sudo", None])
+        # A part that can't be read has no program, so nothing follows it.
+        self.assertEqual(programs("sudo ls $DIR"), [None])
+
+    def test_its_part_has_no_dependency_of_its_own(self):
+        items = hook.bash_items({"command": "sudo ls && pwd"})
+        self.assertEqual(
+            [(item["arguments"].get("program"), item.get("dependencies")) for item in items],
+            [("sudo", None), ("ls", None), ("pwd", [1])],
+        )
+
+    def test_deep_nesting_goes_whole(self):
+        self.assertIsNone(hook.bash_items({"command": "sudo " * 60 + "ls"}))
+        self.assertIsNone(hook.bash_items({"command": "eval " * 60 + "ls"}))
 
 
 class UnreadableTests(unittest.TestCase):
