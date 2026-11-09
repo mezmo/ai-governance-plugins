@@ -16,7 +16,12 @@ https://api.mezmo.com/governance/workflow/authorize
 | `POST` | `$MEZMO_GOVERNANCE_URL` | Before the tool runs |
 | `GET` | `$MEZMO_GOVERNANCE_URL?decision_id=<id>` | After HTTP 207, HTTP 409, or a client timeout |
 
-Post-tool hooks only append a local JSONL file. They do not call Mezmo.
+Post-tool hooks only append a local JSONL file. They do not call the
+Governance service. The Claude Code plugin can also send each call's start and
+result to the Mezmo ledger service, but only when its ledger settings are set,
+which they are not by default. Without `MEZMO_LEDGER_KEY` it then sends the
+governance token to `MEZMO_LEDGER_URL` (see
+[claude-code/README.md](../claude-code/README.md#ledger)).
 
 ## Authentication
 
@@ -150,7 +155,7 @@ still pending. Plugins send no `response_type`, so they get `poll`.
    characters, such as `Mezmo Governance returned HTTP 403 ENOAGENT: no agent
    is registered for these credentials`. Nothing else from the reply is shown.
 10. No client follows a redirect, on the `POST` or the poll `GET`. A 3xx is
-    a deny, so the token never goes to a second URL.
+    a deny, so the token never follows a redirect to a second URL.
 
 ## Identity
 

@@ -150,7 +150,7 @@ class DoctorTestCase(unittest.TestCase):
         base = {
             key: value
             for key, value in os.environ.items()
-            if not key.startswith(("MEZMO_GOVERNANCE_", "CLAUDE_PLUGIN_OPTION_"))
+            if not key.startswith(("MEZMO_GOVERNANCE_", "MEZMO_LEDGER_", "CLAUDE_PLUGIN_OPTION_"))
             and key not in CONFIG_OVERRIDES
             and key.lower() not in {"http_proxy", "https_proxy", "all_proxy"}
         }

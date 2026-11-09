@@ -1447,7 +1447,7 @@ def check_smokes(report: Report, smokes: list) -> None:
         report.line("FAIL", "python3", f"{dotted(version)} is older than 3.9, which the hooks need", "install Python 3.9 or later")
     else:
         report.line("ok", "python3", f"{dotted(version)} at {shown(Path(python))}")
-    env = {key: value for key, value in os.environ.items() if not key.startswith(("MEZMO_GOVERNANCE_", "CLAUDE_PLUGIN_OPTION_"))}
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("MEZMO_GOVERNANCE_", "MEZMO_LEDGER_", "CLAUDE_PLUGIN_OPTION_"))}
     env.update(
         {
             "MEZMO_GOVERNANCE_URL": UNREACHABLE_URL,
