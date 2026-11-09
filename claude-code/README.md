@@ -14,11 +14,11 @@ working.
 
 ## Fail behavior
 
-Until the plugin has a key, it lets every call run and sends nothing; `MEZMO_GOVERNANCE_REQUIRED=1`
-makes it deny instead (see [Governance](#governance)). With a key, a governance hook that crashes
-or times out blocks the call on Claude Code 2.1.295 or later. Older versions ignore the hook's
-`onFailure: "block"`, so the tool runs. `--safe-mode` and `"disableAllHooks": true` turn the
-governance check off along with your other hooks.
+Until the plugin has a key, it lets every call run and sends nothing to Governance;
+`MEZMO_GOVERNANCE_REQUIRED=1` makes it deny instead (see [Governance](#governance)). With a key, a
+governance hook that crashes or times out blocks the call on Claude Code 2.1.295 or later. Older
+versions ignore the hook's `onFailure: "block"`, so the tool runs. `--safe-mode` and
+`"disableAllHooks": true` turn the governance check off along with your other hooks.
 
 Editors that run Claude Code over ACP, such as Zed, use the Claude CLI bundled with
 `@agentclientprotocol/claude-agent-acp`. An older adapter bundles an older CLI: 0.85.1 bundles
@@ -149,9 +149,10 @@ as Read, Edit and Write, don't go to Mezmo. Neither do the MCP servers the Claud
 for its own task list, panes and sessions (`ccd_turn`, `ccd_session` and the like).
 
 Governance stays off until you give it a key. Until then the hook lets every call through and
-sends nothing. Register an agent for Claude Code in Mezmo Governance, give it a service account
-with Governance permissions, and attach a policy. Then run `/mezmo:setup governance` with that
-service account's token, a standard Mezmo service key (see
+sends nothing to Governance ([ledger](#ledger) sending, if on, still records the calls). Register
+an agent for Claude Code in Mezmo Governance, give it a service account with Governance
+permissions, and attach a policy. Then run `/mezmo:setup governance` with that service account's
+token, a standard Mezmo service key (see
 [Connect to Mezmo](../README.md#connect-to-mezmo)). Setup checks the key without recording a
 decision, then saves it as a plugin option, so it lives in the system keychain rather than in a
 settings file.
@@ -221,7 +222,50 @@ arguments: `kubectl -n prod delete` has `arg_1` `prod`. So list what may run, su
 When Mezmo Governance allows a call, the hook doesn't approve it on Claude Code's behalf, so in
 auto mode Claude Code's classifier still checks it. When the classifier blocks one of these
 calls, the hook counts it and adds a `blocked_by_auto_mode` line with the classifier's reason to
-the audit log, and `/mezmo` shows the count. Mezmo itself doesn't hear about these blocks yet.
+the audit log, and `/mezmo` shows the count. Governance doesn't hear about these blocks. With
+[ledger](#ledger) sending on, each one goes to the ledger service as `agent.tool_call.not_run`.
+
+## Ledger
+
+The ledger keeps a record of the tool calls Claude Code makes. It's off by default. When it's
+on, the hook sends Mezmo one record when each Bash and MCP tool call is requested and one when it
+ends. It works with or without governance.
+
+| Event | When |
+| --- | --- |
+| `agent.tool_call.failed` | The tool ran and failed, or was interrupted |
+| `agent.tool_call.not_run` | Governance or auto mode blocked the call |
+| `agent.tool_call.ran` | The tool ran and succeeded |
+| `agent.tool_call.started` | Claude asked to run the tool |
+
+A call you reject at Claude Code's permission prompt has only `started`, because Claude Code
+runs no hook then.
+
+Each record carries the session id, a call id shared by its start and end, and the tool's name.
+`started` also carries the tool's arguments. `ran` and `failed` carry the result or error, the
+exit status and how long the tool took. `not_run` carries why the call didn't run. Arguments and
+results are cut at 4,096 characters and are not redacted.
+
+Turn it on by setting `MEZMO_LEDGER_ACCOUNT` and `MEZMO_LEDGER_URL`:
+
+| Variable | Purpose |
+| --- | --- |
+| `MEZMO_LEDGER_ACCOUNT` | Your Mezmo account id. Required |
+| `MEZMO_LEDGER_INCIDENT_KEY` | Incident the session is working on, such as `pagerduty:<incident id>`. Optional |
+| `MEZMO_LEDGER_INVESTIGATION_ID` | Investigation the session belongs to. Optional |
+| `MEZMO_LEDGER_KEY` | Mezmo service key. Optional, defaults to the governance key |
+| `MEZMO_LEDGER_SPOOL` | Retry file. Optional, defaults to `~/.mezmo/ledger-spool.jsonl` |
+| `MEZMO_LEDGER_URL` | Ledger events URL. Required |
+
+`MEZMO_LEDGER_ACCOUNT` must be the account the key belongs to. Setting `MEZMO_LEDGER_KEY` doesn't
+turn governance on. Without it, the governance key is sent to `MEZMO_LEDGER_URL`. The URL must
+use `https`, or `http` to this machine only.
+
+The ledger never blocks a tool call or changes a governance decision. If the ledger is slow or
+unreachable, the hook stops waiting after a few seconds and the call goes ahead. Records that
+can't be sent go to the retry file and are resent on later tool calls. Records the ledger refuses are
+dropped. The retry file holds the full records, including arguments and output, and is readable
+only by you. Delete it to discard what's waiting.
 
 ## Telemetry
 

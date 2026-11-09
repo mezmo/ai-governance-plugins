@@ -46,10 +46,15 @@ Known limits, not vulnerabilities:
 
 Each tool call sends Mezmo the tool name and its full arguments, plus the
 session and tool call ids. [What leaves your machine](README.md#what-leaves-your-machine)
-has the details and the exceptions: the LangChain middleware's OpenTelemetry
-span and optional `tool_call_intent`, Claude Code's opt-in telemetry and
-once-per-session ingestion key check, and Antigravity's `toolAction` and
-`toolSummary` notes.
+has the details and these exceptions:
+
+- Antigravity's `toolAction` and `toolSummary` notes.
+- Claude Code's ledger, which is off by default. When turned on, it sends
+  each Bash and MCP call's arguments and result to Mezmo's ledger service, and
+  keeps records it couldn't send in a local retry file.
+- Claude Code's opt-in telemetry and once-per-session ingestion key check.
+- The LangChain middleware's OpenTelemetry span and optional
+  `tool_call_intent`.
 
 ## Reporting a vulnerability
 

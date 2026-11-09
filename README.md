@@ -426,7 +426,8 @@ first and blocked the call with `approval still pending`.
 Before each tool call it governs (for Claude Code, each Bash and MCP tool
 call), the plugin sends Mezmo the tool name and its full arguments: the shell command, the file path, and for write tools the file
 content. It also sends the session id and the tool call id (Gemini CLI, Antigravity CLI, Copilot, Droid and Windsurf send a fresh random id per call, because they expose none; VS Code Local exposes one). Tool results are
-not sent to Mezmo: post-tool hooks only append a line to a local file.
+not sent to Mezmo: post-tool hooks only append a line to a local file. Claude
+Code's optional ledger sending, below, is the one exception.
 
 Not every plugin sends only that, and not only to the Governance service:
 
@@ -441,6 +442,14 @@ Not every plugin sends only that, and not only to the Governance service:
   the Governance service. While your settings point it at Mezmo, the plugin's
   status display also posts an empty body to that endpoint once per session
   to check the ingestion key. See [claude-code/README.md](claude-code/README.md#telemetry).
+- Claude Code's ledger sending is off by default. With `MEZMO_LEDGER_URL` and
+  `MEZMO_LEDGER_ACCOUNT` set, it sends the ledger service a record when each
+  Bash and MCP call is requested and one when it ends, with the arguments and
+  the result or error, each cut at 4,096 characters. Records that can't be sent
+  wait in a local retry file. This happens with governance on or off. When
+  `MEZMO_LEDGER_KEY` isn't set and governance is configured, it sends the
+  governance key to `MEZMO_LEDGER_URL`, whatever host that is. See
+  [claude-code/README.md](claude-code/README.md#ledger).
 - Antigravity CLI sends its built-in tools' arguments as it gets them,
   including the model's `toolAction` and `toolSummary` notes.
 
