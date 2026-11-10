@@ -9,6 +9,11 @@
             "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.codex/hooks/mezmo_governance_hook.py}\" || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }",
             "timeout": 600,
             "statusMessage": "Checking Mezmo Governance"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.codex/hooks/mezmo_ledger_hook.py\" || true",
+            "timeout": 10
           }
         ]
       }
@@ -22,6 +27,11 @@
             "command": "python3 \"${MEZMO_GOVERNANCE_HOOK:-$HOME/.codex/hooks/mezmo_governance_hook.py}\"",
             "timeout": 15,
             "statusMessage": "Recording the governed result"
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$HOME/.codex/hooks/mezmo_ledger_hook.py\" || true",
+            "timeout": 15
           }
         ]
       }

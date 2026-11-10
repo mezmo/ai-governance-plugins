@@ -3,7 +3,9 @@
 A Codex CLI command hook that asks Mezmo Governance before each tool runs. If
 Mezmo denies the call, or the hook cannot get an answer, the hook denies and
 Codex skips the tool. After an approved tool finishes, the same script appends
-a local JSONL record.
+a local JSONL record. A second hook script can send a record of each tool
+call to the Mezmo ledger service; it is off until you set it up
+(see [Ledger](#ledger)).
 The audit log keeps up to 2000 characters of each tool result, which can hold
 secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 
@@ -44,10 +46,14 @@ guard blocks those too. Codex still runs the tool when:
 The example sets the `PreToolUse` `timeout` to `600` seconds, so the script's own
 590 second deadline ends first and returns a clear deny. Keep the `timeout` at
 least 10 seconds above `MEZMO_GOVERNANCE_TIMEOUT_SECONDS`: if you lower one,
-lower the other too, or a call still pending runs the tool.
+lower the other too, or a call still pending runs the tool. The 10 seconds
+also cover the [ledger](#ledger): after a deny at the deadline, the hook may
+spend up to 3 seconds more on reporting it.
 
-Keep the guard on `PreToolUse` only. Run the [smoke test](#smoke-test) after
-each install, and check `/hooks` after each config change.
+Keep the guard on the governance `PreToolUse` command only. The ledger
+commands end in `|| true`, so they can never block a call. Run the
+[smoke test](#smoke-test) after each install, and check `/hooks` after each
+config change.
 
 ## Install
 
@@ -55,19 +61,25 @@ each install, and check `/hooks` after each config change.
 Run them from the repository root. With `CODEX_HOME` set, use `$CODEX_HOME`
 for `~/.codex`.
 
-1. Copy the hook:
+1. Copy both hook scripts, the governance hook and the ledger hook:
 
 ```bash
 mkdir -p ~/.codex/hooks
-cp codex/mezmo_governance_hook.py ~/.codex/hooks/
+cp codex/mezmo_governance_hook.py codex/mezmo_ledger_hook.py ~/.codex/hooks/
 ```
 
 2. Merge [hooks.example.json](hooks.example.json) into `~/.codex/hooks.json`, or
-   into `.codex/hooks.json` in a repo. The example path starts at `$HOME`, so it
-   works from any directory. To keep the script elsewhere, set
-   `MEZMO_GOVERNANCE_HOOK` to its absolute path. Codex runs hooks from the
-   session directory, so a relative path breaks. To run the script without
-   `python3` in front, run `chmod +x` on it first.
+   into `.codex/hooks.json` in a repo. Each event has two handlers: the
+   governance hook first, then the ledger hook. The example paths start at
+   `$HOME`, so they work from any directory. To keep the governance script
+   elsewhere, set `MEZMO_GOVERNANCE_HOOK` to its absolute path. Codex runs
+   hooks from the session directory, so a relative path breaks. To run the
+   script without `python3` in front, run `chmod +x` on it first.
+
+   The ledger script must sit beside the governance script, because each
+   imports the other from its own folder. There is no `MEZMO_LEDGER_HOOK`
+   override. If you set `MEZMO_GOVERNANCE_HOOK`, move both files to that
+   folder and edit the path in the two ledger commands by hand.
 
 3. Export the URL and the service account token. The token is a standard
    Mezmo service key, not a key of the agent; see
@@ -78,12 +90,13 @@ export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize
 export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
-4. Start Codex, run `/hooks`, and trust both Mezmo hook entries. Until you
-   trust them, Codex skips them and every tool runs ungoverned. Do not wait
-   for a warning: Codex 0.163.0 gave none for the native plugin. Trust them
-   again after each edit to the entries. Then run
-   `./mezmo-governance doctor codex`: it fails while the PreToolUse hook is
-   untrusted.
+4. Start Codex, run `/hooks`, and trust all four Mezmo hook entries: the
+   governance hook and the ledger hook, each for `PreToolUse` and for
+   `PostToolUse`. Until you trust them, Codex skips them and every tool runs
+   ungoverned. Do not wait for a warning: Codex 0.163.0 gave none for the
+   native plugin. Trust them again after each edit to the entries. Then run
+   `./mezmo-governance doctor codex`: it fails while the governance
+   PreToolUse hook is untrusted. It does not check the ledger entries.
 
 Hooks are on by default. `hooks = false` under `[features]` in
 `~/.codex/config.toml` turns them all off.
@@ -97,7 +110,9 @@ It trusts every enabled hook, not just this one, so use it only where you
 control every hook source.
 
 To gate only some tools, change `matcher`. Examples: `Bash`, `^apply_patch$`,
-`mcp__kubernetes__.*`. `apply_patch` also matches `Edit` and `Write`.
+`mcp__kubernetes__.*`. `apply_patch` also matches `Edit` and `Write`. The
+ledger handler shares the group, so a narrower `matcher` also narrows what the
+[ledger](#ledger) records.
 
 ### As a Codex plugin
 
@@ -106,11 +121,31 @@ codex plugin marketplace add mezmo/ai-governance-plugins
 codex plugin add mezmo-governance@mezmo
 ```
 
-Then trust both hooks in `/hooks`. Until you do, Codex skips them without a
+Then trust all four hooks in `/hooks`. Until you do, Codex skips them without a
 warning and every tool runs ungoverned (0.163.0). Use the plugin or the file
 install, not both: both run the hook twice. `doctor` checks the plugin's
 trust; `smoke` checks only the file install. For a headless setup, see
 [Codex CLI, Copilot CLI and Droid](../README.md#codex-cli-copilot-cli-and-droid).
+
+### Upgrading
+
+A version without the ledger hook registered two hook entries; this one
+registers four. What follows about trust was read from the Codex 0.167.0
+source.
+
+- File install: run `./mezmo-governance install codex` again, then trust the
+  two new ledger entries in `/hooks`. The two governance entries stay trusted,
+  so governance is not interrupted. If you installed by hand, copy both
+  scripts again and add the ledger handler as the last handler of each Mezmo
+  group, as in [hooks.example.json](hooks.example.json): Codex keys trust by
+  position, and a handler added at the end moves no other. Until you trust
+  the ledger entries, Codex skips them, so with the ledger on a denied call
+  sends `not_run` with no `started` and an allowed call sends nothing.
+- Native plugin: after any plugin update, Codex treats every hook of the
+  plugin as changed, the governance hooks included. Each hook then fails with
+  `plugin contents changed; hook approval required` and Codex runs the tool
+  ungoverned, until you approve all four again in `/hooks`. Approve them
+  right after each update, then run `./mezmo-governance doctor codex`.
 
 ## Verify
 
@@ -149,6 +184,9 @@ It exits 0 and prints a deny. The text after `unavailable:` varies by platform:
 ```json
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Mezmo Governance could not authorize this exact tool call, so Codex blocked it: Mezmo Governance is unavailable: <urlopen error [Errno 61] Connection refused>"}}
 ```
+
+With the [ledger](#ledger) on, a deny in this section also sends a `not_run`
+record for the made-up call. Unset `MEZMO_LEDGER_URL` first to avoid that.
 
 Then check your key with the variables from step 3 set. This asks Mezmo about
 one `echo hi` call:
@@ -246,6 +284,123 @@ is still pending, the hook denies. On input it cannot read, such as broken or
 too deeply nested JSON, or an unsupported event, it prints a deny and exits 2;
 Codex treats exit 2 as a block.
 
+## Ledger
+
+The ledger keeps a record of the tool calls Codex makes. It is off by default.
+When it is on, Mezmo gets one record when each tool call is requested and one
+when it ends. It records every tool Codex runs a hook for (matcher `.*`):
+`apply_patch`, `Bash`, MCP tools, `update_plan` and the other local tools.
+
+The ledger has its own hook script, `mezmo_ledger_hook.py`, registered as the
+second handler of each event. Codex runs it at the same time as the
+governance hook. After a deny Codex runs no `PostToolUse` hook, so the
+governance hook reports that call to the ledger itself.
+
+| Event | When |
+| --- | --- |
+| `agent.tool_call.failed` | A tool result states a failure. Codex 0.167.0 sends none; see [What Codex does not report](#what-codex-does-not-report) |
+| `agent.tool_call.not_run` | The governance hook denied the call or could not authorize it |
+| `agent.tool_call.ran` | Codex ran the `PostToolUse` hook for the call |
+| `agent.tool_call.started` | Codex asked to run the tool |
+
+Each record carries the session id, a call id shared by its start and end, and
+the tool's name. The call id is the governance `decision_id`
+([What the hook sends](#what-the-hook-sends)). `started` also carries the
+tool's arguments. `ran` and `failed` carry the result, and the exit status
+when the result states one. `not_run` carries why the call did not run.
+Arguments and results are cut at 4,096 characters and are not redacted.
+
+Turn it on by setting `MEZMO_LEDGER_ACCOUNT` and `MEZMO_LEDGER_URL`:
+
+| Variable | Purpose |
+| --- | --- |
+| `MEZMO_LEDGER_ACCOUNT` | Your Mezmo account id. Required |
+| `MEZMO_LEDGER_INCIDENT_KEY` | Incident the session is working on, such as `pagerduty:<incident id>`. Optional |
+| `MEZMO_LEDGER_INVESTIGATION_ID` | Investigation the session belongs to. Optional |
+| `MEZMO_LEDGER_KEY` | Mezmo service key. Optional, defaults to `MEZMO_GOVERNANCE_TOKEN` |
+| `MEZMO_LEDGER_SPOOL` | Retry file. Optional, defaults to `~/.mezmo/ledger-spool.jsonl` |
+| `MEZMO_LEDGER_URL` | Ledger events URL. Required |
+
+Without `MEZMO_LEDGER_KEY`, the governance token is sent to
+`MEZMO_LEDGER_URL`, whatever host that is. The URL must use `https`, or `http`
+to this machine only, and hold no user name or password. On Mezmo's dev
+environment it is `https://api.use.dev.logdna.net/v1/audit/events`.
+
+`MEZMO_LEDGER_ACCOUNT` must be the account the key belongs to. If it is not,
+the service answers 400 and the records are dropped. Records it refuses with
+a 403 are dropped too. Records it refuses with a 401 are kept for retry,
+because a fixed key will let them through.
+
+The ledger hook never blocks a tool call or changes a governance decision: it
+prints no hook output and always exits 0. If the ledger is slow or
+unreachable, it stops waiting after 3 seconds and the call goes ahead.
+Whatever it waits on, even a retry file another process holds locked, the
+hook ends within about 4 seconds; a record still unsaved then is lost. Records
+that cannot be sent go to the retry file, and each later run of the hook
+resends up to 10 of them. So do records the ledger rejects one by one, and
+records it refuses with a 408, 429 or 5xx. Records it refuses with any other
+4xx are dropped. The retry file keeps at most 200 records and drops the
+oldest past that. It holds the full records, including arguments and output,
+and is readable only by you. Delete it to discard what is waiting.
+
+Claude Code and Codex share the default retry file, and each run discards
+records saved for a different `MEZMO_LEDGER_URL`. If the two send to
+different URLs, give one its own `MEZMO_LEDGER_SPOOL`.
+
+### Governance refusals
+
+When the governance hook denies a call or cannot authorize it, it sends
+`not_run` itself. It does so only after it has printed the deny, so the
+ledger cannot change or lose the decision, and it spends at most about 3
+seconds on it. A record cut off at that limit is lost, and a slow send can
+deliver a record twice. Nothing is recorded when the deadline watchdog ends
+the hook, or for input the hook cannot read.
+
+### What Codex does not report
+
+Read from the Codex 0.167.0 source. Codex gives hooks no exit code and no
+duration, and it runs `PostToolUse` only for a call it counts as successful.
+
+| Call | Ledger records |
+| --- | --- |
+| A `Bash` command that exits non-zero, times out or is denied by the sandbox | `started`, then `ran` with no `exit_status` |
+| A call rejected at the approval prompt, a failed `apply_patch`, `apply_patch` typed into the shell (recorded as `Bash`), a long command that nothing polls, an interrupted call, or an MCP call that returns an error | `started` only |
+| A hosted tool such as `WebSearch`, or an unknown tool | Nothing: no hook runs |
+| A long command that a poll in a later turn sees finish | `started`, and a `ran` with another call id and only that poll's output |
+
+`ran` and `failed` carry `duration_ms`, measured by the plugin: the time from
+governance's approval of the call to the start of the ledger's `PostToolUse`
+hook. It includes the tool's run time, any wait at the Codex approval prompt,
+and a few tens of milliseconds to start the hook. It leaves out the governance
+check and any approval wait in Mezmo. A call has no `duration_ms` when no
+start time was saved for it, as when the ledger was off at approval, or when
+it is a long command that a poll in a later turn sees finish. The timestamps
+of `started` and `ran` give the time from request to result, the approval
+wait included.
+
+The local audit log and the ledger can disagree. For a `Bash` output that is
+itself JSON, such as `{"exit_code":1}`, the audit log may say `failed` while
+the ledger says `ran`: the ledger never parses a `Bash` string.
+
+### Session state
+
+The ledger hook reads a session's investigation and references from
+`~/.mezmo/governance/codex-sessions/<session id>.json`, when that file exists.
+An investigation there wins over `MEZMO_LEDGER_INVESTIGATION_ID`. The hook
+only reads those files, and no part of this plugin writes them yet.
+`MEZMO_GOVERNANCE_STATE_DIR` moves the folder. Claude Code reads the same
+variable, so with it set the two share one folder, and Claude Code's 7 day
+prune also removes old Codex files there. That is harmless.
+
+While the ledger is on, the governance hook has the ledger script write one
+small file for each call it approves,
+`~/.mezmo/governance/codex-calls/<decision id>`, holding the time of the
+approval. With `MEZMO_GOVERNANCE_STATE_DIR` set, the folder is `codex-calls`
+inside it. While the ledger is off, it writes nothing there. The
+ledger hook reads and deletes a call's file when the call ends, for
+`duration_ms`. A call that never reports back leaves its file, so the ledger
+hook also deletes any file there older than 7 days.
+
 ## Troubleshooting
 
 Run `./mezmo-governance doctor --probe codex` from the repository root.
@@ -255,7 +410,8 @@ error and its fix. The top cause for Codex: a hook not trusted in `/hooks`.
 ## Tests
 
 ```bash
-python3 -m unittest test_hook.py -v
+python3 -m unittest test_hook.py test_ledger.py -v
 ```
 
-From the repo root: `make test-codex`.
+`test_hook.py` covers the governance hook and `test_ledger.py` the ledger
+hook. From the repo root, `make test-codex` runs both.

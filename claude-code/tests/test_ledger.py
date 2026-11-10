@@ -356,7 +356,7 @@ class LedgerTestCase(unittest.TestCase):
         self.assertEqual(REQUIRED_FIELDS - set(event), set(), event)
         self.assertEqual(set(event) - TOP_LEVEL_FIELDS, set(), event)
         self.assertEqual(set(event["actor"]) - {"account", "pk", "type"}, set())
-        self.assertIn(event["actor"]["type"], ("user", "service", "system"))
+        self.assertEqual(event["actor"]["type"], "agent")
         self.assertEqual(set(event["application"]) - {"name", "version"}, set())
         for value in (
             event["actor"].get("account"),
@@ -494,7 +494,7 @@ class FieldTests(LedgerTestCase):
         self.assertEqual((bash["extra"]["tool_namespace"], bash["extra"]["tool_name"]), ("claude_code", "Bash"))
         self.assertEqual((mcp["extra"]["tool_namespace"], mcp["extra"]["tool_name"]), ("kubernetes_demo", "pods_delete"))
         for event in (bash, mcp):
-            self.assertEqual(event["actor"], {"account": ACCOUNT, "pk": "claude_code:session-1", "type": "service"})
+            self.assertEqual(event["actor"], {"account": ACCOUNT, "pk": "claude_code:session-1", "type": "agent"})
             self.assertEqual(event["entity_type"], "tool_call")
             self.assertEqual(event["entity_id"], "unknown")
             self.assertIs(event["internal"], False)

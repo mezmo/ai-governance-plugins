@@ -281,7 +281,7 @@ exits 1.
 | Agent | `install` name | `install` runs | Why this way |
 | --- | --- | --- | --- |
 | Claude Code | `claude-code` | `claude plugin install mezmo --marketplace <this repo> -s user`, after it uninstalls an older `mezmo-governance` plugin | `claude plugin install --help`: the marketplace may be "a path" |
-| Codex CLI | `codex` | copies the hook, merges `codex/hooks.example.json` into `hooks.json` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
+| Codex CLI | `codex` | copies the governance and ledger hooks, merges `codex/hooks.example.json` into `hooks.json` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
 | Cursor | `cursor` | copies the hook, merges `cursor/hooks.example.json` into `~/.cursor/hooks.json` | `cursor-agent plugin` only adds marketplaces from a git URL |
 | Gemini CLI | `gemini-cli` | `gemini extensions install ./gemini-cli --consent --skip-settings` | `gemini extensions install --help`: "from a git repository URL or a local path" |
 | Copilot CLI | `copilot` | copies the hook and `hooks.example.json` to `~/.copilot/hooks/` | `doctor` and `smoke` check this file install; the native plugin is [below](#codex-cli-copilot-cli-and-droid) |
@@ -294,7 +294,7 @@ exits 1.
 
 The Gemini CLI install runs with `GEMINI_CLI_TRUST_WORKSPACE=true` for that
 one command, so Gemini asks nothing and adds no folder to `trustedFolders.json`.
-Codex skips the hook until you trust it in `/hooks`. Pi loads the extension
+Codex skips its four hook entries until you trust them in `/hooks`. Pi loads the extension
 from this checkout, and Claude Code keeps it as the marketplace, so keep the
 checkout where it is. The
 libraries (LangChain, OpenAI Agents SDK, Claude Agent SDK and Mastra) are set
@@ -357,11 +357,12 @@ The same repository is a marketplace for each, and each reads its own manifest
 and gets its own adapter. Use this or `./mezmo-governance install`, not both:
 both run the hook twice. `smoke` checks only the file install; `doctor` also checks the native Codex plugin.
 
-- Codex CLI: `codex plugin marketplace add mezmo/ai-governance-plugins`, then `codex plugin add mezmo-governance@mezmo`, then trust both hooks in `/hooks`.
+- Codex CLI: `codex plugin marketplace add mezmo/ai-governance-plugins`, then `codex plugin add mezmo-governance@mezmo`, then trust all four hooks in `/hooks` (governance and ledger, for `PreToolUse` and `PostToolUse`).
   **Until you trust them, Codex skips the hooks without a warning and every tool runs ungoverned** (seen live on 0.163.0).
   `doctor` asks `codex app-server` for the trust state and fails when the PreToolUse hook is not trusted or changed since you trusted it.
   For a headless setup, `codex app-server` method `hooks/list` gives each hook's key and current hash; add a
   `[hooks.state."<key>"]` table with `trusted_hash = "<hash>"` to `$CODEX_HOME/config.toml` for each.
+  After each plugin update, approve every hook again; until then Codex runs tools ungoverned (see [Upgrading](codex/README.md#upgrading)).
 - Copilot CLI: `copilot plugin marketplace add mezmo/ai-governance-plugins`, then `copilot plugin install mezmo-governance@mezmo`.
   A local-path marketplace loads the hook from that checkout, so editing it or switching its branch changes the hook.
 - Droid: `droid plugin marketplace add mezmo/ai-governance-plugins`, then `droid plugin install mezmo-governance@ai-governance-plugins --scope user`.
@@ -375,7 +376,7 @@ does not fit your setup.
 | Agent | Hook | Fails closed? | Install |
 | --- | --- | --- | --- |
 | [Claude Code](claude-code/) | `PreToolUse` command hook (plugin), Bash and MCP calls only: Read, Edit, Write and other built-in tools run ungoverned | on a crash or timeout yes, with `onFailure: "block"`, on Claude Code 2.1.295 and later; with no key it lets every call run unless `MEZMO_GOVERNANCE_REQUIRED=1` (see [Fail behavior](claude-code/README.md#fail-behavior)) | `/plugin marketplace add mezmo/ai-governance-plugins`, then `/plugin install mezmo@mezmo` and `/mezmo:setup governance` |
-| [Codex CLI](codex/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no; an untrusted hook is skipped, also in headless `codex exec` | copy the script, merge `hooks.example.json`, trust it in `/hooks` |
+| [Codex CLI](codex/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no; an untrusted hook is skipped, also in headless `codex exec` | copy the two scripts, merge `hooks.example.json`, trust the four entries in `/hooks` |
 | [Cursor](cursor/) | `preToolUse` hook | yes, with `failClosed: true`; cloud agents do not load `~/.cursor/hooks.json` and run ungoverned (see [Fail behavior](cursor/README.md#fail-behavior)) | copy the script, merge `hooks.example.json` |
 | [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | `gemini extensions install ./gemini-cli`, or copy the script and merge `settings.example.json` |
 | [GitHub Copilot](copilot/) | `preToolUse` hook (CLI, cloud agent, VS Code on the Copilot and Local harnesses) | on a crash yes (VS Code Local needs the `\|\| exit 2` guard); on a timeout no | copy the script, add `hooks.example.json` to `~/.copilot/hooks/` |
@@ -426,8 +427,8 @@ first and blocked the call with `approval still pending`.
 Before each tool call it governs (for Claude Code, each Bash and MCP tool
 call), the plugin sends Mezmo the tool name and its full arguments: the shell command, the file path, and for write tools the file
 content. It also sends the session id and the tool call id (Gemini CLI, Antigravity CLI, Copilot, Droid and Windsurf send a fresh random id per call, because they expose none; VS Code Local exposes one). Tool results are
-not sent to Mezmo: post-tool hooks only append a line to a local file. Claude
-Code's optional ledger sending, below, is the one exception.
+not sent to Mezmo: post-tool hooks only append a line to a local file. The
+optional ledger sending of Claude Code and Codex, below, is the one exception.
 
 Not every plugin sends only that, and not only to the Governance service:
 
@@ -450,6 +451,12 @@ Not every plugin sends only that, and not only to the Governance service:
   `MEZMO_LEDGER_KEY` isn't set and governance is configured, it sends the
   governance key to `MEZMO_LEDGER_URL`, whatever host that is. See
   [claude-code/README.md](claude-code/README.md#ledger).
+- Codex's ledger sending is off by default too, and uses the same two
+  settings, limits and retry file. It records every tool Codex runs a hook
+  for, such as `apply_patch`, `Bash`, MCP tools and `update_plan`, not only
+  Bash and MCP calls. When `MEZMO_LEDGER_KEY` isn't set, it sends
+  `MEZMO_GOVERNANCE_TOKEN` to `MEZMO_LEDGER_URL`, whatever host that is. See
+  [codex/README.md](codex/README.md#ledger).
 - Antigravity CLI sends its built-in tools' arguments as it gets them,
   including the model's `toolAction` and `toolSummary` notes.
 

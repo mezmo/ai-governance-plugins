@@ -273,7 +273,7 @@ def ledger_envelope(
 ) -> Dict[str, Any]:
     """The top-level fields audit-service takes, for any entity. `event` is the event name."""
     envelope: Dict[str, Any] = {
-        "actor": {"account": account, "pk": f"{AGENT}:{session_id}", "type": "service"},
+        "actor": {"account": account, "pk": f"{AGENT}:{session_id}", "type": "agent"},
         "application": {"name": LEDGER_APPLICATION, "version": plugin_version()},
     }
     if correlation_id is not None:

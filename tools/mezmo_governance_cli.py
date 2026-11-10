@@ -36,6 +36,9 @@ LIBRARIES = (
     ("Claude Agent SDK", "claude-agent-sdk/README.md"),
     ("Mastra", "mastra/README.md"),
 )
+# Codex's second script: its own handler in each group records the call in the Mezmo ledger. The two scripts
+# import each other, so it sits beside HOOK_FILE.
+LEDGER_FILE = "mezmo_ledger_hook.py"
 # The mock denies each agent's shell tool and approves the rest.
 SHELL_TOOLS = list(dict.fromkeys(agent.shell for agent in doctor.AGENTS))
 SMOKE_KEY = "smoke-test"
@@ -315,6 +318,47 @@ def merge_steps(path: Path, example: dict, events: tuple, field: str = "command"
     return [Step(f"add the Mezmo hook entries to {shown(path)}", (path,), lambda: write_json(path, merged(load_object(path), example, field)))]
 
 
+def with_ledger(config: dict, example: dict) -> dict:
+    """The Codex config plus the example's entries, and its ledger handler for each event an older release set up without one.
+
+    Codex keys hook trust by group and handler index, so the ledger handler goes last in the group
+    that holds the first governance handler: every handler there keeps its index and its trust.
+    """
+    # An event with no governance handler takes the example's whole group, less its ledger handler where the
+    # event already runs the ledger hook.
+    current = as_dict(config.get("hooks"))
+    groups_to_add = {
+        event: [
+            {**group, "hooks": [handler for handler in group["hooks"] if not doctor.mezmo_handlers([handler], script=LEDGER_FILE)]}
+            for group in groups
+        ]
+        if doctor.mezmo_handlers(current.get(event), script=LEDGER_FILE) else groups
+        for event, groups in example["hooks"].items()
+    }
+    result = merged(config, {**example, "hooks": groups_to_add}, "command")
+    hooks = result["hooks"]
+    for event, groups in example["hooks"].items():
+        found = doctor.mezmo_handlers(hooks.get(event))
+        if not found or doctor.mezmo_handlers(hooks.get(event), script=LEDGER_FILE):
+            continue
+        g, _, group, _ = found[0]
+        if isinstance(group.get("hooks"), list):
+            added = [handler for *_, handler in doctor.mezmo_handlers(groups, script=LEDGER_FILE)]
+            hooks[event][g] = {**group, "hooks": group["hooks"] + added}
+    return result
+
+
+def ledger_steps(example: dict, path: Path) -> list:
+    """A step to add the example's entries, unless every event already runs both the hook and the ledger hook."""
+    config = load_object(path)
+    if with_ledger(config, example) == config:
+        return []
+    hooks = as_dict(config.get("hooks"))
+    # Only the ledger handlers are new to an install from before the ledger.
+    kind = "ledger hook" if all(doctor.mezmo_handlers(hooks.get(event)) for event in example["hooks"]) else "hook"
+    return [Step(f"add the Mezmo {kind} entries to {shown(path)}", (path,), lambda: write_json(path, with_ledger(load_object(path), example)))]
+
+
 def unmerge_steps(path: Path, heads: frozenset, field: str = "command", leftover: tuple = ()) -> list:
     config = load_object(path)
     if without_hook(config, field, heads) == config:
@@ -363,13 +407,15 @@ def example(adapter: str, name: str, folder: Path, default: Path) -> dict:
 
 def file_hook_agent(
     adapter: str, folder: Callable[[], Path], event: str, next_step: str, trust_by_position: bool = False,
-    default: str = "", gates: tuple = (),
+    default: str = "", gates: tuple = (), ledger: bool = False,
 ) -> Installer:
     """Codex, Cursor and Windsurf: a hook script plus entries merged into hooks.json; default is the folder under HOME.
 
     gates names each event that gates its own tools, where one event does not cover the others.
+    ledger adds the ledger script beside the hook script, and its handler to each event's group.
     """
     events = gates or (event,)
+    scripts = (HOOK_FILE, LEDGER_FILE) if ledger else (HOOK_FILE,)
 
     def home_folder() -> Path:
         return doctor.home() / (default or f".{adapter}")
@@ -380,9 +426,11 @@ def file_hook_agent(
         return shown(path) if any(doctor.mezmo_handlers(hooks.get(name)) for name in events) else None
 
     def install() -> list:
-        source, target = REPO / adapter / HOOK_FILE, folder() / "hooks" / HOOK_FILE
-        steps = hook_refresh(source, target)
+        # The entries go last: a handler added before its script is there would run nothing.
+        steps = [step for name in scripts for step in hook_refresh(REPO / adapter / name, folder() / "hooks" / name)]
         data = example(adapter, "hooks.example.json", folder(), home_folder())
+        if ledger:
+            return steps + ledger_steps(data, folder() / "hooks.json")
         return steps + merge_steps(folder() / "hooks.json", data, events)
 
     def uninstall() -> list:
@@ -390,13 +438,16 @@ def file_hook_agent(
         heads = written(adapter, folder(), home_folder())
         moved = moved_handlers(load_object(path), "command", heads) if trust_by_position else []
         if moved:
+            plural = "s" if ledger else ""
             raise Failure(
-                f"removing the Mezmo handler from {shown(path)} would give a lower handler index to"
+                f"removing the Mezmo handler{plural} from {shown(path)} would give a lower handler index to"
                 f" {'; '.join(moved)}, and {adapter} would stop trusting them. Nothing changed. To finish by hand, delete each handler"
-                f" that runs {HOOK_FILE} from {shown(path)}, run this command again to delete the hook script,"
+                f" that runs {' or '.join(scripts)} from {shown(path)}, run this command again to delete the hook script{plural},"
                 f" then start {adapter}, run /hooks and trust the moved hooks again"
             )
-        return unmerge_steps(path, heads) + hook_removal(folder() / "hooks" / HOOK_FILE, folder())
+        # TODO: the Codex scripts import each other, so Python leaves a __pycache__ folder beside them.
+        # Uninstall must remove it too.
+        return unmerge_steps(path, heads) + [step for name in scripts for step in hook_removal(folder() / "hooks" / name, folder())]
 
     return Installer(installed, install, uninstall, next_step)
 
@@ -852,8 +903,9 @@ INSTALLERS = {
     "claude-code": claude_code(),
     "codex": file_hook_agent(
         "codex", doctor.codex_dir, "PreToolUse",
-        "Start codex, run /hooks, and trust the Mezmo hook entries: Codex skips a hook until you trust it.",
-        trust_by_position=True,
+        "Start codex, run /hooks, and trust the four Mezmo hook entries, two for governance and two for the ledger:"
+        " Codex skips a hook until you trust it.",
+        trust_by_position=True, ledger=True,
     ),
     # Cursor's own hooks.json may hold only its version, so uninstall keeps what is left: it cannot tell who wrote the file.
     "cursor": file_hook_agent("cursor", doctor.cursor_dir, "preToolUse", ""),
@@ -1028,8 +1080,11 @@ def plugin_options(name: str, env: dict, live: bool) -> dict:
 
 
 def live_env(scratch: Path) -> dict:
-    """The user's environment for smoke --live: their URL and token, a 15 s limit unless they set one, a scratch audit log."""
-    env = dict(os.environ)
+    """The user's environment for smoke --live: their URL and token, a 15 s limit unless they set one, a scratch audit log.
+
+    Their ledger settings stay out: with them, a hook that denies would record the smoke call in the real ledger.
+    """
+    env = {key: value for key, value in os.environ.items() if not key.startswith("MEZMO_LEDGER_")}
     for name in ("MEZMO_GOVERNANCE_URL", "MEZMO_GOVERNANCE_TOKEN"):
         if not (env.get(name) or "").strip():
             raise Failure(f"set {name} in this shell, as for the hooks")
@@ -1091,7 +1146,8 @@ def smoke(names: list, live: bool = False) -> int:
             server = ThreadingHTTPServer(("127.0.0.1", 0), mock_governance.make_handler(SHELL_TOOLS, []))
             threading.Thread(target=server.serve_forever, daemon=True).start()
             url = f"http://127.0.0.1:{server.server_port}{mock_governance.PATH}"
-            env = {key: value for key, value in os.environ.items() if not key.startswith(("MEZMO_GOVERNANCE_", "CLAUDE_PLUGIN_OPTION_"))}
+            # No ledger settings either: the call the mock denies is not one to record in the real ledger.
+            env = {key: value for key, value in os.environ.items() if not key.startswith(("MEZMO_GOVERNANCE_", "MEZMO_LEDGER_", "CLAUDE_PLUGIN_OPTION_"))}
             env.update(
                 {
                     "MEZMO_GOVERNANCE_URL": url,
