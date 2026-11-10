@@ -23,7 +23,9 @@ Known limits, not vulnerabilities:
   can bundle an older CLI.
 - Codex fires no hook for hosted tools such as `WebSearch`. It skips a hook
   that is new, changed or not yet trusted without a warning, headless
-  `codex exec` included.
+  `codex exec` included. An update of the native Codex plugin counts as a
+  change to every one of its hooks (read from the Codex 0.167.0 source), so
+  tools run ungoverned until you approve the hooks again in `/hooks`.
 - Droid skips every hook in a folder you have not trusted yet.
 - Cursor cloud agents do not load `~/.cursor/hooks.json`, so they run
   ungoverned unless the project has the hook in `.cursor/hooks.json`.
@@ -49,9 +51,14 @@ session and tool call ids. [What leaves your machine](README.md#what-leaves-your
 has the details and these exceptions:
 
 - Antigravity's `toolAction` and `toolSummary` notes.
-- Claude Code's ledger, which is off by default. When turned on, it sends
-  each Bash and MCP call's arguments and result to Mezmo's ledger service, and
-  keeps records it couldn't send in a local retry file.
+- Claude Code's and Codex's ledger, which is off by default. When turned on,
+  it sends each recorded call's arguments and result to Mezmo's ledger
+  service, and keeps records it couldn't send in a local retry file. Claude
+  Code records Bash and MCP calls. Codex records every tool it runs a hook
+  for (matcher `.*`), such as `apply_patch` and `update_plan`. Without
+  `MEZMO_LEDGER_KEY`, the governance token is sent to `MEZMO_LEDGER_URL`,
+  whatever host that is. See [claude-code/README.md](claude-code/README.md#ledger)
+  and [codex/README.md](codex/README.md#ledger).
 - Claude Code's opt-in telemetry and once-per-session ingestion key check.
 - The LangChain middleware's OpenTelemetry span and optional
   `tool_call_intent`.

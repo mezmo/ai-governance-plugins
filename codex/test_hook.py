@@ -6,6 +6,7 @@ import ast
 import json
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -21,6 +22,11 @@ from typing import Any
 from unittest.mock import patch
 
 import mezmo_governance_hook as hook
+
+# With the ledger settings set, a denying hook reports a `not_run` to the Mezmo ledger. The
+# developer's own settings stay out of this process and of every hook the tests start.
+for _name in [name for name in os.environ if name.startswith("MEZMO_LEDGER_")]:
+    del os.environ[_name]
 
 
 AUTHORIZE_URL = "https://api.example.test/governance/workflow/authorize"
@@ -559,25 +565,61 @@ CODEX_HANDLER_KEYS = {
 CRASH_GUARD = " || { s=$?; [ $s -eq 2 ] || echo 'Mezmo Governance hook failed; blocking' >&2; exit 2; }"
 
 
-class HookConfigTests(unittest.TestCase):
-    def test_example_config_registers_both_events(self) -> None:
-        with (ADAPTER_DIR / "hooks.example.json").open(encoding="utf-8") as handle:
-            config = json.load(handle)["hooks"]
+# The two hook configs and the ledger command each one registers: the file install's example
+# and the plugin's own.
+HOOK_CONFIGS = {
+    "hooks.example.json": 'python3 "$HOME/.codex/hooks/mezmo_ledger_hook.py" || true',
+    "hooks/hooks.json": 'python3 "${PLUGIN_ROOT}/mezmo_ledger_hook.py" || true',
+}
+LEDGER_TIMEOUTS = {"PostToolUse": 15, "PreToolUse": 10}
 
-        self.assertEqual(set(config), {"PreToolUse", "PostToolUse"})
-        for event, groups in config.items():
-            for group in groups:
-                self.assertEqual(group["matcher"], ".*")
-                for handler in group["hooks"]:
-                    with self.subTest(event=event):
+
+class HookConfigTests(unittest.TestCase):
+    def test_each_config_registers_governance_then_the_ledger_for_both_events(self) -> None:
+        for name, ledger_command in HOOK_CONFIGS.items():
+            config = json.loads((ADAPTER_DIR / name).read_text(encoding="utf-8"))["hooks"]
+            self.assertEqual(set(config), {"PreToolUse", "PostToolUse"})
+            for event, groups in config.items():
+                with self.subTest(config=name, event=event):
+                    (group,) = groups
+                    self.assertEqual(group["matcher"], ".*")
+                    # The ledger handler is second and last, so the governance handler keeps
+                    # its place, and with it the trust Codex gave it.
+                    governance, ledger = group["hooks"]
+                    for handler in (governance, ledger):
                         self.assertLessEqual(set(handler), CODEX_HANDLER_KEYS)
                         self.assertEqual(handler["type"], "command")
-                        self.assertIn("mezmo_governance_hook.py", handler["command"])
-                        if event == "PreToolUse":
-                            self.assertGreater(
-                                handler["timeout"],
-                                hook.MAX_TIMEOUT_SECONDS,
-                            )
+
+                    self.assertIn("mezmo_governance_hook.py", governance["command"])
+                    self.assertNotIn("mezmo_ledger_hook.py", governance["command"])
+                    if event == "PreToolUse":
+                        # Above the deadline. test_ledger.py checks the room a deny then has
+                        # for the ledger.
+                        self.assertGreater(governance["timeout"], hook.MAX_TIMEOUT_SECONDS)
+
+                    # The ledger can never block: no guard, no exit code but 0, a short timeout
+                    # and nothing that would run it in the background.
+                    self.assertEqual(ledger["command"], ledger_command)
+                    self.assertTrue(ledger["command"].endswith(" || true"))
+                    self.assertNotIn("exit 2", ledger["command"])
+                    self.assertEqual(set(ledger), {"command", "timeout", "type"})
+                    self.assertEqual(ledger["timeout"], LEDGER_TIMEOUTS[event])
+
+    def test_the_ledger_command_exits_0_with_or_without_its_script(self) -> None:
+        command = HOOK_CONFIGS["hooks.example.json"]
+        with tempfile.TemporaryDirectory() as tmp:
+            hooks = Path(tmp) / ".codex" / "hooks"
+            hooks.mkdir(parents=True)
+            # Python exits 2 on a script it cannot find, which would block the call.
+            for installed in (False, True):
+                if installed:
+                    for path in (HOOK_PATH, LEDGER_PATH):
+                        shutil.copy(path, hooks / path.name)
+                for stdin in (None, "not json"):
+                    with self.subTest(installed=installed, stdin=stdin):
+                        result = self.run_command(command, HOOK_PATH, stdin, home=tmp)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout, "")
 
     def pre_and_post_commands(self) -> tuple[str, str]:
         with (ADAPTER_DIR / "hooks.example.json").open(encoding="utf-8") as handle:
@@ -587,13 +629,17 @@ class HookConfigTests(unittest.TestCase):
             config["PostToolUse"][0]["hooks"][0]["command"],
         )
 
-    def run_command(self, command: str, hook_path: Path, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    def run_command(
+        self, command: str, hook_path: Path, stdin: str | None = None, home: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
         env = {
             key: value
             for key, value in os.environ.items()
-            if not key.startswith("MEZMO_GOVERNANCE_")
+            if not key.startswith(("MEZMO_GOVERNANCE_", "MEZMO_LEDGER_"))
         }
         env["MEZMO_GOVERNANCE_HOOK"] = str(hook_path)
+        if home is not None:
+            env["HOME"] = home
         return subprocess.run(
             ["/bin/sh", "-c", command],
             input=json.dumps(hook_event("PreToolUse")) if stdin is None else stdin,
@@ -656,6 +702,7 @@ class HookConfigTests(unittest.TestCase):
 
 
 HOOK_PATH = Path(__file__).resolve().with_name("mezmo_governance_hook.py")
+LEDGER_PATH = HOOK_PATH.with_name("mezmo_ledger_hook.py")
 PYTHON_FLOOR = (3, 9)
 
 
@@ -708,27 +755,95 @@ def floor_interpreter() -> str | None:
 
 class PythonFloorTests(unittest.TestCase):
     def test_hook_has_no_runtime_union_syntax(self) -> None:
-        source = HOOK_PATH.read_text(encoding="utf-8")
-        self.assertEqual(runtime_union_lines(source), [])
+        for path in (HOOK_PATH, LEDGER_PATH):
+            with self.subTest(script=path.name):
+                source = path.read_text(encoding="utf-8")
+                lines = source.splitlines()
+                # The ledger's one runtime `|` joins two flock flags, which are ints.
+                found = [
+                    number
+                    for number in runtime_union_lines(source)
+                    if "fcntl.LOCK_EX | fcntl.LOCK_NB" not in lines[number - 1]
+                ]
+                self.assertEqual(found, [])
 
     def test_hook_imports_on_the_oldest_supported_python(self) -> None:
         interpreter = floor_interpreter()
         if interpreter is None:
             self.skipTest("no Python 3.9 interpreter on PATH")
-        result = subprocess.run(
-            [
-                interpreter,
-                "-I",
-                "-c",
-                "import sys; sys.path.insert(0, sys.argv[1]); "
-                "import mezmo_governance_hook",
-                str(HOOK_PATH.parent),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
+        for path in (HOOK_PATH, LEDGER_PATH):
+            with self.subTest(script=path.name):
+                result = subprocess.run(
+                    [
+                        interpreter,
+                        "-I",
+                        "-B",
+                        "-c",
+                        "import sys; sys.path.insert(0, sys.argv[1]); "
+                        f"import {path.stem}",
+                        str(path.parent),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_the_ledger_runs_on_the_oldest_supported_python(self) -> None:
+        interpreter = floor_interpreter()
+        if interpreter is None:
+            self.skipTest("no Python 3.9 interpreter on PATH")
+        # A deny from the governance hook, which reports it through the ledger file, and then
+        # the ledger hook itself. Nothing listens at either URL, so every event is saved.
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            closed = f"http://127.0.0.1:{probe.getsockname()[1]}"
+        with tempfile.TemporaryDirectory() as tmp:
+            spool = Path(tmp) / "ledger-spool.jsonl"
+            env = {
+                "HOME": tmp,
+                "MEZMO_GOVERNANCE_AUDIT_LOG": str(Path(tmp) / "audit.jsonl"),
+                "MEZMO_GOVERNANCE_STATE_DIR": str(Path(tmp) / "codex-sessions"),
+                "MEZMO_GOVERNANCE_TOKEN": "sts_test",
+                "MEZMO_GOVERNANCE_URL": f"{closed}/governance/workflow/authorize",
+                "MEZMO_LEDGER_ACCOUNT": "test-acct",
+                "MEZMO_LEDGER_SPOOL": str(spool),
+                "MEZMO_LEDGER_URL": f"{closed}/v1/events",
+                "NO_PROXY": "*",
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            }
+            for module, name, stdout in (
+                ("mezmo_governance_hook", PRE_EVENT, "deny"),
+                ("mezmo_ledger_hook", PRE_EVENT, ""),
+                ("mezmo_ledger_hook", POST_EVENT, ""),
+            ):
+                with self.subTest(module=module, event=name):
+                    result = subprocess.run(
+                        [
+                            interpreter,
+                            "-I",
+                            "-B",
+                            "-c",
+                            "import sys; sys.path.insert(0, sys.argv[1]); "
+                            f"import {module}; raise SystemExit({module}.main())",
+                            str(HOOK_PATH.parent),
+                        ],
+                        capture_output=True,
+                        check=False,
+                        env=env,
+                        input=json.dumps(hook_event(name)),
+                        text=True,
+                        timeout=60,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertNotIn("Traceback", result.stderr)
+                    self.assertIn(stdout, result.stdout)
+                    self.assertEqual(bool(result.stdout), bool(stdout))
+            saved = [json.loads(line)["event"]["event"] for line in spool.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(
+            saved,
+            ["agent.tool_call.not_run", "agent.tool_call.started", "agent.tool_call.ran"],
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 # The shell-command parser is copied from the Claude Code hook, whole, into every adapter.
@@ -962,7 +1077,7 @@ class StubGovernance(ThreadingHTTPServer):
         self.requests: list[dict[str, Any]] = []
 
     def __enter__(self) -> StubGovernance:
-        threading.Thread(target=self.serve_forever, daemon=True).start()
+        threading.Thread(target=self.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         return self
 
     def __exit__(self, *exc_info: object) -> None:
@@ -1036,7 +1151,7 @@ class DripGovernance(ThreadingHTTPServer):
         self.stopped = threading.Event()
 
     def __enter__(self) -> DripGovernance:
-        threading.Thread(target=self.serve_forever, daemon=True).start()
+        threading.Thread(target=self.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         return self
 
     def __exit__(self, *exc_info: object) -> None:
@@ -1061,7 +1176,7 @@ class EndToEndTests(unittest.TestCase):
         env = {
             key: value
             for key, value in os.environ.items()
-            if not key.startswith("MEZMO_GOVERNANCE_")
+            if not key.startswith(("MEZMO_GOVERNANCE_", "MEZMO_LEDGER_"))
             and key.lower() not in {"http_proxy", "https_proxy", "all_proxy"}
         }
         env.update(
@@ -1386,6 +1501,333 @@ class CallBindingTests(unittest.TestCase):
         self.assertEqual(self.run_call(governance, "ls"), ALLOW_OUTPUT)
         self.assertEqual(self.run_call(governance, "ls"), ALLOW_OUTPUT)
         self.assertEqual(list(governance.decisions.values()), ["approved"])
+
+
+def deny_line(reason: str) -> str:
+    """What main() prints for a deny: one compact line."""
+    return json.dumps(deny_schema(reason), separators=(",", ":")) + "\n"
+
+
+class RefusalHandOffTests(unittest.TestCase):
+    """handle_event notes each refusal in the list main() passes it, and returns what it always did."""
+
+    def refused(
+        self, event: dict[str, Any], http: FakeHttp, env: Mapping[str, str] = ENV, **kwargs: Any
+    ) -> list[tuple[str, str]]:
+        with patch.dict(os.environ, env):
+            expected = hook.handle_event(event, http=FakeHttp(http.responses), **kwargs)
+            refusal: list[tuple[str, str]] = []
+            output = hook.handle_event(event, http=http, refusal=refusal, **kwargs)
+        self.assertEqual(output, expected)
+        if refusal:
+            self.assertEqual(output["hookSpecificOutput"]["permissionDecision"], "deny")
+        return refusal
+
+    def test_a_policy_deny_is_noted_as_denied_with_its_reason(self) -> None:
+        http = FakeHttp([(200, {"approved": False, "reason": "Use a canary first."})])
+        self.assertEqual(self.refused(hook_event("PreToolUse"), http), [("denied", "Use a canary first.")])
+        http = FakeHttp([(200, {"approved": False})])
+        self.assertEqual(self.refused(hook_event("PreToolUse"), http), [("denied", "Policy denied the call.")])
+        http = FakeHttp([(409, {}), (200, {"status": "denied", "reason": "already decided"})])
+        self.assertEqual(self.refused(hook_event("PreToolUse"), http), [("denied", "already decided")])
+
+    def test_an_authorize_error_is_noted_as_error(self) -> None:
+        cases = [
+            (hook.HookContractError("connection refused"), "connection refused"),
+            ((403, {"code": "ENOAGENT", "message": "no agent"}), "Mezmo Governance returned HTTP 403 ENOAGENT: no agent"),
+            ((200, {"approved": "yes"}), "Mezmo Governance did not return an approval decision"),
+            (RuntimeError("boom"), "boom"),
+        ]
+        for answer, reason in cases:
+            with self.subTest(answer=answer):
+                self.assertEqual(self.refused(hook_event("PreToolUse"), FakeHttp([answer])), [("error", reason)])
+
+    def test_a_payload_error_is_noted_as_error(self) -> None:
+        event = hook_event("PreToolUse")
+        del event["tool_use_id"]
+        self.assertEqual(self.refused(event, FakeHttp([])), [("error", "tool_use_id must be a non-empty string")])
+
+    def test_an_approval_still_pending_at_the_deadline_is_noted_as_error(self) -> None:
+        clock = FakeClock()
+        pending = (207, {"approved": False, "reason": None})
+        refusal = self.refused(
+            hook_event("PreToolUse"),
+            FakeHttp([pending] * 4),
+            env={**ENV, "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "2"},
+            clock=clock,
+            sleep=clock.sleep,
+        )
+        self.assertEqual(refusal, [("error", "Mezmo Governance: approval still pending")])
+
+    def test_an_allowed_call_and_a_result_note_nothing(self) -> None:
+        self.assertEqual(self.refused(hook_event("PreToolUse"), FakeHttp([(200, {"approved": True})])), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**ENV, "MEZMO_GOVERNANCE_AUDIT_LOG": str(Path(tmp) / "audit.jsonl")}
+            self.assertEqual(self.refused(hook_event("PostToolUse"), FakeHttp([]), env=env), [])
+
+    def test_handle_pre_tool_use_takes_the_same_list(self) -> None:
+        clock = FakeClock()
+        refusal: list[tuple[str, str]] = []
+        with patch.dict(os.environ, ENV):
+            output = hook.handle_pre_tool_use(
+                hook_event("PreToolUse"),
+                FakeHttp([(200, {"approved": False, "reason": "No."})]),
+                clock,
+                clock.sleep,
+                refusal=refusal,
+            )
+            self.assertEqual(output, deny_schema("Mezmo Governance denied this exact tool call: No."))
+            self.assertEqual(refusal, [("denied", "No.")])
+            # The four positional arguments still work alone, as every caller before used them.
+            self.assertEqual(
+                hook.handle_pre_tool_use(
+                    hook_event("PreToolUse"),
+                    FakeHttp([(200, {"approved": False, "reason": "No."})]),
+                    clock,
+                    clock.sleep,
+                ),
+                output,
+            )
+
+    def test_the_ledger_file_is_not_imported_when_the_hook_loads(self) -> None:
+        # Only _tell_ledger imports it.
+        tree = ast.parse(HOOK_PATH.read_text(encoding="utf-8"))
+        imports = [
+            alias.name
+            for node in tree.body
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for alias in node.names
+        ]
+        self.assertNotIn("mezmo_ledger_hook", imports)
+
+
+class RefusalMainTests(unittest.TestCase):
+    """main() tells the ledger of a refusal once the deny is printed. The ledger is a stand-in."""
+
+    # With no MEZMO_GOVERNANCE_URL the hook denies before any request.
+    REASON = (
+        "Mezmo Governance could not authorize this exact tool call, so Codex blocked it: "
+        "MEZMO_GOVERNANCE_URL must be a non-empty string"
+    )
+
+    def run_main(self, *, env: Mapping[str, str] | None = None, stdin: str | None = None) -> tuple[int, str]:
+        """main() on a PreToolUse call: its exit code and stdout. Each call to the ledger is kept in self.calls."""
+        self.calls: list[dict[str, Any]] = []
+
+        def tell(name: str, **details: Any) -> None:
+            self.calls.append({**details, "name": name, "printed": out.getvalue()})
+
+        out = StringIO()
+        with (
+            patch.dict(os.environ, {"MEZMO_GOVERNANCE_TOKEN": "sts_test", **(env or {})}, clear=True),
+            patch.object(hook, "_tell_ledger", side_effect=tell),
+            patch.object(sys, "stdin", StringIO(json.dumps(hook_event(PRE_EVENT)) if stdin is None else stdin)),
+            patch.object(sys, "stdout", out),
+            patch.object(sys, "stderr", StringIO()),
+        ):
+            code = hook.main()
+        return code, out.getvalue()
+
+    def test_the_ledger_is_told_once_the_deny_is_printed(self) -> None:
+        code, stdout = self.run_main()
+
+        self.assertEqual((code, stdout), (0, deny_line(self.REASON)))
+        (call,) = self.calls
+        self.assertEqual(call["name"], "end_governance_refusal")
+        self.assertEqual(call["hook_input"], hook_event(PRE_EVENT))
+        self.assertEqual((call["outcome"], call["reason"]), ("error", "MEZMO_GOVERNANCE_URL must be a non-empty string"))
+        self.assertEqual(call["printed"], deny_line(self.REASON))
+
+    def test_a_policy_deny_is_told_to_the_ledger_as_denied(self) -> None:
+        with StubGovernance([(200, {"approved": False, "reason": "No."})]) as stub:
+            code, stdout = self.run_main(env={"MEZMO_GOVERNANCE_URL": stub.url, "NO_PROXY": "*"})
+
+        self.assertEqual((code, stdout), (0, deny_line("Mezmo Governance denied this exact tool call: No.")))
+        (call,) = self.calls
+        self.assertEqual((call["name"], call["outcome"], call["reason"]), ("end_governance_refusal", "denied", "No."))
+
+    def test_no_refusal_is_told_when_nothing_was_refused(self) -> None:
+        with StubGovernance([(200, {"approved": True})]) as stub:
+            code, stdout = self.run_main(env={"MEZMO_GOVERNANCE_URL": stub.url, "NO_PROXY": "*"})
+        self.assertEqual((code, stdout), (0, ""))
+        # Only the approval, for its start time.
+        self.assertEqual([call["name"] for call in self.calls], ["save_start_time"])
+
+        # Input main() cannot read into an event blocks with exit code 2, and is not recorded.
+        for stdin in ("not json", "[1]", json.dumps({**hook_event(PRE_EVENT), "hook_event_name": "Other"})):
+            with self.subTest(stdin=stdin):
+                code, stdout = self.run_main(stdin=stdin)
+                self.assertEqual(code, 2)
+                self.assertEqual(set(json.loads(stdout)), set(deny_schema("x")))
+                self.assertEqual(self.calls, [])
+
+
+class TellLedgerTests(unittest.TestCase):
+    """_tell_ledger: the lazy import of the ledger file and the one call into it."""
+
+    def tell(self, module: Any) -> Any:
+        with (
+            patch.dict(sys.modules, {"mezmo_ledger_hook": module}),
+            # It may put its own folder on sys.path, which this process keeps as it was.
+            patch.object(sys, "path", list(sys.path)),
+        ):
+            answer = hook._tell_ledger(
+                "end_governance_refusal", hook_input=hook_event(PRE_EVENT), outcome="denied", reason="No."
+            )
+        return answer
+
+    def fake(self, error: BaseException | None = None) -> Any:
+        calls: list[dict[str, Any]] = []
+
+        class Module:
+            @staticmethod
+            def end_governance_refusal(**kwargs: Any) -> None:
+                calls.append(kwargs)
+                if error is not None:
+                    raise error
+
+        Module.calls = calls  # type: ignore[attr-defined]
+        return Module
+
+    def test_it_passes_the_call_on(self) -> None:
+        module = self.fake()
+        self.assertIsNone(self.tell(module))
+        self.assertEqual(module.calls, [{"hook_input": hook_event(PRE_EVENT), "outcome": "denied", "reason": "No."}])
+
+    def test_an_absent_ledger_file_is_a_silent_no_op(self) -> None:
+        # None in sys.modules makes the import raise ImportError, as a missing file would.
+        with patch.object(sys, "stderr", StringIO()) as stderr:
+            self.assertIsNone(self.tell(None))
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_nothing_the_ledger_raises_gets_out(self) -> None:
+        for error in (RuntimeError("boom"), KeyboardInterrupt(), SystemExit(7), GeneratorExit()):
+            with self.subTest(error=type(error).__name__):
+                module = self.fake(error)
+                self.assertIsNone(self.tell(module))
+                self.assertEqual(len(module.calls), 1)
+
+
+FAKE_LEDGER_PRELUDE = """
+import json, os, sys
+
+def note(*values):
+    with open(os.environ["MARKER"], "a") as marker:
+        marker.write(json.dumps(values) + "\\n")
+
+note("imported")
+"""
+
+
+def fake_ledger(at_import: str = "", body: str = "") -> str:
+    """Source for a stand-in mezmo_ledger_hook.py that runs `at_import` when imported and whose
+    end_governance_refusal runs `body`.
+    """
+    lines = "".join(f"    {line}\n" for line in body.splitlines())
+    return (
+        FAKE_LEDGER_PRELUDE
+        + at_import
+        + "\n\ndef end_governance_refusal(*, hook_input, outcome, reason):\n"
+        + '    note("called", outcome, reason, hook_input["tool_use_id"])\n'
+        + lines
+    )
+
+
+class LedgerBesideTheHookTests(unittest.TestCase):
+    """The hook as Codex runs it, from a temp folder with a stand-in ledger file beside it.
+
+    Whatever that file raises, when imported or called, the deny on stdout and the exit code stay
+    what they are without it.
+    """
+
+    DENY = deny_line("Mezmo Governance denied this exact tool call: No.").encode()
+
+    def setUp(self) -> None:
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.dir = Path(scratch.name)
+        self.hooks = self.dir / "hooks"
+        self.hooks.mkdir()
+        shutil.copy(HOOK_PATH, self.hooks / HOOK_PATH.name)
+        self.marker = self.dir / "marker.jsonl"
+
+    def run_hook(self, ledger: str | None, *, url: str | None = None) -> subprocess.CompletedProcess[bytes]:
+        """Run the copied hook on a call governance denies, and keep the stand-in's notes from this run alone.
+
+        `ledger` is the stand-in's source. None leaves the folder as it is.
+        """
+        if ledger is not None:
+            (self.hooks / LEDGER_PATH.name).write_text(ledger, encoding="utf-8")
+        self.marker.unlink(missing_ok=True)
+        with StubGovernance([(200, {"approved": False, "reason": "No."})]) as stub:
+            return subprocess.run(
+                [sys.executable, str(self.hooks / HOOK_PATH.name)],
+                capture_output=True,
+                check=False,
+                # Built from nothing, so no setting of the developer's own reaches the hook.
+                env={
+                    "HOME": str(self.dir),
+                    "MARKER": str(self.marker),
+                    "MEZMO_GOVERNANCE_AUDIT_LOG": str(self.dir / "audit.jsonl"),
+                    "MEZMO_GOVERNANCE_TOKEN": "sts_test",
+                    "MEZMO_GOVERNANCE_URL": url or stub.url,
+                    "NO_PROXY": "*",
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                },
+                input=json.dumps(hook_event(PRE_EVENT)).encode(),
+                timeout=60,
+            )
+
+    def notes(self) -> list[list[Any]]:
+        if not self.marker.exists():
+            return []
+        return [json.loads(line) for line in self.marker.read_text(encoding="utf-8").splitlines()]
+
+    def assert_deny_unchanged(self, result: subprocess.CompletedProcess[bytes]) -> None:
+        self.assertEqual((result.returncode, result.stdout), (0, self.DENY), result.stderr)
+
+    def test_the_ledger_is_told_of_the_deny(self) -> None:
+        result = self.run_hook(fake_ledger())
+
+        self.assert_deny_unchanged(result)
+        self.assertEqual(result.stderr, b"")
+        self.assertEqual(self.notes(), [["imported"], ["called", "denied", "No.", "tool-use-1"]])
+
+    def test_an_error_is_told_too(self) -> None:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            closed = f"http://127.0.0.1:{probe.getsockname()[1]}/governance/workflow/authorize"
+        told = self.run_hook(fake_ledger(), url=closed)
+        _, (_, outcome, reason, _) = self.notes()
+        (self.hooks / LEDGER_PATH.name).unlink()
+        alone = self.run_hook(None, url=closed)
+
+        self.assertEqual((told.returncode, told.stdout), (alone.returncode, alone.stdout))
+        self.assertEqual(told.returncode, 0)
+        self.assertEqual(self.notes(), [])
+        self.assertEqual(outcome, "error")
+        self.assertIn("Mezmo Governance is unavailable", reason)
+        self.assertIn(reason, json.loads(told.stdout)["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_an_absent_ledger_file_changes_nothing(self) -> None:
+        # An older file install has only the governance script.
+        result = self.run_hook(None)
+
+        self.assert_deny_unchanged(result)
+        self.assertEqual(result.stderr, b"")
+        self.assertEqual([path.name for path in self.hooks.iterdir()], [HOOK_PATH.name])
+
+    def test_a_ledger_that_raises_or_exits_cannot_change_the_exit_code(self) -> None:
+        for body in ('raise RuntimeError("boom")', "raise KeyboardInterrupt()", "raise SystemExit(7)", "sys.exit(7)"):
+            with self.subTest(body=body):
+                result = self.run_hook(fake_ledger(body=body))
+                self.assert_deny_unchanged(result)
+                self.assertEqual([note[0] for note in self.notes()], ["imported", "called"])
+        for at_import in ('raise RuntimeError("boom")', "sys.exit(7)", "this is not python"):
+            with self.subTest(at_import=at_import):
+                result = self.run_hook(fake_ledger(at_import=at_import))
+                self.assert_deny_unchanged(result)
+                self.assertNotIn("called", [note[0] for note in self.notes()])
 
 
 if __name__ == "__main__":

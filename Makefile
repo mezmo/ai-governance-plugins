@@ -6,7 +6,7 @@ NODE ?= node
 test: test-codex test-claude-code test-cursor test-gemini-cli test-copilot test-goose test-droid test-windsurf test-antigravity test-pi test-opencode test-langchain test-openai-agents test-mastra test-claude-agent-sdk test-tools
 
 test-codex:
-	cd codex && $(PYTHON) -m unittest test_hook.py -v
+	cd codex && $(PYTHON) -m unittest test_hook.py test_ledger.py -v
 
 test-claude-code:
 	cd claude-code && $(PYTHON) -m unittest discover -s tests -v

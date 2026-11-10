@@ -140,10 +140,10 @@ class DoctorTestCase(unittest.TestCase):
         path.write_text(text)
         return path
 
-    def copy_hook(self, adapter: str, relative: str) -> Path:
+    def copy_hook(self, adapter: str, relative: str, name: str = "mezmo_governance_hook.py") -> Path:
         path = self.home / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(REPO / adapter / "mezmo_governance_hook.py", path)
+        shutil.copy(REPO / adapter / name, path)
         return path
 
     def doctor(self, *args: str, **env: str | None) -> subprocess.CompletedProcess[str]:
@@ -638,6 +638,27 @@ class CodexTests(DoctorTestCase):
         self.assertStatus(result, "Codex trust", "ok")
         self.assertStatus(result, "Codex smoke", "ok")
 
+    def test_an_untrusted_ledger_handler_fails_no_check(self) -> None:
+        # install adds the ledger handler after the governance handler; until the user trusts it, only the ledger is off.
+        self.install()
+        path = self.home / ".codex/hooks.json"
+        config = json.loads(path.read_text())
+        command = 'python3 "$HOME/.codex/hooks/mezmo_ledger_hook.py" || true'
+        config["hooks"]["PreToolUse"][0]["hooks"].append({"type": "command", "command": command, "timeout": 10})
+        path.write_text(json.dumps(config))
+        self.copy_hook("codex", ".codex/hooks/mezmo_ledger_hook.py", "mezmo_ledger_hook.py")
+        item = {"key": f"{path}:pre_tool_use:0:0", "eventName": "preToolUse", "sourcePath": str(path), "pluginId": None,
+                "command": CODEX_COMMAND, "enabled": True, "trustStatus": "trusted"}
+        self.fake_codex([item, {**item, "key": f"{path}:pre_tool_use:0:1", "command": command, "trustStatus": "untrusted"}])
+
+        result = self.doctor()
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertStatus(result, "Codex trust", "ok")
+        self.assertStatus(result, "Codex smoke", "ok")
+        self.assertEqual(len(self.lines(result, "Codex hook")), 2, result.stdout)
+        self.assertNotIn("mezmo_ledger_hook.py", result.stdout)
+
     def test_the_file_hook_trust_is_what_codex_lists(self) -> None:
         # config.toml keeps a trusted_hash after the hook changes; only Codex can say it no longer matches.
         cases = [
@@ -658,7 +679,11 @@ class CodexTests(DoctorTestCase):
                 result = self.doctor()
 
                 self.assertEqual(result.returncode, 1 if status == "FAIL" else 0, result.stdout)
-                self.assertIn(words, self.assertStatus(result, "Codex trust", status))
+                line = self.assertStatus(result, "Codex trust", status)
+                self.assertIn(words, line)
+                if status == "FAIL":
+                    # The installer's wording: the ledger's two entries need trust as well.
+                    self.assertIn("Fix: start codex, run /hooks, and trust the four Mezmo hook entries", line)
 
     def test_a_codex_that_cannot_list_hooks_leaves_a_saved_trust_unchecked(self) -> None:
         self.install()
@@ -724,14 +749,22 @@ class CodexPluginTests(DoctorTestCase):
         shutil.copytree(REPO / "codex", folder, dirs_exist_ok=True)
         self.write(".codex/config.toml", '[plugins."mezmo-governance@mezmo"]\nenabled = true\n')
         key = "mezmo-governance@mezmo:hooks/hooks.json"
+        # The second handler of each group is the ledger hook, which governs nothing: untrusted here, it must fail no check.
         hooks = [
             {"key": f"{key}:pre_tool_use:0:0", "eventName": "preToolUse", "pluginId": "mezmo-governance@mezmo",
              "command": f'python3 "{folder}/mezmo_governance_hook.py" || {{ exit 2; }}',
              "enabled": enabled, "currentHash": "sha256:aa", "trustStatus": trust},
+            {"key": f"{key}:pre_tool_use:0:1", "eventName": "preToolUse", "pluginId": "mezmo-governance@mezmo",
+             "command": f'python3 "{folder}/mezmo_ledger_hook.py" || true',
+             "enabled": True, "currentHash": "sha256:cc", "trustStatus": "untrusted"},
             {"key": f"{key}:post_tool_use:0:0", "eventName": "postToolUse", "pluginId": "mezmo-governance@mezmo",
              "command": f'python3 "{folder}/mezmo_governance_hook.py"',
              "enabled": True, "currentHash": "sha256:bb", "trustStatus": "untrusted"},
+            {"key": f"{key}:post_tool_use:0:1", "eventName": "postToolUse", "pluginId": "mezmo-governance@mezmo",
+             "command": f'python3 "{folder}/mezmo_ledger_hook.py" || true',
+             "enabled": True, "currentHash": "sha256:dd", "trustStatus": "untrusted"},
         ]
+        self.ledger = hooks[1]
         self.fake_codex(hooks if listed else [], server)
 
     def test_a_trusted_plugin_passes(self) -> None:
@@ -774,7 +807,27 @@ class CodexPluginTests(DoctorTestCase):
 
         line = self.assertStatus(self.doctor(), "Codex plugin trust", "FAIL")
 
-        self.assertIn("Fix: start codex, run /hooks, and trust both Mezmo hooks", line)
+        self.assertIn("Fix: start codex, run /hooks, and trust all four Mezmo hooks", line)
+
+    def test_the_ledger_hook_is_not_the_governance_hook(self) -> None:
+        # Both are PreToolUse hooks of the plugin; only the one that runs the governance script checks a call.
+        self.install()
+
+        result = self.doctor()
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(len(self.lines(result, "Codex plugin trust")), 1, result.stdout)
+        self.assertEqual(len(self.lines(result, "Codex smoke")), 1, result.stdout)
+        self.assertNotIn("mezmo_ledger_hook.py", result.stdout)
+        self.assertNotIn("is missing", result.stdout)
+        # With only the ledger hook listed, no hook checks a call.
+        self.fake_codex([self.ledger])
+
+        result = self.doctor()
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("lists no PreToolUse hook", self.assertStatus(result, "Codex plugin trust", "FAIL"))
+        self.assertEqual(self.lines(result, "Codex smoke"), [])
 
     def test_an_unknown_answer_is_info_not_a_pass_or_a_fail(self) -> None:
         cases = [

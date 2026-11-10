@@ -729,16 +729,23 @@ def codex_trust(report: Report, subject: str, item: dict, fix: str) -> None:
 
 
 def check_codex_plugin(report: Report, plugins: list, hooks: Optional[list], why: str) -> list:
-    """The native install: `codex plugin add` records it under [plugins."<name>@<marketplace>"]."""
+    """The native install: `codex plugin add` records it under [plugins."<name>@<marketplace>"].
+
+    The plugin has a second PreToolUse hook, the ledger's, which governs nothing: only a hook that runs the
+    governance script is checked and smoked.
+    """
     smokes: list = []
-    trust_fix = "start codex, run /hooks, and trust both Mezmo hooks"
+    trust_fix = "start codex, run /hooks, and trust all four Mezmo hooks"
     for plugin in plugins:
         report.line("ok", "Codex plugin", f"{plugin} is installed")
     if hooks is None:
         report.line("info", "Codex plugin trust", f"not checked: {why}", trust_fix)
         return smokes
     for plugin in plugins:
-        found = [item for item in hooks if item.get("pluginId") == plugin and item.get("eventName") == "preToolUse"]
+        found = [
+            item for item in hooks
+            if item.get("pluginId") == plugin and item.get("eventName") == "preToolUse" and mezmo_handlers([{"command": item.get("command")}])
+        ]
         if not found:
             report.line(
                 "FAIL", "Codex plugin trust", f"Codex lists no PreToolUse hook for {plugin}, {UNGOVERNED}",
@@ -765,7 +772,7 @@ def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
         )
     smokes = []
     hooks, why = codex_listed()
-    trust_fix = "start codex, run /hooks, and trust the Mezmo hook"
+    trust_fix = "start codex, run /hooks, and trust the four Mezmo hook entries"
     for g, h, _, handler in found:
         command = str(handler.get("command"))
         report.line("ok", "Codex hook", f"PreToolUse hook in {shown(path)}")

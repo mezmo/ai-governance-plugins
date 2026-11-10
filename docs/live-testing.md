@@ -184,7 +184,7 @@ each agent at a scratch folder and install there:
 S=$(mktemp -d)
 CLAUDE_CONFIG_DIR="$S/claude" ./mezmo-governance install claude-code
 CODEX_HOME="$S/codex" ./mezmo-governance install codex
-CODEX_HOME="$S/codex" codex   # log in, trust both hooks in /hooks, then /quit
+CODEX_HOME="$S/codex" codex   # log in, trust the four Mezmo hook entries in /hooks, then /quit
 ```
 
 ```jsonc

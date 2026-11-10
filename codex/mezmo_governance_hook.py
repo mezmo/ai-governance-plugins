@@ -954,11 +954,17 @@ def handle_pre_tool_use(
     http: HttpJson,
     clock: Clock,
     sleep: Sleeper,
+    *,
+    refusal: list[tuple[str, str]] | None = None,
 ) -> dict[str, Any] | None:
-    decision = authorize(approval_payload(event), http=http, clock=clock, sleep=sleep)
+    payload = approval_payload(event)
+    decision = authorize(payload, http=http, clock=clock, sleep=sleep)
     if decision.approved:
+        _tell_ledger("save_start_time", decision_id=str(payload["decision_id"]))
         return None
     detail = decision.reason or "Policy denied the call."
+    if refusal is not None:
+        refusal.append(("denied", detail))
     return deny_output(f"Mezmo Governance denied this exact tool call: {detail}")
 
 
@@ -990,17 +996,39 @@ def deny_output(reason: str) -> dict[str, Any]:
     }
 
 
+def _tell_ledger(name: str, **details: Any) -> None:
+    """Call a function in mezmo_ledger_hook.py.
+
+    Any failure there is ignored, including a missing file, so the ledger can never change a decision.
+    """
+    try:
+        # The ledger file sits beside this one, a folder PYTHONSAFEPATH keeps off sys.path.
+        folder = str(Path(__file__).resolve().parent)
+        if folder not in sys.path:
+            sys.path.insert(0, folder)
+        import mezmo_ledger_hook
+
+        getattr(mezmo_ledger_hook, name)(**details)
+    except BaseException:
+        pass
+
+
 def handle_event(
     event: Mapping[str, Any],
     http: HttpJson = http_json,
     clock: Clock = time.monotonic,
     sleep: Sleeper = time.sleep,
+    *,
+    refusal: list[tuple[str, str]] | None = None,
 ) -> dict[str, Any] | None:
+    """Decide one hook event. Each refusal is noted in `refusal` as (outcome, reason)."""
     event_name = event.get("hook_event_name")
     if event_name == "PreToolUse":
         try:
-            return handle_pre_tool_use(event, http, clock, sleep)
+            return handle_pre_tool_use(event, http, clock, sleep, refusal=refusal)
         except Exception as error:
+            if refusal is not None:
+                refusal.append(("error", str(error)))
             return deny_output(
                 "Mezmo Governance could not authorize this exact tool call, so "
                 f"Codex blocked it: {error}"
@@ -1018,11 +1046,12 @@ def handle_event(
 
 
 def main() -> int:
+    refusal: list[tuple[str, str]] = []
     try:
         event = json.load(sys.stdin)
         if not isinstance(event, dict):
             raise HookContractError("hook input must be a JSON object")
-        output = handle_event(event)
+        output = handle_event(event, refusal=refusal)
     except Exception as error:
         # Any failure blocks, such as a RecursionError on deeply nested input.
         reason = f"Mezmo Governance blocked this tool call: {str(error) or type(error).__name__}"
@@ -1035,6 +1064,10 @@ def main() -> int:
 
     if output is not None:
         print(json.dumps(output, separators=(",", ":")))
+    if refusal:
+        # Once the deny is printed. With the ledger on, this ends the process with this exit code.
+        outcome, reason = refusal[-1]
+        _tell_ledger("end_governance_refusal", hook_input=event, outcome=outcome, reason=reason)
     return 0
 
 
