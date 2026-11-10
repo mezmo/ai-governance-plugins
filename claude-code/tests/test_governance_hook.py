@@ -219,9 +219,9 @@ class AdapterContractTests(unittest.TestCase):
         self.assertIn("disk full", stderr.getvalue())
 
     def test_authorization_header_prefixes_token(self) -> None:
-        self.assertEqual(hook.authorization_header(), "Token sts_test")
+        self.assertEqual(hook.authorization_header(key=hook.required_config().access_key), "Token sts_test")
         with patch.dict(os.environ, {"MEZMO_GOVERNANCE_ACCESS_KEY": "Token sts_test"}):
-            self.assertEqual(hook.authorization_header(), "Token sts_test")
+            self.assertEqual(hook.authorization_header(key=hook.required_config().access_key), "Token sts_test")
 
 
 @patch.dict(os.environ, environment(**ENV), clear=True)
@@ -336,7 +336,7 @@ class ServiceProtocolTests(unittest.TestCase):
 
     def test_bearer_key_is_sent_unchanged(self) -> None:
         with patch.dict(os.environ, {"MEZMO_GOVERNANCE_ACCESS_KEY": "Bearer sts_test"}):
-            self.assertEqual(hook.authorization_header(), "Bearer sts_test")
+            self.assertEqual(hook.authorization_header(key=hook.required_config().access_key), "Bearer sts_test")
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -363,7 +363,7 @@ class ConfigurationTests(unittest.TestCase):
         http = FakeHttp([(200, {"approved": True})])
         with patch.dict(os.environ, environment(CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY="sts_opt"), clear=True):
             self.assertIsNone(hook.handle_event(hook_event("PreToolUse"), http=http))
-            self.assertEqual(hook.authorization_header(), "Token sts_opt")
+            self.assertEqual(hook.authorization_header(key=hook.required_config().access_key), "Token sts_opt")
         self.assertEqual(http.calls[0][1], "https://api.mezmo.com/governance/workflow/authorize")
 
     def test_plugin_option_url(self) -> None:
@@ -685,10 +685,32 @@ class HookConfigTests(unittest.TestCase):
         # Without onFailure, Claude Code runs the tool when the hook crashes, times out
         # or finds no python3.
         config = json.loads((pathlib.Path(__file__).resolve().parents[1] / "hooks" / "hooks.json").read_text())
-        handlers = [handler for group in config["hooks"]["PreToolUse"] for handler in group["hooks"]]
+        handlers = [
+            handler
+            for group in config["hooks"]["PreToolUse"]
+            for handler in group["hooks"]
+            if "governance_hook.py" in handler.get("command", "")
+        ]
         self.assertTrue(handlers)
         for handler in handlers:
             self.assertEqual(handler.get("onFailure"), "block", handler)
+
+    def test_the_ledger_pre_tool_hook_never_blocks_the_tool(self) -> None:
+        # The ledger only records calls, so a ledger hook that fails must let the tool run.
+        config = json.loads((pathlib.Path(__file__).resolve().parents[1] / "hooks" / "hooks.json").read_text())
+        for event_name in ("PermissionDenied", "PostToolUse", "PostToolUseFailure", "PreToolUse"):
+            with self.subTest(event=event_name):
+                handlers = [
+                    handler
+                    for group in config["hooks"].get(event_name, [])
+                    for handler in group["hooks"]
+                    if "ledger_hook.py" in handler.get("command", "")
+                ]
+                self.assertTrue(handlers)
+                for handler in handlers:
+                    self.assertNotIn("onFailure", handler)
+                    if event_name == "PreToolUse":
+                        self.assertEqual(handler.get("timeout"), 10, handler)
 
 
 @patch.dict(os.environ, environment(**ENV), clear=True)
