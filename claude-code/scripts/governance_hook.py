@@ -40,7 +40,6 @@ import re
 import socket
 import stat
 import sys
-import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -881,15 +880,10 @@ def append_audit(record: Mapping[str, Any]) -> None:
         handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
-# Lets only one thread at a time touch the retry file.
-# Needed on Windows, where there is no flock to do it.
-FILE_LOCK = threading.Lock()
-
-
 @contextmanager
 def _locked(path: Path) -> Iterator[None]:
     """Hold an exclusive lock on `path`.lock, so parallel tool calls don't lose updates."""
-    with FILE_LOCK, open(f"{path}.lock", "a") as lock:
+    with open(f"{path}.lock", "a") as lock:
         try:
             import fcntl
 

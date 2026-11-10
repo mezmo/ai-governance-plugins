@@ -20,6 +20,7 @@ import os
 import re
 import stat
 import sys
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -66,6 +67,9 @@ LEDGER_TIMEOUT_SECONDS = 3.0
 REFUSED_TIMEOUT_SECONDS = 2.0
 # Saved events resent in one request, small enough to finish well inside the deadline.
 LEDGER_DRAIN_BATCH = 10
+# Lines the retry file keeps. Past it the oldest go, so a ledger that stays down or a key that
+# stays wrong can't grow the file, which every ledger_hook.py run reads in full.
+LEDGER_SPOOL_MAX_LINES = 200
 MAX_LEDGER_JSON_CHARACTERS = 4096
 MAX_LEDGER_MESSAGE_CHARACTERS = 200
 EXIT_CODE_LINE = re.compile(r"Exit code (-?\d+)")
@@ -74,6 +78,10 @@ LEDGER_ENDINGS = {"failed": "failed", "not_run": "not run", "ran": "ok"}
 # Ledger threads never print. They leave messages here, which the main thread prints after its
 # wait.
 LEDGER_MESSAGES: List[str] = []
+# Lets only one thread at a time touch the retry file: the drain thread's rewrite and the main
+# thread's save. Needed where there is no flock, as on Windows. It can't hold back another
+# process there.
+SPOOL_LOCK = threading.Lock()
 
 
 class LedgerConfig(NamedTuple):
@@ -143,7 +151,7 @@ def plugin_version() -> str:
 
 
 def resolve_target(namespace: str, name: str, arguments: Mapping[str, Any]) -> Tuple[str, str]:
-    """(target, access) for a call. LOG-25341 replaces this stub with the real resolver."""
+    """(target, access) for a call. C3's (capture epic) resolver replaces this stub."""
     return "unknown", "read"
 
 
@@ -438,6 +446,13 @@ def _open_retry_file(*, mode: str, path: Path) -> Any:
     return handle
 
 
+@contextmanager
+def _spool_locked(path: Path) -> Iterator[None]:
+    """Hold SPOOL_LOCK and then `_locked(path)`, for every read and write of the retry file."""
+    with SPOOL_LOCK, _locked(path):
+        yield
+
+
 def _spool_ledger_events(*, config: LedgerConfig, events: Sequence[Mapping[str, Any]]) -> None:
     """Append `events` to the retry file. The file keeps arguments and output, so it's private."""
     if not events:
@@ -445,7 +460,7 @@ def _spool_ledger_events(*, config: LedgerConfig, events: Sequence[Mapping[str, 
     path = ledger_spool_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     text = "".join(json.dumps({"event": event, "url": config.url}, separators=(",", ":")) + "\n" for event in events)
-    with _locked(path):
+    with _spool_locked(path):
         with _open_retry_file(mode="a", path=path) as handle:
             handle.write(text)
 
@@ -526,7 +541,8 @@ def drain_ledger_spool(*, config: LedgerConfig, ledger_http: LedgerHttp) -> None
     """Resend up to LEDGER_DRAIN_BATCH saved events for this URL in one request. Never raises.
 
     A resent event is never saved a second time: its line stays until the server takes it or
-    refuses it for good.
+    refuses it for good. A line saved for another URL is removed unsent, and past
+    LEDGER_SPOOL_MAX_LINES the oldest lines are removed.
     """
     try:
         path = ledger_spool_path()
@@ -535,10 +551,11 @@ def drain_ledger_spool(*, config: LedgerConfig, ledger_http: LedgerHttp) -> None
         with _drain_lock(path) as held:
             if not held:
                 return
-            with _locked(path):
+            with _spool_locked(path):
                 lines = _read_lines(path)
             taken: List[Tuple[str, Dict[str, Any]]] = []
             finished: List[str] = []
+            other_url = 0
             for line in lines:
                 try:
                     line.encode("utf-8")  # a line with a bad byte is bad
@@ -548,21 +565,33 @@ def drain_ledger_spool(*, config: LedgerConfig, ledger_http: LedgerHttp) -> None
                 usable = isinstance(entry, dict) and isinstance(entry.get("event"), dict) and isinstance(entry.get("url"), str)
                 if not usable:
                     finished.append(line)  # a bad line
-                elif entry["url"] == config.url and len(taken) < LEDGER_DRAIN_BATCH:
+                elif entry["url"] != config.url:
+                    finished.append(line)  # MEZMO_LEDGER_URL has changed, so nothing would resend it
+                    other_url += 1
+                elif len(taken) < LEDGER_DRAIN_BATCH:
                     taken.append((line, entry["event"]))
             if taken:
                 finished.extend(_resend_ledger_events(config=config, ledger_http=ledger_http, taken=taken))
-            if not finished:
+            if not finished and len(lines) <= LEDGER_SPOOL_MAX_LINES:
                 return
-            with _locked(path):
+            with _spool_locked(path):
                 remaining = _read_lines(path)
                 for line in finished:
                     if line in remaining:
                         remaining.remove(line)
+                # Applied after the resend, so a line the server just took isn't counted.
+                over = max(0, len(remaining) - LEDGER_SPOOL_MAX_LINES)
+                del remaining[:over]
                 temporary = Path(f"{path}.tmp")
                 with _open_retry_file(mode="w", path=temporary) as handle:
                     handle.write("".join(line + "\n" for line in remaining))
                 os.replace(temporary, path)
+            if other_url:
+                LEDGER_MESSAGES.append(f"Mezmo ledger dropped {other_url} saved event(s): saved for another URL")
+            if over:
+                LEDGER_MESSAGES.append(
+                    f"Mezmo ledger dropped {over} saved event(s): the retry file keeps at most {LEDGER_SPOOL_MAX_LINES}"
+                )
     except Exception as error:
         LEDGER_MESSAGES.append(f"Mezmo ledger could not resend saved events: {str(error) or type(error).__name__}")
 
