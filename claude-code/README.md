@@ -228,8 +228,12 @@ the audit log, and `/mezmo` shows the count. Governance doesn't hear about these
 ## Ledger
 
 The ledger keeps a record of the tool calls Claude Code makes. It's off by default. When it's
-on, the hook sends Mezmo one record when each Bash and MCP tool call is requested and one when it
-ends. It works with or without governance.
+on, Mezmo gets one record when each Bash and MCP tool call is requested and one when it ends. It
+works with or without governance.
+
+The ledger has its own hook script, `scripts/ledger_hook.py`, which Claude Code runs beside the
+governance hook, in parallel with it. When governance refuses a call, Claude Code runs no other
+hook, so the governance hook reports that call to the ledger itself, with a 2 second timeout.
 
 | Event | When |
 | --- | --- |
@@ -261,9 +265,11 @@ Turn it on by setting `MEZMO_LEDGER_ACCOUNT` and `MEZMO_LEDGER_URL`:
 turn governance on. Without it, the governance key is sent to `MEZMO_LEDGER_URL`. The URL must
 use `https`, or `http` to this machine only.
 
-The ledger never blocks a tool call or changes a governance decision. If the ledger is slow or
-unreachable, the hook stops waiting after a few seconds and the call goes ahead. Records that
-can't be sent go to the retry file and are resent on later tool calls. Records the ledger refuses are
+The ledger never blocks a tool call or changes a governance decision, because its hook always
+exits successfully. If the ledger is slow or unreachable, the ledger hook stops waiting after 3
+seconds and the call goes ahead. Records that can't be sent go to the retry file and are resent on
+later tool calls. So do records the ledger rejects one by one, and records it refuses with a 401,
+which a fixed key will let through. Records it refuses outright, such as with a 400 or 403, are
 dropped. The retry file holds the full records, including arguments and output, and is readable
 only by you. Delete it to discard what's waiting.
 
@@ -403,6 +409,6 @@ use the config Claude Code generates when it validates or tests the plugin:
 npx -p typescript tsc -p .claude-plugin/types/tsconfig.json
 ```
 
-`scripts/` holds the Python that runs the governance hook, writes settings, adds the MCP server and
-checks keys.
-`skills/` has the slash commands, and `hooks/` has the mod and the governance hook registration.
+`scripts/` holds the Python that runs the governance and ledger hooks, writes settings, adds the
+MCP server and checks keys.
+`skills/` has the slash commands, and `hooks/` has the mod and the hook registrations.
