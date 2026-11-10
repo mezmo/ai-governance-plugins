@@ -933,12 +933,12 @@ class RetryFileTests(LedgerTestCase):
                 self.assertEqual(self.spool_lines(), lines)
 
     def test_a_400_on_the_drain_removes_the_lines_it_sent(self) -> None:
-        other = self.spool_line(url="https://elsewhere.example.test/v1/events")
-        self.write_spool([self.spool_line(), other, self.spool_line()])
+        lines = [self.spool_line() for _ in range(11)]
+        self.write_spool(lines)
         fake = self.fake((202, b"{}"), resends=[(400, b'{"code":"EINVAL"}')])
         self.run_hook(hook_input("PermissionDenied"), fake)
-        self.assertEqual([len(call["events"]) for call in fake.resent_calls()], [2])
-        self.assertEqual(self.spool_lines(), [other])
+        self.assertEqual([len(call["events"]) for call in fake.resent_calls()], [10])
+        self.assertEqual(self.spool_lines(), lines[10:])
         self.assertIn("HTTP 400", self.stderr)
 
     def test_a_207_on_the_drain_finishes_only_the_accepted_lines(self) -> None:
@@ -976,10 +976,10 @@ class RetryFileTests(LedgerTestCase):
         fake = self.fake()
         ledger.drain_ledger_spool(config=ledger.load_ledger_config(), ledger_http=fake)
         self.assertEqual(fake.calls, [])
-        self.assertEqual(len(self.spool_lines()), 1)
+        self.assertEqual(self.spool_lines(), [])
 
     def test_nothing_to_resend_means_no_request_and_no_rewrite(self) -> None:
-        self.write_spool([self.spool_line(url="https://elsewhere.example.test/v1/events")])
+        self.write_spool([])
         before = self.spool.stat().st_mtime_ns
         fake = self.fake()
         ledger.drain_ledger_spool(config=ledger.load_ledger_config(), ledger_http=fake)
@@ -987,14 +987,47 @@ class RetryFileTests(LedgerTestCase):
         self.assertEqual(self.spool.stat().st_mtime_ns, before)
         self.assertFalse(pathlib.Path(f"{self.spool}.tmp").exists())
 
-    def test_a_line_for_another_url_is_not_sent_and_stays(self) -> None:
+    def test_a_line_for_another_url_is_not_sent_and_is_removed(self) -> None:
         other = self.spool_line(url="http://127.0.0.1:9999/v1/events")
         mine = self.spool_line()
         self.write_spool([other, mine])
         fake = self.fake()
         self.run_hook(hook_input(), fake)
         self.assertEqual([call["events"] for call in fake.resent_calls()], [[json.loads(mine)["event"]]])
-        self.assertEqual(self.spool_lines(), [other])
+        self.assertEqual(self.spool_lines(), [])
+        self.assertIn("dropped 1 saved event(s): saved for another URL", self.stderr)
+
+    def test_lines_for_another_url_are_removed_when_the_resend_fails(self) -> None:
+        mine = self.spool_line()
+        self.write_spool([self.spool_line(url="http://127.0.0.1:9999/v1/events"), mine])
+        ledger.drain_ledger_spool(config=ledger.load_ledger_config(), ledger_http=self.fake((401, b"")))
+        self.assertEqual(self.spool_lines(), [mine])
+
+    def test_lines_over_the_limit_drop_the_oldest(self) -> None:
+        lines = [self.spool_line() for _ in range(ledger.LEDGER_SPOOL_MAX_LINES + 5)]
+        self.write_spool(lines)
+        ledger.drain_ledger_spool(config=ledger.load_ledger_config(), ledger_http=self.fake((401, b"")))
+        self.assertEqual(self.spool_lines(), lines[5:])
+        self.assertEqual(
+            ledger.LEDGER_MESSAGES,
+            [f"Mezmo ledger dropped 5 saved event(s): the retry file keeps at most {ledger.LEDGER_SPOOL_MAX_LINES}"],
+        )
+
+    def test_delivered_lines_leave_before_the_limit_is_applied(self) -> None:
+        lines = [self.spool_line() for _ in range(ledger.LEDGER_SPOOL_MAX_LINES + 5)]
+        self.write_spool(lines)
+        ledger.drain_ledger_spool(config=ledger.load_ledger_config(), ledger_http=self.fake())
+        self.assertEqual(self.spool_lines(), lines[ledger.LEDGER_DRAIN_BATCH:])
+        self.assertEqual(ledger.LEDGER_MESSAGES, [])
+
+    def test_a_file_at_the_limit_is_not_rewritten(self) -> None:
+        lines = [self.spool_line() for _ in range(ledger.LEDGER_SPOOL_MAX_LINES)]
+        self.write_spool(lines)
+        before = self.spool.stat().st_mtime_ns
+        ledger.drain_ledger_spool(config=ledger.load_ledger_config(), ledger_http=self.fake((503, b"")))
+        self.assertEqual(self.spool_lines(), lines)
+        self.assertEqual(self.spool.stat().st_mtime_ns, before)
+        self.assertEqual(ledger.LEDGER_MESSAGES, [])
 
     def test_a_line_appended_during_the_request_survives_the_rewrite(self) -> None:
         sent = self.spool_line()
