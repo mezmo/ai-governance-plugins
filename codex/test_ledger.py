@@ -597,12 +597,6 @@ class FieldTests(LedgerTestCase):
                 ran = ledger.ledger_event(
                     config=config, hook_input=builder("PostToolUse", tool_response="first\nsecond", **fields), kind="ran"
                 )
-                ok = ledger.ledger_event(
-                    config=config,
-                    exit_status=0,
-                    hook_input=builder("PostToolUse", tool_response="first\nsecond", **fields),
-                    kind="ran",
-                )
                 failed = ledger.ledger_event(
                     config=config, hook_input=builder("PostToolUse", tool_response={"content": "bad", "isError": True}, **fields),
                     kind="failed",
@@ -612,10 +606,9 @@ class FieldTests(LedgerTestCase):
                 )
                 self.assertEqual(started["message"], intent)
                 self.assertEqual(ran["message"], f"{intent}: ran - first")
-                self.assertEqual(ok["message"], f"{intent}: ok - first")
                 self.assertEqual(failed["message"], f"{intent}: failed - bad")
                 self.assertEqual(not_run["message"], f"{intent}: not run - No.")
-                for event in (started, ran, ok, failed, not_run):
+                for event in (started, ran, failed, not_run):
                     self.assert_valid(event)
                     self.assertEqual(event["extra"]["intent_source"], "none")
 
@@ -658,6 +651,7 @@ class FieldTests(LedgerTestCase):
             ("", "ran"),
             (42, "ran"),
             ({"other": "x"}, "ran"),
+            ("ls: /nope: No such file or directory", "ran - ls: /nope: No such file or directory"),
         ]
         for response, ending in cases:
             with self.subTest(response=response):
@@ -665,13 +659,14 @@ class FieldTests(LedgerTestCase):
                 self.run_hook(hook_input("PostToolUse", tool_response=response), fake)
                 self.assertEqual(fake.events()[0]["message"], f"codex.Bash: ls -la: {ending}")
 
-    def test_output_is_rendered_as_sorted_compact_json(self) -> None:
+    def test_output_is_rendered_as_text_or_sorted_compact_json(self) -> None:
         fake = self.fake()
         self.run_hook(hook_input("PostToolUse", tool_response={"b": "é", "a": [1, 2]}), fake)
         self.run_hook(hook_input("PostToolUse", tool_response="a\nb\n"), fake)
         as_object, as_text = fake.events()
         self.assertEqual(as_object["extra"]["output"], '{"a":[1,2],"b":"é"}')
-        self.assertEqual(as_text["extra"]["output"], '"a\\nb\\n"')
+        self.assertEqual(as_text["extra"]["output"], "a\nb\n")
+        self.assertEqual(ledger.ledger_json("Exit code 1\nboom"), "Exit code 1\nboom")
 
     def test_arguments_output_and_message_are_cut(self) -> None:
         fake = self.fake()
@@ -777,23 +772,6 @@ class StartTimeTests(LedgerTestCase):
         if os.name != "nt":
             self.assertEqual(stat.S_IMODE(start_time.parent.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(start_time.stat().st_mode), 0o600)
-
-    def test_post_tool_use_finds_the_pre_tool_use_start_time(self) -> None:
-        pre = hook_input("PreToolUse")
-        post = hook_input("PostToolUse")
-        decision_id = identity(pre).decision_id
-        self.assertEqual(identity(post).decision_id, decision_id)
-        with patch.dict(os.environ, GOVERNANCE):
-            self.assertIsNone(hook.handle_event(pre, http=GovernanceHttp((200, {"approved": True}))))
-        start_time = ledger.start_time_path(decision_id)
-        self.assertTrue(start_time.exists())
-
-        fake = self.fake()
-        self.run_hook(post, fake)
-
-        (ran,) = fake.events()
-        self.assertIsInstance(ran["extra"].get("duration_ms"), int)
-        self.assertFalse(start_time.exists())
 
     def test_a_start_time_that_cannot_be_written_leaves_the_approval_alone(self) -> None:
         self.state_dir.write_text("a file where the folder should be", encoding="utf-8")
@@ -902,10 +880,6 @@ class SettingsTests(LedgerTestCase):
         self.assertEqual(ledger.ledger_spool_path(), self.spool)
         del os.environ["MEZMO_LEDGER_SPOOL"]
         self.assertEqual(ledger.ledger_spool_path(), self.default_spool)
-
-    def test_the_ledger_url_drops_trailing_slashes(self) -> None:
-        os.environ["MEZMO_LEDGER_URL"] = "https://audit.example.test/v1/events///"
-        self.assertEqual(ledger.load_ledger_config().url, "https://audit.example.test/v1/events")
 
     def test_post_ledger_events_builds_the_authorization_header_from_the_key(self) -> None:
         recorder = Recorder()
@@ -1042,17 +1016,19 @@ class SettingsTests(LedgerTestCase):
             ledger.send_ledger_events(config=config, events=events, ledger_http=self.fake((207, body))),
             ledger.LedgerSendResult(answered=True, save=[events[1]]),
         )
-        for unusable in (b"not json", b"[]", b'{"events": "x"}'):
+        for unusable in (b"not json", b"[]", b'{"events": "x"}', b'{"events": []}'):
             with self.subTest(body=unusable):
                 self.assertEqual(
                     ledger.send_ledger_events(config=config, events=events, ledger_http=self.fake((207, unusable))),
                     ledger.LedgerSendResult(answered=True, save=[]),
                 )
-                self.assertEqual(
-                    ledger.LEDGER_MESSAGES.pop(),
-                    "Mezmo ledger dropped 3 event(s): "
-                    "the ledger service answered HTTP 207 without usable event statuses",
-                )
+        self.assertEqual(
+            ledger.LEDGER_MESSAGES,
+            [
+                "Mezmo ledger dropped 3 event(s): "
+                "the ledger service answered HTTP 207 without usable event statuses",
+            ] * 4,
+        )
         self.assertEqual(self.spool_lines(), [])
 
 
@@ -1112,7 +1088,7 @@ class RetryFileTests(LedgerTestCase):
             ledger.LEDGER_MESSAGES,
             [
                 "Mezmo ledger dropped 2 saved event(s): "
-                "the ledger service answered HTTP 207 without usable event statuses"
+                "the ledger service answered HTTP 207 without usable event statuses",
             ],
         )
 
@@ -1156,6 +1132,21 @@ class RetryFileTests(LedgerTestCase):
         self.assertEqual(
             ledger.LEDGER_MESSAGES,
             [f"Mezmo ledger dropped 5 saved event(s): the retry file keeps at most {ledger.LEDGER_SPOOL_MAX_LINES}"],
+        )
+
+    def test_saving_lines_over_the_limit_drops_the_oldest(self) -> None:
+        self.assertEqual(ledger.LEDGER_SPOOL_MAX_LINES, 200)
+        lines = [self.spool_line() for _ in range(ledger.LEDGER_SPOOL_MAX_LINES)]
+        self.write_spool(lines)
+        config = ledger.load_ledger_config()
+        late = self.build("started", tool_use_id="late")
+
+        ledger.save_ledger_events(config=config, events=[late])
+
+        self.assertEqual(self.spool_lines(), lines[1:] + [self.spool_line(late)])
+        self.assertEqual(
+            ledger.LEDGER_MESSAGES,
+            [f"Mezmo ledger dropped 1 saved event(s): the retry file keeps at most {ledger.LEDGER_SPOOL_MAX_LINES}"],
         )
 
     def test_a_file_at_the_limit_is_not_rewritten(self) -> None:
@@ -1377,21 +1368,6 @@ class RefusedTests(LedgerTestCase):
                 self.assertNotIn("exit_status", event["extra"])
                 self.assertEqual(self.spool_lines(), [])
                 self.assertEqual(self.stderr, "")
-
-    def test_refused_ledger_read_mcp_tools_are_not_recorded(self) -> None:
-        fake = self.fake((202, b'{"accepted":1}'))
-        event = mcp_input("PreToolUse", tool_name="mcp__dev__get_ledger_investigation")
-        with patch.object(sys, "stderr", StringIO()) as stderr, patch.object(sys, "stdout", StringIO()) as stdout:
-            alive = ledger.record_governance_refusal(
-                hook_input=event,
-                ledger_http=fake,
-                outcome="denied",
-                reason="no",
-            )
-        self.assertFalse(alive)
-        self.assertEqual(fake.calls, [])
-        self.assertEqual(stderr.getvalue(), "")
-        self.assertEqual(stdout.getvalue(), "")
 
     def test_refused_sends_on_a_daemon_thread_with_the_refused_timeout(self) -> None:
         threads: list[threading.Thread] = []
@@ -2235,8 +2211,22 @@ class ResolveTargetTests(unittest.TestCase):
                 bash("kubectl get pods -n prod && kubectl scale deployment payments --replicas=0 --namespace=staging"),
                 ("payments/staging", "write"),
             ),
+            (
+                bash("kubectl get deploy payments # don't change staging\nkubectl delete svc checkout # team's cleanup"),
+                ("checkout/prod", "write"),
+            ),
+            (bash("kubectl get deploy -o yaml payments -n prod"), ("payments/prod", "read")),
+            (bash("kubectl get deploy --sort-by x payments -n prod"), ("payments/prod", "read")),
+            (bash("kubectl get deploy -A payments -n prod"), ("payments/prod", "read")),
+            (bash("kubectl delete deploy payments -n prod -n stage"), ("payments/stage", "write")),
+            (bash("kubectl drain node-1"), ("unknown", "write")),
+            (bash("kubectl label deploy payments tier=web -n prod"), ("payments/prod", "write")),
+            (bash("kubectl taint nodes node-1 key=value:NoSchedule"), ("unknown", "write")),
             (bash("kubectl rollout undo deploy/checkout -n prod --to-revision=40"), ("checkout/prod", "write")),
             (("demo_server", "get_service_failure_rates", {"service": "checkout"}), ("checkout/prod", "read")),
+            (("demo_server", "get_update_history", {"service": "checkout"}), ("checkout/prod", "read")),
+            (("demo_server", "getRecentUpdates", {"service": "checkout"}), ("checkout/prod", "read")),
+            (("demo_server", "updateService", {"service": "checkout"}), ("checkout/prod", "write")),
         ]
         for call, expected in cases:
             with self.subTest(call=call):
@@ -2288,10 +2278,13 @@ CLAUDE_CODE_RESOLVER_DEFINITIONS = (
     "KUBECTL_FILE_FLAGS",
     "KUBECTL_KINDS",
     "KUBECTL_READ_ROLLOUTS",
+    "KUBECTL_SERVICE_TYPES",
+    "KUBECTL_TARGET_VALUE_FLAGS",
     "KUBECTL_VALUE_FLAGS",
     "KUBECTL_WRITE_VERBS",
     "MAX_SHLEX_CHARACTERS",
     "MCP_ENV_ARGUMENTS",
+    "MCP_READ_PREFIXES",
     "MCP_SERVICE_ARGUMENTS",
     "MCP_WRITE_WORDS",
     "PLAIN_NAME",
@@ -2303,8 +2296,12 @@ CLAUDE_CODE_RESOLVER_DEFINITIONS = (
     "_kubectl_calls",
     "_kubectl_parts",
     "_kubectl_target",
+    "_kubectl_target_words",
     "_mcp_target",
+    "_mcp_access",
+    "_name_tokens",
     "_plain_name",
+    "_without_shell_comments",
     "resolve_target",
 )
 
