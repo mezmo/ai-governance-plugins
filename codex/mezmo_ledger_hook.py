@@ -22,6 +22,7 @@ import errno
 import json
 import os
 import re
+import shlex
 import stat
 import sys
 import threading
@@ -97,6 +98,42 @@ MAX_LEDGER_MESSAGE_CHARACTERS = 200
 # The first line of an apply_patch result.
 EXIT_CODE_LINE = re.compile(r"Exit code: (-?\d+)")
 LEDGER_ENDINGS = {"failed": "failed", "not_run": "not run"}
+
+# What resolve_target reads. Demo only, until there is a service catalog: DEMO_DEFAULT_ENV is the
+# environment of a call that names none, and DEMO_TARGETS maps a lowercase substring of a kubectl
+# call's words or an MCP tool's name to the target it stands for.
+DEMO_DEFAULT_ENV = "prod"
+DEMO_TARGETS = {"checkout": "checkout/prod"}
+# kubectl flags whose value is a file, never a service. In `logs`, `-f` means follow instead.
+KUBECTL_FILE_FLAGS = ("--filename", "--kustomize", "-f", "-k")
+KUBECTL_KINDS = (
+    "deploy", "deployment", "deployments", "service", "services", "statefulset", "statefulsets", "sts", "svc",
+)
+# `rollout` subcommands that only read. Every other `rollout` writes.
+KUBECTL_READ_ROLLOUTS = ("history", "status")
+# kubectl's global flags whose value is the next word.
+KUBECTL_VALUE_FLAGS = (
+    "--as", "--as-group", "--as-uid", "--as-user-extra", "--cache-dir", "--certificate-authority",
+    "--client-certificate", "--client-key", "--cluster", "--context", "--kubeconfig", "--kuberc",
+    "--log-flush-frequency", "--namespace", "--password", "--profile", "--profile-output",
+    "--request-timeout", "--server", "--tls-server-name", "--token", "--user", "--username", "--v",
+    "--vmodule", "-n", "-s", "-v",
+)
+KUBECTL_WRITE_VERBS = (
+    "annotate", "apply", "create", "delete", "edit", "patch", "replace", "restart", "rollout", "scale", "set",
+)
+# Above this many characters, _command_words skips shlex, which takes quadratic time on a long word.
+MAX_SHLEX_CHARACTERS = 100_000
+MCP_ENV_ARGUMENTS = ("env", "environment", "namespace")
+MCP_SERVICE_ARGUMENTS = ("service", "service_name")
+MCP_WRITE_WORDS = ("apply", "create", "delete", "patch", "restart", "rollback", "scale", "undo", "update")
+# A service, namespace or environment: a DNS label. _plain_name also refuses one that is all digits.
+PLAIN_NAME = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
+# The characters that become words of their own and end a kubectl call.
+SHELL_PUNCTUATION = "();<>|&\n"
+# A word of a command shlex doesn't read: a run of SHELL_PUNCTUATION, or of other characters that
+# aren't whitespace.
+UNQUOTED_WORD = re.compile("[{0}]+|[^\\s{0}]+".format(re.escape(SHELL_PUNCTUATION)))
 
 # Ledger threads never print. They leave messages here, which the main thread prints after its
 # wait.
@@ -225,9 +262,164 @@ def start_time_path(decision_id: str) -> Path:
     return call_state_dir() / decision_id
 
 
+def _plain_name(value: Any) -> Optional[str]:
+    """`value` as a lowercase DNS label that isn't all digits, else None."""
+    name = value.strip().lower() if isinstance(value, str) else ""
+    return name if PLAIN_NAME.fullmatch(name) and not name.isdigit() else None
+
+
+def _command_words(command: str) -> List[str]:
+    """The command's words. Each run of shell punctuation, newlines included, is its own word.
+
+    Comment lines go first, so an apostrophe in one can't open a quote, then backslash-newlines.
+    A command shlex can't read, or one longer than MAX_SHLEX_CHARACTERS, is split as UNQUOTED_WORD
+    says, with its quotes left in.
+    """
+    command = re.sub(r"(?m)^[ \t]*#.*", "", command).replace("\\\r\n", "").replace("\\\n", "")
+    # shlex adds to a word one character at a time, so one long word takes quadratic time.
+    if len(command) <= MAX_SHLEX_CHARACTERS:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=SHELL_PUNCTUATION)
+        lexer.commenters = ""
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        try:
+            return list(lexer)
+        except ValueError:  # An unclosed quote, or a backslash at the end.
+            pass
+    return UNQUOTED_WORD.findall(command)
+
+
+def _kubectl_calls(words: Sequence[str]) -> List[List[str]]:
+    """The words of each kubectl call, from `kubectl` to the next punctuation word or kubectl."""
+    calls: List[List[str]] = []
+    call: Optional[List[str]] = None
+    for word in words:
+        if word.rsplit("/", 1)[-1] == "kubectl":
+            call = []
+            calls.append(call)
+        elif word.startswith(tuple(SHELL_PUNCTUATION)):
+            call = None
+        elif call is not None:
+            call.append(word)
+    return calls
+
+
+def _kubectl_parts(words: Sequence[str]) -> Tuple[Optional[str], List[str]]:
+    """(namespace, rest) for one kubectl call.
+
+    `rest` is the call's words without the KUBECTL_VALUE_FLAGS and their values, up to a bare `--`
+    that follows the verb. `namespace` is None when no flag gives one, "" when a flag gives one
+    that can't be read, else the name. The first namespace flag wins.
+    """
+    namespace: Optional[str] = None
+    rest: List[str] = []
+    has_verb = False
+    position = 0
+    while position < len(words):
+        word = words[position]
+        position += 1
+        value = None
+        if word == "--":
+            if has_verb:
+                break
+        elif word in ("-n", "--namespace"):
+            value = words[position] if position < len(words) else ""
+            position += 1
+        elif word.startswith(("-n=", "--namespace=")):
+            value = word.partition("=")[2]
+        elif word.startswith("-n"):  # -n<ns>
+            value = word[2:]
+        elif word in KUBECTL_VALUE_FLAGS:
+            position += 1
+        else:
+            rest.append(word)
+            has_verb = has_verb or not word.startswith("-")
+        if value is not None and namespace is None:
+            namespace = _plain_name(value) or ""
+    return namespace, rest
+
+
+def _kubectl_access(rest: Sequence[str]) -> str:
+    """The call's access: "write" when its verb, its first word that isn't a flag, changes the cluster."""
+    plain = [word for word in rest if not word.startswith("-")]
+    if not plain or plain[0] not in KUBECTL_WRITE_VERBS:
+        return "read"
+    if plain[0] == "rollout" and len(plain) > 1 and plain[1] in KUBECTL_READ_ROLLOUTS:
+        return "read"
+    return "write"
+
+
+def _demo_target(words: Sequence[str]) -> Tuple[Optional[str], str]:
+    """(service, env) for the first DEMO_TARGETS key found inside one of `words`, else (None, "")."""
+    for key, target in DEMO_TARGETS.items():
+        if any(key in word.lower() for word in words):
+            service, _, env = target.partition("/")
+            return service, env
+    return None, ""
+
+
+def _kubectl_target(namespace: Optional[str], rest: Sequence[str]) -> Optional[str]:
+    """One call's target: None when it names no service, "unknown" when its namespace can't be read."""
+    verb = next((index for index, word in enumerate(rest) if not word.startswith("-")), len(rest))
+    after = list(rest[verb + 1:])
+    # The words that may name a service, with "" for each file after a KUBECTL_FILE_FLAGS flag.
+    file_flags = () if "logs" in rest[verb:verb + 1] else KUBECTL_FILE_FLAGS
+    words = ["" if index and after[index - 1] in file_flags else word for index, word in enumerate(after)]
+    # `deploy/checkout` anywhere comes before `deploy checkout`. A flag is never a plain name.
+    named = [(kind, name) for kind, _, name in (word.partition("/") for word in words)]
+    named += [(kind, name) for kind, name in zip(words, words[1:]) if "/" not in kind]
+    services = (_plain_name(name) for kind, name in named if kind.lower().split(".")[0] in KUBECTL_KINDS)
+    service = next((found for found in services if found), None)
+    env = ""
+    if service is None:
+        service, env = _demo_target(after)
+    if service is None:
+        return None
+    if namespace == "":
+        return "unknown"
+    return f"{service}/{namespace or env or DEMO_DEFAULT_ENV}"
+
+
+def _mcp_target(arguments: Mapping[str, Any], name: str) -> str:
+    """An MCP call's target: "unknown" with no service, or with an environment that can't be read."""
+    services = (_plain_name(arguments.get(key)) for key in MCP_SERVICE_ARGUMENTS)
+    service = next((found for found in services if found), None)
+    env: Optional[str] = ""
+    if service is None:
+        service, env = _demo_target([name])
+    if service is None:
+        return "unknown"
+    given = next((arguments[key] for key in MCP_ENV_ARGUMENTS if arguments.get(key) not in (None, "")), None)
+    if given is not None:
+        env = _plain_name(given)
+        if env is None:
+            return "unknown"
+    return f"{service}/{env or DEMO_DEFAULT_ENV}"
+
+
 def resolve_target(namespace: str, name: str, arguments: Mapping[str, Any]) -> Tuple[str, str]:
-    """(target, access) for a call. C3's (capture epic) resolver replaces this stub."""
-    return "unknown", "read"
+    """(target, access) for a call: "<service>/<env>" or "unknown", and "read" or "write".
+
+    A demo build: it reads the kubectl calls in a Bash command, and the name and arguments of an
+    MCP tool. Another built-in tool is ("unknown", "read"). It never raises. On an error the target
+    is "unknown" and the access is what was worked out before the error.
+    """
+    access = "read"
+    try:
+        if namespace != AGENT:
+            access = "write" if any(word in name.lower() for word in MCP_WRITE_WORDS) else "read"
+            return _mcp_target(arguments, name), access
+        command = arguments.get("command")
+        if name != "Bash" or not isinstance(command, str):
+            return "unknown", access
+        calls = [_kubectl_parts(call) for call in _kubectl_calls(_command_words(command))]
+        writes = [call for call in calls if _kubectl_access(call[1]) == "write"]
+        access = "write" if writes else "read"
+        # A reading call never lends its service to a write.
+        targets = [_kubectl_target(*call) for call in writes or calls]
+        return next((target for target in targets if target), "unknown"), access
+    except Exception:
+        return "unknown", access
 
 
 def ledger_json(value: Any, limit: int = MAX_LEDGER_JSON_CHARACTERS) -> str:

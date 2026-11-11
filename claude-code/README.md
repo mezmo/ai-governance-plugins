@@ -268,6 +268,11 @@ Each record carries the session id, a call id shared by its start and end, and t
 exit status and how long the tool took. `not_run` carries why the call didn't run. Arguments and
 results are cut at 4,096 characters and are not redacted.
 
+Each record also names the service and environment the call touched, such as `checkout/prod`, or
+`unknown`, and whether the call reads or writes. Both are worked out from the kubectl commands in a
+Bash call or from an MCP tool's name and arguments, with `prod` when no namespace or environment
+is given.
+
 Turn it on by setting `MEZMO_LEDGER_ACCOUNT` and `MEZMO_LEDGER_URL`:
 
 | Variable | Purpose |
@@ -279,9 +284,11 @@ Turn it on by setting `MEZMO_LEDGER_ACCOUNT` and `MEZMO_LEDGER_URL`:
 | `MEZMO_LEDGER_SPOOL` | Retry file. Optional, defaults to `~/.mezmo/ledger-spool.jsonl` |
 | `MEZMO_LEDGER_URL` | Ledger events URL. Required |
 
-`MEZMO_LEDGER_ACCOUNT` must be the account the key belongs to. Setting `MEZMO_LEDGER_KEY` doesn't
-turn governance on. Without it, the governance key is sent to `MEZMO_LEDGER_URL`. The URL must
-use `https`, or `http` to this machine only.
+`MEZMO_LEDGER_ACCOUNT` must be the account the key belongs to. If it isn't, the ledger answers 400
+and the records are dropped. The key is sent as `Authorization: Token <key>`, or as given when it
+starts with `Token ` or `Bearer `. Setting `MEZMO_LEDGER_KEY` doesn't turn governance on. Without
+it, the governance key is sent to `MEZMO_LEDGER_URL`. The URL must use `https`, or `http` to this
+machine only. On Mezmo's dev environment it is `https://api.use.dev.logdna.net/v1/audit/events`.
 
 The ledger never blocks a tool call or changes a governance decision, because its hook always
 exits successfully. If the ledger is slow or unreachable, the ledger hook stops waiting after 3
