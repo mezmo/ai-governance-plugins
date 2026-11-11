@@ -454,6 +454,16 @@ class EventTests(LedgerTestCase):
         self.assertEqual(fake.calls, [])
         self.assertEqual(self.spool_lines(), [])
 
+    def test_ledger_read_mcp_tools_are_not_recorded(self) -> None:
+        fake = self.fake()
+        for event_name in ("PreToolUse", "PostToolUse", "PermissionDenied"):
+            for tool_name in ("get_ledger_investigation", "list_ledger_entries"):
+                with self.subTest(event_name=event_name, tool_name=tool_name):
+                    event = mcp_input(event_name, tool_name=f"mcp__any_server__{tool_name}")
+                    self.assertIsNone(self.run_hook(event, fake))
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(ledger_hook.LEDGER_THREADS, [])
+
     def test_calls_governance_skips_send_nothing(self) -> None:
         fake = self.fake()
         self.run_hook(hook_input(tool_name="Read", tool_input={"file_path": "/etc/hosts"}), fake)
@@ -713,6 +723,10 @@ class SettingsTests(LedgerTestCase):
                 self.assertFalse(self.spool.exists())
                 self.assertEqual(ledger_hook.LEDGER_THREADS, [])
 
+    def test_the_ledger_url_drops_trailing_slashes(self) -> None:
+        os.environ["MEZMO_LEDGER_URL"] = "https://audit.example.test/v1/events///"
+        self.assertEqual(ledger.load_ledger_config().url, "https://audit.example.test/v1/events")
+
     def test_post_ledger_events_builds_the_authorization_header_from_the_key(self) -> None:
         recorder = Recorder()
         url = serve(self, recorder)
@@ -863,14 +877,19 @@ class SettingsTests(LedgerTestCase):
         )
         self.assertEqual(self.spool_lines(), [])
 
-    def test_a_207_without_a_usable_list_saves_them_all(self) -> None:
+    def test_a_207_without_a_usable_list_drops_them_all(self) -> None:
         config = ledger.load_ledger_config()
         events = [self.build("started", tool_use_id=f"call-{n}") for n in range(2)]
         for body in (b"not json", b"[]", b'{"events": "x"}'):
             with self.subTest(body=body):
                 self.assertEqual(
                     ledger.send_ledger_events(config=config, events=events, ledger_http=self.fake((207, body))),
-                    ledger.LedgerSendResult(answered=True, save=events),
+                    ledger.LedgerSendResult(answered=True, save=[]),
+                )
+                self.assertEqual(
+                    ledger.LEDGER_MESSAGES.pop(),
+                    "Mezmo ledger dropped 2 event(s): "
+                    "the ledger service answered HTTP 207 without usable event statuses",
                 )
 
     def test_send_ledger_events_says_whether_the_service_answered_and_never_saves(self) -> None:
@@ -948,7 +967,14 @@ class RetryFileTests(LedgerTestCase):
         ledger.drain_ledger_spool(config=ledger.load_ledger_config(), ledger_http=self.fake((207, body)))
         self.assertEqual(self.spool_lines(), lines[1:])
         ledger.drain_ledger_spool(config=ledger.load_ledger_config(), ledger_http=self.fake((207, b"x")))
-        self.assertEqual(self.spool_lines(), lines[1:])
+        self.assertEqual(self.spool_lines(), [])
+        self.assertEqual(
+            ledger.LEDGER_MESSAGES,
+            [
+                "Mezmo ledger dropped 2 saved event(s): "
+                "the ledger service answered HTTP 207 without usable event statuses"
+            ],
+        )
 
     def test_bad_lines_are_removed(self) -> None:
         good = self.spool_line()
@@ -1308,6 +1334,21 @@ class RefusedTests(LedgerTestCase):
                 self.assertNotIn("duration_ms", event["extra"])
                 self.assertEqual(self.spool_lines(), [])
                 self.assertEqual(self.stderr, "")
+
+    def test_refused_ledger_read_mcp_tools_are_not_recorded(self) -> None:
+        fake = self.fake((202, b'{"accepted":1}'))
+        event = mcp_input("PreToolUse", tool_name="mcp__dev__get_ledger_investigation")
+        with patch.object(sys, "stderr", StringIO()) as stderr:
+            self.assertIsNone(
+                ledger.record_governance_refusal(
+                    hook_input=event,
+                    ledger_http=fake,
+                    outcome="denied",
+                    reason="no",
+                )
+            )
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_refused_passes_the_refused_timeout(self) -> None:
         fake = self.fake()

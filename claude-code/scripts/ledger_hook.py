@@ -85,6 +85,8 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
         ledger_http = ledger_http or ledger.post_ledger_events
         if event.get("hook_event_name") not in LEDGER_EVENTS or not governed(event):
             return
+        if ledger._skip_ledger_mcp_tool(hook_input=event):
+            return
         try:
             config = ledger.load_ledger_config()
         except Exception:

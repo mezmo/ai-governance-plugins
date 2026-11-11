@@ -322,9 +322,11 @@ Turn it on by setting `MEZMO_LEDGER_ACCOUNT` and `MEZMO_LEDGER_URL`:
 | `MEZMO_LEDGER_URL` | Ledger events URL. Required |
 
 Without `MEZMO_LEDGER_KEY`, the governance token is sent to
-`MEZMO_LEDGER_URL`, whatever host that is. The URL must use `https`, or `http`
-to this machine only, and hold no user name or password. On Mezmo's dev
-environment it is `https://api.use.dev.logdna.net/v1/audit/events`.
+`MEZMO_LEDGER_URL`, whatever host that is. The key is sent as
+`Authorization: Token <key>`, or as given when it starts with `Token ` or
+`Bearer `. The URL must use `https`, or `http` to this machine only, and hold
+no user name or password. For Mezmo, use
+`https://<Mezmo API host>/v1/audit/events`.
 
 `MEZMO_LEDGER_ACCOUNT` must be the account the key belongs to. If it is not,
 the service answers 400 and the records are dropped. Records it refuses with
