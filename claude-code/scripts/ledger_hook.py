@@ -32,7 +32,7 @@ import ledger
 from governance_hook import governed, session_state_path, update_session_state
 
 LEDGER_EVENTS = frozenset({"PermissionDenied", "PostToolUse", "PostToolUseFailure", "PreToolUse"})
-# The longest a join or close waits for the session state's lock. Past it the change counts as not made.
+# The longest a join or close waits for the session state's lock. Past it the change is not made.
 INVESTIGATION_STATE_TIMEOUT_SECONDS = 1.0
 
 # Every ledger thread this process started, so main() knows whether one is still running.
@@ -92,30 +92,9 @@ def _state_thread_id(*, hook_input: Mapping[str, Any]) -> Any:
         return None
 
 
-def _change_state(
-    *, change: Callable[[Dict[str, Any]], None], deadline: float, hook_input: Mapping[str, Any]
-) -> bool:
-    """Apply `change` to the session state on a ledger thread. False when it has not finished in time.
-
-    Waits at most INVESTIGATION_STATE_TIMEOUT_SECONDS and never past `deadline`, so a lock another
-    process holds can't cost this call its own event. A change still waiting is abandoned and
-    never written.
-    """
-    abandoned = threading.Event()
-
-    def guarded(state: Dict[str, Any]) -> None:
-        # The lock may come free after the wait gave up. The hook has then already said the change
-        # was not made, so it raises, and update_session_state writes nothing.
-        if abandoned.is_set():
-            raise RuntimeError("the wait for the session state ended")
-        change(state)
-
-    thread = start_ledger_thread(work=lambda: update_session_state(hook_input, guarded))
-    thread.join(max(0.0, min(INVESTIGATION_STATE_TIMEOUT_SECONDS, deadline - time.monotonic())))
-    if thread.is_alive():
-        abandoned.set()
-        return False
-    return True
+def _lock_timeout(*, deadline: float) -> float:
+    """How long a join or close may wait for the session state's lock: never past `deadline`."""
+    return max(0.0, min(INVESTIGATION_STATE_TIMEOUT_SECONDS, deadline - time.monotonic()))
 
 
 def _join(
@@ -132,14 +111,12 @@ def _join(
             "joined_at": datetime.now(timezone.utc).isoformat(),
             "thread_id": thread_id,
         }
-        if (
-            not _change_state(
-                change=lambda state: state.__setitem__("investigation", investigation),
-                deadline=deadline,
-                hook_input=hook_input,
-            )
-            or _state_thread_id(hook_input=hook_input) != thread_id
-        ):
+        update_session_state(
+            hook_input,
+            lambda state: state.__setitem__("investigation", investigation),
+            lock_timeout=_lock_timeout(deadline=deadline),
+        )
+        if _state_thread_id(hook_input=hook_input) != thread_id:
             ledger.ledger_warn(message=f"Mezmo ledger could not join {incident_key}: the session state was not written")
             return None
         return ledger.investigation_event(
@@ -171,10 +148,8 @@ def _close(
 
         # No write for another investigation, so a close can't create a state file.
         if _state_thread_id(hook_input=hook_input) == thread_id:
-            if (
-                not _change_state(change=leave, deadline=deadline, hook_input=hook_input)
-                or _state_thread_id(hook_input=hook_input) == thread_id
-            ):
+            update_session_state(hook_input, leave, lock_timeout=_lock_timeout(deadline=deadline))
+            if _state_thread_id(hook_input=hook_input) == thread_id:
                 ledger.ledger_warn(message=f"Mezmo ledger could not close {incident_key} in the session state")
     except Exception as error:
         ledger.ledger_warn(message=f"Mezmo ledger could not close {incident_key}: {str(error) or type(error).__name__}")
@@ -196,7 +171,8 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
     """Send this call's events while resending saved ones, and wait up to one deadline. Never raises.
 
     A join is written to the session state before the call's event is built, so the join's own
-    `ran` carries the investigation, and a close is cleared after. Each new event goes in a request
+    `ran` carries the investigation, and a close is cleared after. Each waits for the state's lock
+    at most INVESTIGATION_STATE_TIMEOUT_SECONDS and never past the deadline. Each new event goes in a request
     of its own, so one event's refusal or retry never touches another. Only this thread saves the
     new events, each by its own result, so each is saved at most once and never by a thread os._exit
     could cut off. A thread still running at the deadline is abandoned, and the duplicate it may

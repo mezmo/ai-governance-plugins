@@ -320,8 +320,12 @@ session is in an investigation, each of its records carries the investigation's 
 
 `/mezmo:investigate <incident>` works out the incident's key, preferring the PagerDuty incident
 when a Slack channel or Jira issue has one, then joins. It runs
-`scripts/ledger_investigation.py join --incident-key <key>`, and the ledger hook, seeing that call
-succeed, puts the session in the investigation and sends `joined`. Claude then reads the
+`python3 scripts/ledger_investigation.py join --incident-key <key>`, and the ledger hook, seeing
+that command print its result line for the same key, puts the session in the investigation and
+sends `joined`. The hook takes only a Bash call that starts by running the CLI with a Python
+interpreter, with the key written out, so `join` and `close` are each run on their own as the
+whole call: one after a `cd ... &&`, or with a key passed through a shell variable such as
+`"$KEY"`, is not recognized. Claude then reads the
 investigation with the `get_ledger_investigation` tool of [Mezmo MCP](#mezmo-mcp) before changing
 anything, runs one command per Bash call, and at the end runs `close`, which sends `closed` and
 takes the session out of it. Both need ledger sending on.

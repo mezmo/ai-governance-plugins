@@ -188,6 +188,7 @@ class LaunchTests(unittest.TestCase):
             ("no account", ["launch", "--incident-key", INCIDENT_KEY, *self.touch()], {"MEZMO_LEDGER_ACCOUNT": ""}, 2),
             ("no URL", ["launch", "--incident-key", INCIDENT_KEY, *self.touch()], {"MEZMO_LEDGER_URL": ""}, 2),
             ("a command that does not exist", ["launch", "--incident-key", INCIDENT_KEY, *missing], {}, 127),
+            ("an abbreviated key argument", ["join", "--incident", INCIDENT_KEY], {}, 2),
         ):
             with self.subTest(case=case), patch.dict(self.env, env):
                 result = self.launch(*argv)

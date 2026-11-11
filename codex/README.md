@@ -396,9 +396,13 @@ An incident key is `<source>:<id>`, with source `jira`, `pagerduty` or
 | `launch --incident-key <key> -- <command...>` | Sends `opened`, then runs the command in the investigation |
 
 `id`, `join` and `close` need only `MEZMO_LEDGER_ACCOUNT` and send nothing
-themselves. The ledger hook does the rest when a `Bash` call runs the CLI with
-`join` or `close` and its output has that line. Codex gives the hook no exit
-code, so the line is the sign the command worked.
+themselves. The ledger hook does the rest when a `Bash` call starts by running
+the CLI with a Python interpreter, as `python3 <cli> join --incident-key <key>`,
+and its output has that line for the same key. So run `join` and `close` each
+on its own as the whole call, with the key written out: one after a `cd ... &&`,
+or with a key passed through a shell variable such as `"$KEY"`, is not
+recognized. Codex gives the hook no exit code, so the line is the sign the
+command worked.
 
 - After a `join`, the hook writes the investigation to the
   [session state](#session-state) and then sends `joined`. Every later call of
@@ -426,7 +430,9 @@ the path of `ledger_investigation.py`.
    PagerDuty, Slack and Jira tools to find its PagerDuty incident, and use that
    when there is one. Two agents that pick different keys get different
    investigations and never see each other's work.
-2. Run `python3 <cli> join --incident-key <key>`. Do this even when the session
+2. Run `python3 <cli> join --incident-key <key>` on its own, as the whole
+   shell call, with the key written out in the command: no `cd` or other command
+   before it, and no shell variable for the key. Do this even when the session
    was started by `ledger_investigation.py launch`.
 3. Before you change anything, call the `get_ledger_investigation` MCP tool
    with `incident_key` set to the key, and read what was already done.
@@ -438,7 +444,7 @@ the path of `ledger_investigation.py`.
    found, report it and stop. Don't search the cluster for another deployment
    with the same name and act on that.
 6. When you are done, run `python3 <cli> close --incident-key <key>` with the
-   same key.
+   same key, on its own as the whole shell call, with the key written out.
 ```
 
 `launch` is for an alert that starts an agent, for example

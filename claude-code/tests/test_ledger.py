@@ -765,6 +765,62 @@ class JoinCloseTests(LedgerTestCase):
             "agent": hook.AGENT, "incident_key": INCIDENT_KEY, "session_id": "session-1", "thread_id": CHECK_THREAD_ID,
         })
 
+    def test_only_a_real_join_or_close_with_its_own_key_is_recognized(self) -> None:
+        cli = '"/plugin/scripts/ledger_investigation.py"'
+        joined = json.dumps({"action": "joined", "incident_key": INCIDENT_KEY, "thread_id": "printed-thread"})
+        example = '{"action":"joined","incident_key":"jira:OPS-123"}'
+        # A runbook that shows a join, and a printf whose quoted first word starts with punctuation.
+        runbook = f"python3 scripts/ledger_investigation.py join --incident-key jira:OPS-123\n{example}\n"
+        quoted = f"'(example)' python3 ledger_investigation.py join --incident-key jira:OPS-123 '{example}'"
+
+        def bash(command: str, stdout: str) -> Dict[str, Any]:
+            return hook_input(
+                "PostToolUse",
+                tool_input={"command": command},
+                tool_response={"interrupted": False, "isImage": False, "stderr": "", "stdout": stdout},
+            )
+
+        for command in (
+            f"python3 {cli} join --incident-key {INCIDENT_KEY}",
+            f"python3 {cli} join --incident-key {INCIDENT_KEY} 2>&1",
+            f"python3 {cli} join --incident-key {INCIDENT_KEY} | tail -n 5",
+            f"python3 -I {cli} join --incident-key {INCIDENT_KEY}",
+            f'python3 "/my plugins/scripts/ledger_investigation.py" join --incident-key {INCIDENT_KEY}',
+            f"PYTHONSAFEPATH=1 python3 {cli} join --incident-key {INCIDENT_KEY}",
+            f"python3 {cli} join --incident-key={INCIDENT_KEY}",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(ledger._investigation_call(ledger._command_words(command)), ("join", INCIDENT_KEY))
+                self.assertEqual(
+                    ledger.investigation_action(hook_input=bash(command, f"starting\n{joined}\ndone\n")),
+                    ("joined", INCIDENT_KEY),
+                )
+        # (command, what _investigation_call reads from it, the call's output)
+        for command, call, stdout in (
+            (
+                f"printf '%s\\n' ledger_investigation.py join '{example}'",
+                None,
+                f"ledger_investigation.py\njoin\n{example}\n",
+            ),
+            (f"tee runbook.md <<'EOF'\n{runbook}EOF", None, runbook),
+            (
+                f"printf '%s\\n' {quoted}",
+                None,
+                f"(example)\npython3\nledger_investigation.py\njoin\n--incident-key\njira:OPS-123\n{example}\n",
+            ),
+            (f"echo python3 {cli} join --incident-key {INCIDENT_KEY}", None, joined),
+            (f"cd /tmp && python3 {cli} join --incident-key {INCIDENT_KEY}", None, joined),
+            (f"python3 -m ledger_investigation.py join --incident-key {INCIDENT_KEY}", None, joined),
+            (f"python3 {cli} join --incident-key jira:OPS-1", ("join", "jira:OPS-1"), joined),
+            (f'python3 -c "print(1)" {cli} join --incident-key {INCIDENT_KEY}', None, joined),
+            (f'python3 {cli} join --incident-key "$KEY"', ("join", "$KEY"), joined),
+            (f"python3 {cli} id --incident-key {INCIDENT_KEY}", None, joined),
+            (f"python3 {cli} launch --incident-key {INCIDENT_KEY} -- claude", None, joined),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(ledger._investigation_call(ledger._command_words(command)), call)
+                self.assertIsNone(ledger.investigation_action(hook_input=bash(command, stdout)))
+
     def test_a_join_writes_the_state_and_sends_joined(self) -> None:
         fake = self.fake()
         self.run_hook(cli_call("join", "joined"), fake)
@@ -798,7 +854,7 @@ class JoinCloseTests(LedgerTestCase):
         # The environment names the same investigation, so only a check of the state itself fails here.
         os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
         fake = self.fake()
-        with patch.object(ledger_hook, "update_session_state", lambda event, change: None):
+        with patch.object(ledger_hook, "update_session_state", lambda event, change, lock_timeout: None):
             self.run_hook(cli_call("join", "joined"), fake)
         self.assertIn(f"could not join {INCIDENT_KEY}", self.stderr)
         self.assertEqual([event["event"] for event in fake.events()], ["agent.tool_call.ran"])
@@ -812,7 +868,8 @@ class JoinCloseTests(LedgerTestCase):
         with patch.object(ledger_hook, "INVESTIGATION_STATE_TIMEOUT_SECONDS", 0.05):
             self.state_dir.mkdir(parents=True, exist_ok=True)
             path = hook.session_state_path("session-1")
-            # Another open file's lock, as another process would hold it, freed after the wait ends.
+            # Another open file's lock, as another process would hold it. Freed after the hook's wait
+            # ends, so a hook that waits for it without a bound fails here instead of hanging.
             lock = open(f"{path}.lock", "a")
             self.addCleanup(lock.close)
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -823,7 +880,7 @@ class JoinCloseTests(LedgerTestCase):
             self.run_hook(cli_call("join", "joined"), fake)
         self.assertIn(f"could not join {INCIDENT_KEY}", self.stderr)
         self.assertEqual([event["event"] for event in fake.events()], ["agent.tool_call.ran"])
-        # The abandoned change gets the lock once it is free, and must still write nothing.
+        # Once the lock is free, nothing left over from the hook may still write the state.
         release.join(5)
         for thread in ledger_hook.LEDGER_THREADS:
             thread.join(5)

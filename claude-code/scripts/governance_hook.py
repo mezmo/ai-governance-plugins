@@ -979,15 +979,33 @@ def append_audit(record: Mapping[str, Any]) -> None:
 
 
 @contextmanager
-def _locked(path: Path) -> Iterator[None]:
-    """Hold an exclusive lock on `path`.lock, so parallel tool calls don't lose updates."""
+def _locked(path: Path, timeout: Optional[float] = None) -> Iterator[None]:
+    """Hold an exclusive lock on `path`.lock, so parallel tool calls don't lose updates.
+
+    With a `timeout`, waits that many seconds at most, then raises TimeoutError without running the body.
+    """
+    held_elsewhere = False
     with open(f"{path}.lock", "a") as lock:
         try:
             import fcntl
 
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            give_up = None if timeout is None else time.monotonic() + timeout
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX if give_up is None else fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if give_up is None:
+                        raise
+                    if time.monotonic() >= give_up:
+                        held_elsewhere = True
+                        break
+                    time.sleep(0.01)
         except (ImportError, OSError):
             pass  # no fcntl on Windows: best effort
+        # Raised out here, so a lock held elsewhere can't be taken for the best-effort case above.
+        if held_elsewhere:
+            raise TimeoutError(f"{lock.name} is held elsewhere")
         yield
 
 
@@ -1001,15 +1019,21 @@ def _prune_old_state(directory: Path) -> None:
             pass
 
 
-def update_session_state(event: Mapping[str, Any], change: Callable[[Dict[str, Any]], None]) -> None:
-    """Apply `change` to this session's status file. Never raises: the file is only for display."""
+def update_session_state(
+    event: Mapping[str, Any], change: Callable[[Dict[str, Any]], None], *, lock_timeout: Optional[float] = None
+) -> None:
+    """Apply `change` to this session's status file. Never raises: the file is only for display.
+
+    With a `lock_timeout`, a lock still held elsewhere after that many seconds means nothing is read
+    or written.
+    """
     session_id = event.get("session_id")
     if not isinstance(session_id, str) or not session_id.strip():
         return
     try:
         path = session_state_path(session_id.strip())
         path.parent.mkdir(parents=True, exist_ok=True)
-        with _locked(path):
+        with _locked(path, lock_timeout):
             is_new = not path.exists()
             try:
                 state = json.loads(path.read_text(encoding="utf-8")) if not is_new else {}

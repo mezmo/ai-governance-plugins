@@ -69,8 +69,9 @@ def print_line(value: Dict[str, Any]) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
+    # No abbreviations, such as --incident, which the ledger hook would not read.
     parser = argparse.ArgumentParser(
-        prog="ledger_investigation.py", description="Join, close or launch a Mezmo investigation."
+        allow_abbrev=False, description="Join, close or launch a Mezmo investigation.", prog="ledger_investigation.py"
     )
     commands = parser.add_subparsers(dest="action", metavar="{id,join,close,launch}")
     commands.required = True
@@ -80,7 +81,7 @@ def _parser() -> argparse.ArgumentParser:
         ("close", "print the line that closes the investigation"),
         ("launch", "send `opened`, then run the command after `--` inside the investigation"),
     ):
-        command = commands.add_parser(name, help=text)
+        command = commands.add_parser(name, allow_abbrev=False, help=text)
         command.add_argument(
             "--incident-key", required=True, help="<source>:<id>, source one of " + ", ".join(INCIDENT_SOURCES)
         )
