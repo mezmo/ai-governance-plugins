@@ -310,6 +310,11 @@ tool's arguments. `ran` and `failed` carry the result, and the exit status
 when the result states one. `not_run` carries why the call did not run.
 Arguments and results are cut at 4,096 characters and are not redacted.
 
+Each record also names the service and environment the call touched, such as
+`checkout/prod`, or `unknown`, and whether the call reads or writes. Both are
+worked out from the kubectl commands in a Bash call or from an MCP tool's name
+and arguments, with `prod` when no namespace or environment is given.
+
 Turn it on by setting `MEZMO_LEDGER_ACCOUNT` and `MEZMO_LEDGER_URL`:
 
 | Variable | Purpose |

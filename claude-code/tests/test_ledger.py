@@ -509,7 +509,8 @@ class FieldTests(LedgerTestCase):
             self.assertEqual(event["entity_id"], "unknown")
             self.assertIs(event["internal"], False)
             self.assertEqual(event["extra"]["agent"], "claude_code")
-            self.assertEqual(event["extra"]["access"], "read")
+            # `pods_delete` holds a write word but names no service.
+            self.assertEqual(event["extra"]["access"], "write" if event is mcp else "read")
             self.assertEqual(event["extra"]["target"], "unknown")
             self.assertEqual(event["extra"]["session_id"], "session-1")
             self.assertEqual(event["extra"]["request_id"], hook.call_identity(hook_input()).request_id if event is bash

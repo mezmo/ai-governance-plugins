@@ -633,7 +633,8 @@ class FieldTests(LedgerTestCase):
             self.assertEqual(event["entity_id"], "unknown")
             self.assertIs(event["internal"], False)
             self.assertEqual(event["extra"]["agent"], "codex")
-            self.assertEqual(event["extra"]["access"], "read")
+            # `pods_delete` holds a write word but names no service.
+            self.assertEqual(event["extra"]["access"], "write" if event is mcp else "read")
             self.assertEqual(event["extra"]["target"], "unknown")
             self.assertEqual(event["extra"]["session_id"], "session-1")
             self.assertEqual(event["extra"]["request_id"], identity(source).request_id)
@@ -2221,6 +2222,27 @@ class LedgerHookBudgetTests(ScriptTestCase):
         self.assertEqual(self.saved(), [])
 
 
+class ResolveTargetTests(unittest.TestCase):
+    def test_the_tickets_cases(self) -> None:
+        # The rest are in claude-code/tests/test_resolve_target.py: the drift test keeps the copies identical.
+        def bash(command: str) -> tuple[str, str, dict[str, Any]]:
+            return ledger.AGENT, "Bash", {"command": command}
+
+        cases = [
+            (bash("kubectl -n prod logs deploy/checkout"), ("checkout/prod", "read")),
+            (bash("kubectl get pods -n prod"), ("unknown", "read")),
+            (
+                bash("kubectl get pods -n prod && kubectl scale deployment payments --replicas=0 --namespace=staging"),
+                ("payments/staging", "write"),
+            ),
+            (bash("kubectl rollout undo deploy/checkout -n prod --to-revision=40"), ("checkout/prod", "write")),
+            (("demo_server", "get_service_failure_rates", {"service": "checkout"}), ("checkout/prod", "read")),
+        ]
+        for call, expected in cases:
+            with self.subTest(call=call):
+                self.assertEqual(ledger.resolve_target(*call), expected)
+
+
 # Both plugins read and write ~/.mezmo/ledger-spool.jsonl, so the code that touches the file or
 # sends a batch must stay identical to claude-code/scripts/ledger.py: a fix in one reaches the
 # other, and neither can leave a line the other misreads.
@@ -2258,6 +2280,33 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
 )
 # The ledger file's own copies of helpers the Claude Code ledger imports from its governance hook.
 CLAUDE_CODE_HOOK_DEFINITIONS = ("_locked", "_setting", "authorization_header")
+# Both plugins file a call under the same target and access, so the resolver must stay identical to
+# claude-code/scripts/ledger.py's. Its tests are in claude-code/tests/test_resolve_target.py.
+CLAUDE_CODE_RESOLVER_DEFINITIONS = (
+    "DEMO_DEFAULT_ENV",
+    "DEMO_TARGETS",
+    "KUBECTL_FILE_FLAGS",
+    "KUBECTL_KINDS",
+    "KUBECTL_READ_ROLLOUTS",
+    "KUBECTL_VALUE_FLAGS",
+    "KUBECTL_WRITE_VERBS",
+    "MAX_SHLEX_CHARACTERS",
+    "MCP_ENV_ARGUMENTS",
+    "MCP_SERVICE_ARGUMENTS",
+    "MCP_WRITE_WORDS",
+    "PLAIN_NAME",
+    "SHELL_PUNCTUATION",
+    "UNQUOTED_WORD",
+    "_command_words",
+    "_demo_target",
+    "_kubectl_access",
+    "_kubectl_calls",
+    "_kubectl_parts",
+    "_kubectl_target",
+    "_mcp_target",
+    "_plain_name",
+    "resolve_target",
+)
 
 
 class SharedLedgerDriftTests(unittest.TestCase):
@@ -2276,6 +2325,9 @@ class SharedLedgerDriftTests(unittest.TestCase):
 
     def test_the_helper_copies_match_the_claude_code_hook(self) -> None:
         self.assert_identical(CLAUDE_CODE_HOOK_DEFINITIONS, CLAUDE_CODE_SCRIPTS / "governance_hook.py")
+
+    def test_the_resolver_matches_the_claude_code_ledger(self) -> None:
+        self.assert_identical(CLAUDE_CODE_RESOLVER_DEFINITIONS, CLAUDE_CODE_SCRIPTS / "ledger.py")
 
 
 if __name__ == "__main__":
