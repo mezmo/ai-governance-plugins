@@ -10,6 +10,8 @@ Codex runs it alongside mezmo_governance_hook.py for every tool call.
   `end_governance_refusal`, because Codex says nothing more about a denied call.
 - Off unless MEZMO_LEDGER_ACCOUNT and MEZMO_LEDGER_URL are both set.
 - It always exits 0 and prints no hook output, so it can never block or change a tool call.
+- A Bash call that runs ledger_investigation.py join or close, and printed its result line, also
+  joins or leaves the investigation in the session state and sends `joined` or `closed`.
 - Events it could not send are saved to ~/.mezmo/ledger-spool.jsonl and resent on a later run.
   Claude Code uses the same file, so the code that handles it must match
   claude-code/scripts/ledger.py. test_ledger.py checks this.
@@ -19,11 +21,13 @@ Codex runs it alongside mezmo_governance_hook.py for every tool call.
 from __future__ import annotations
 
 import errno
+import functools
 import json
 import os
 import re
 import shlex
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -59,7 +63,7 @@ LEDGER_KEY_ENV = "MEZMO_LEDGER_KEY"
 LEDGER_SPOOL_ENV = "MEZMO_LEDGER_SPOOL"
 LEDGER_URL_ENV = "MEZMO_LEDGER_URL"
 DEFAULT_LEDGER_SPOOL = Path.home() / ".mezmo" / "ledger-spool.jsonl"
-# Where a session's investigation and references are read from. Nothing here writes it.
+# Where a session's investigation and references are read from. Only a join or a close writes it.
 DEFAULT_STATE_DIR = Path.home() / ".mezmo" / "governance" / "codex-sessions"
 # Where each call's start time waits for the ledger hook, while the ledger is on.
 DEFAULT_CALL_STATE_DIR = Path.home() / ".mezmo" / "governance" / "codex-calls"
@@ -80,6 +84,8 @@ LEDGER_TIMEOUT_SECONDS = 3.0
 # save and the prints after the wait. A retry file that another process holds locked would
 # otherwise hold the call until Codex kills the hook.
 LEDGER_EXIT_MARGIN_SECONDS = 1.0
+# The longest a join or close waits for the session state's lock. Past it the change counts as not made.
+INVESTIGATION_STATE_TIMEOUT_SECONDS = 1.0
 # How long record_governance_refusal waits for its request, and that request's socket timeout.
 # Kept short because it runs inside the governance hook.
 REFUSED_TIMEOUT_SECONDS = 2.0
@@ -98,6 +104,9 @@ MAX_LEDGER_MESSAGE_CHARACTERS = 200
 # The first line of an apply_patch result.
 EXIT_CODE_LINE = re.compile(r"Exit code: (-?\d+)")
 LEDGER_ENDINGS = {"failed": "failed", "not_run": "not run"}
+# The investigation CLI, and what its join and close print as `action` when they succeed.
+INVESTIGATION_ACTIONS = {"close": "closed", "join": "joined"}
+INVESTIGATION_SCRIPT = "ledger_investigation.py"
 
 # What resolve_target reads. Demo only, until there is a service catalog: DEMO_DEFAULT_ENV is the
 # environment of a call that names none, and DEMO_TARGETS maps a lowercase substring of a kubectl
@@ -612,6 +621,11 @@ def ledger_result(*, hook_input: Mapping[str, Any]) -> Tuple[str, Optional[int]]
     return "ran", None
 
 
+def investigation_thread_id(*, account: str, incident_key: str) -> str:
+    """The investigation's thread id, as mcp-service and the investigation CLI derive it."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"mezmo-investigation:{account}:{incident_key}"))
+
+
 def ledger_context(*, account: str, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
     """{incident_key, references, thread_id} for this session, absent ones left out.
 
@@ -640,12 +654,29 @@ def ledger_context(*, account: str, hook_input: Mapping[str, Any]) -> Dict[str, 
     incident_key = _setting(LEDGER_INCIDENT_KEY_ENV)
     thread_id = _setting(LEDGER_INVESTIGATION_ID_ENV)
     if thread_id is None and incident_key is not None:
-        thread_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"mezmo-investigation:{account}:{incident_key}"))
+        thread_id = investigation_thread_id(account=account, incident_key=incident_key)
     if incident_key is not None:
         context["incident_key"] = incident_key
     if thread_id is not None:
         context["thread_id"] = thread_id
     return context
+
+
+@functools.lru_cache(maxsize=None)
+def operator_email() -> Optional[str]:
+    """The git email of whoever runs this session, or None. Asks git once per run and never raises."""
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "user.email"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+    except Exception:
+        return None
+    email = result.stdout.strip() if result.returncode == 0 else ""
+    return email or None
 
 
 def ledger_envelope(
@@ -659,7 +690,14 @@ def ledger_envelope(
     message: str,
     session_id: str,
 ) -> Dict[str, Any]:
-    """The top-level fields audit-service takes, for any entity. `event` is the event name."""
+    """The top-level fields audit-service takes, for any entity. `event` is the event name.
+
+    `extra` gains operator_email when git has one and `extra` gives none.
+    """
+    stamped = dict(extra)
+    email = operator_email()
+    if email is not None:
+        stamped.setdefault("operator_email", email)
     envelope: Dict[str, Any] = {
         "actor": {"account": account, "pk": f"{AGENT}:{session_id}", "type": "agent"},
         "application": {"name": LEDGER_APPLICATION, "version": LEDGER_VERSION},
@@ -671,7 +709,7 @@ def ledger_envelope(
             "entity_id": entity_id,
             "entity_type": entity_type,
             "event": event,
-            "extra": dict(extra),
+            "extra": stamped,
             "internal": False,
             "message": message,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -755,6 +793,66 @@ def ledger_event(
         extra=extra,
         message=message[:MAX_LEDGER_MESSAGE_CHARACTERS],
         session_id=identity.session_id,
+    )
+
+
+def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str, str]]:
+    """(action, incident_key) for a Bash call that joined or closed an investigation, else None.
+
+    `action` is "joined" or "closed". Both must hold: the command runs INVESTIGATION_SCRIPT with `join`
+    or `close` right after it, and the output has a line that is a JSON object stating the matching
+    action and an incident key. Codex gives a Bash call no exit code, so that line is the only sign
+    the command worked. Only for PostToolUse. Never raises.
+    """
+    try:
+        if hook_input.get("hook_event_name") != "PostToolUse":
+            return None
+        tool = normalize_tool_call(hook_input)
+        command = tool.arguments.get("command")
+        if (tool.namespace, tool.name) != (AGENT, "Bash") or not isinstance(command, str):
+            return None
+        words = _command_words(command)
+        actions = {
+            INVESTIGATION_ACTIONS[after]
+            for word, after in zip(words, words[1:])
+            if word.rsplit("/", 1)[-1] == INVESTIGATION_SCRIPT and after in INVESTIGATION_ACTIONS
+        }
+        if not actions:
+            return None
+        for line in _output_text(hook_input.get("tool_response")).splitlines():
+            if not line.lstrip().startswith("{"):
+                continue
+            try:
+                printed = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(printed, dict) or printed.get("action") not in actions:
+                continue
+            incident_key = printed.get("incident_key")
+            if isinstance(incident_key, str) and incident_key.strip():
+                return printed["action"], incident_key.strip()
+        return None
+    except Exception:
+        return None
+
+
+def investigation_event(
+    *, action: str, config: LedgerConfig, hook_input: Mapping[str, Any], incident_key: str, thread_id: str
+) -> Optional[Dict[str, Any]]:
+    """The `joined` or `closed` event for this session and investigation. None without an identity."""
+    try:
+        session_id = call_identity(hook_input, normalize_tool_call(hook_input)).session_id
+    except Exception:
+        return None
+    return ledger_envelope(
+        account=config.account,
+        correlation_id=thread_id,
+        entity_id=thread_id,
+        entity_type="investigation",
+        event=f"agent.investigation.{action}",
+        extra={"agent": AGENT, "incident_key": incident_key, "session_id": session_id, "thread_id": thread_id},
+        message=f"{AGENT} {action} investigation {incident_key}"[:MAX_LEDGER_MESSAGE_CHARACTERS],
+        session_id=session_id,
     )
 
 
@@ -1054,12 +1152,15 @@ def record_governance_refusal(
     """Send governance's refusal of this call as one `not_run` event. Never raises.
 
     end_governance_refusal calls this once the deny is printed and flushed. Codex runs the tool when
-    a hook outlives its timeout, so the request runs on a daemon thread and this waits for it at
-    most REFUSED_TIMEOUT_SECONDS of wall-clock time. This thread then saves what wasn't sent,
-    for the next run of this hook to resend. No drain, and nothing here ends the process: it
-    returns whether the request is still running, for the caller to act on.
+    a hook outlives its timeout, so the request runs on a daemon thread and this waits for it until
+    REFUSED_TIMEOUT_SECONDS of wall-clock time after it was called, so building the event counts.
+    This thread then saves what wasn't sent, for the next run of this hook to resend. No drain,
+    and nothing here ends the process: it returns whether the request is still running, for the
+    caller to act on.
     """
     thread: Optional[threading.Thread] = None
+    # From before the event is built, so the git lookup for operator_email counts against the wait.
+    deadline = time.monotonic() + REFUSED_TIMEOUT_SECONDS
     try:
         if _skip_ledger_mcp_tool(hook_input=hook_input):
             return False
@@ -1078,7 +1179,7 @@ def record_governance_refusal(
                     send_ledger_events(config=config, events=[event], ledger_http=send, timeout=REFUSED_TIMEOUT_SECONDS)
                 )
             )
-            thread.join(REFUSED_TIMEOUT_SECONDS)
+            thread.join(max(0.0, deadline - time.monotonic()))
         except Exception as error:
             LEDGER_MESSAGES.append(f"Mezmo ledger could not start: {str(error) or type(error).__name__}")
         # Only this thread saves the event, so it is saved at most once. A request still running
@@ -1150,6 +1251,39 @@ def save_start_time(*, decision_id: str) -> None:
         pass
 
 
+def update_session_state(*, change: Callable[[Dict[str, Any]], None], session_id: str) -> None:
+    """Apply `change` to this session's state, under its lock, keeping what else it holds. Never raises.
+
+    The file is replaced whole, so a reader never sees half of it, and it is private, as
+    save_start_time's files are. A file that can't be read starts again empty.
+    """
+    try:
+        path = session_state_path(session_id)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+
+        def private(name: str, flags: int) -> int:
+            return os.open(name, flags, 0o600)
+
+        with _locked(path):
+            try:
+                state = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                state = {}
+            if not isinstance(state, dict):
+                state = {}
+            change(state)
+            state.update(session_id=session_id, updated=datetime.now(timezone.utc).isoformat(), version=1)
+            temporary = path.with_name(path.name + ".tmp")
+            with open(temporary, "w", encoding="utf-8", opener=private) as handle:
+                # A file left from before keeps its mode until narrowed here.
+                if os.name != "nt":
+                    os.fchmod(handle.fileno(), 0o600)
+                handle.write(json.dumps(state, indent=1) + "\n")
+            os.replace(temporary, path)
+    except Exception:
+        pass
+
+
 def _call_duration_ms(*, hook_input: Mapping[str, Any]) -> Optional[int]:
     """Milliseconds from this call's start time to now. Never raises.
 
@@ -1211,12 +1345,109 @@ def _new_event(*, config: LedgerConfig, hook_input: Mapping[str, Any]) -> Option
         return None
 
 
+def _state_thread_id(*, session_id: str) -> Any:
+    """The thread_id of the investigation in this session's state, or None. Never raises.
+
+    Read from the state alone: ledger_context would fall back to the environment's investigation.
+    """
+    try:
+        state = json.loads(session_state_path(session_id).read_text(encoding="utf-8"))
+        return state["investigation"]["thread_id"]
+    except Exception:
+        return None
+
+
+def _change_state(*, change: Callable[[Dict[str, Any]], None], deadline: float, session_id: str) -> bool:
+    """Apply `change` to the session state on a ledger thread. False when it has not finished in time.
+
+    Waits at most INVESTIGATION_STATE_TIMEOUT_SECONDS and never past `deadline`, so a lock another
+    process holds can't cost this call its own event. A change still waiting is abandoned and
+    never written.
+    """
+    abandoned = threading.Event()
+
+    def guarded(state: Dict[str, Any]) -> None:
+        # The lock may come free after the wait gave up. The hook has then already said the change
+        # was not made, so it raises, and update_session_state writes nothing.
+        if abandoned.is_set():
+            raise RuntimeError("the wait for the session state ended")
+        change(state)
+
+    thread = start_ledger_thread(work=lambda: update_session_state(change=guarded, session_id=session_id))
+    thread.join(max(0.0, min(INVESTIGATION_STATE_TIMEOUT_SECONDS, deadline - time.monotonic())))
+    if thread.is_alive():
+        abandoned.set()
+        return False
+    return True
+
+
+def _change_investigation(
+    *, action: str, config: LedgerConfig, deadline: float, hook_input: Mapping[str, Any], incident_key: str
+) -> Optional[Dict[str, Any]]:
+    """Join or leave the investigation in the session state, and return its event. Never raises.
+
+    The thread is derived here, from this hook's account, so it is the one ledger_context and the
+    ledger service derive, whatever the CLI printed. `joined` is returned only once the session
+    state holds that thread. `closed` is returned whatever the state holds, which is cleared only
+    when it holds this thread.
+    """
+    closed: Optional[Dict[str, Any]] = None
+    try:
+        thread_id = investigation_thread_id(account=config.account, incident_key=incident_key)
+        session_id = hook_input.get("session_id")
+        session_id = session_id.strip() if isinstance(session_id, str) else ""
+        joined_at = datetime.now(timezone.utc).isoformat()
+
+        def join(state: Dict[str, Any]) -> None:
+            state["investigation"] = {"incident_key": incident_key, "joined_at": joined_at, "thread_id": thread_id}
+
+        def leave(state: Dict[str, Any]) -> None:
+            current = state.get("investigation")
+            if isinstance(current, dict) and current.get("thread_id") == thread_id:
+                del state["investigation"]
+
+        if action == "joined":
+            if (
+                not session_id
+                or not _change_state(change=join, deadline=deadline, session_id=session_id)
+                or _state_thread_id(session_id=session_id) != thread_id
+            ):
+                ledger_warn(
+                    message=f"Mezmo ledger did not join investigation {incident_key}: the session state was not written"
+                )
+                return None
+            return investigation_event(
+                action=action, config=config, hook_input=hook_input, incident_key=incident_key, thread_id=thread_id
+            )
+        closed = investigation_event(
+            action=action, config=config, hook_input=hook_input, incident_key=incident_key, thread_id=thread_id
+        )
+        # No write for another investigation, so a close can't create a state file.
+        if session_id and _state_thread_id(session_id=session_id) == thread_id:
+            if (
+                not _change_state(change=leave, deadline=deadline, session_id=session_id)
+                or _state_thread_id(session_id=session_id) == thread_id
+            ):
+                ledger_warn(
+                    message=f"Mezmo ledger did not leave investigation {incident_key}: the session state still holds it"
+                )
+        return closed
+    except Exception as error:
+        ledger_warn(message=f"Mezmo ledger could not record the investigation: {str(error) or type(error).__name__}")
+        # A close sends its `closed` even when the state change failed.
+        return closed
+
+
 def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None) -> None:
     """Send this call's event while resending saved ones, and wait up to one deadline. Never raises.
 
-    Every hooked tool is recorded. Only this thread saves the new event, so it is saved at most
+    Every hooked tool is recorded. Only this thread saves the new events, so each is saved at most
     once and never by a thread os._exit could cut off. A thread still running at the deadline is
     abandoned, and the duplicate it may still deliver is accepted.
+
+    A join or close of an investigation changes the session state before any send starts, since
+    main() may end the process at the deadline: a join before this call's event is built, so the
+    event is stamped with it, and a close after. Its `joined` or `closed` goes in its own request.
     """
     try:
         # Looked up per call, not bound at definition, so tests can stand in for it.
@@ -1231,18 +1462,40 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
             return
         if config is None:
             return
-        new_event = _new_event(config=config, hook_input=event)
-        # Real monotonic time, so nothing a caller passes can stretch the deadline.
+        # Real monotonic time, so nothing a caller passes can stretch the deadline. From before the
+        # events are built and the state written, so a slow git lookup or lock can't push the save
+        # past main()'s timer.
         deadline = time.monotonic() + LEDGER_TIMEOUT_SECONDS
+        action, incident_key = investigation_action(hook_input=event) or ("", "")
+        investigation: Optional[Dict[str, Any]] = None
+        if action == "joined":
+            investigation = _change_investigation(
+                action=action, config=config, deadline=deadline, hook_input=event, incident_key=incident_key
+            )
+        new_event = _new_event(config=config, hook_input=event)
+        if action == "closed":
+            investigation = _change_investigation(
+                action=action, config=config, deadline=deadline, hook_input=event, incident_key=incident_key
+            )
         sent: List[LedgerSendResult] = []
+        sent_investigation: List[LedgerSendResult] = []
         threads: List[threading.Thread] = []
         try:
-            # Two requests that never share a body, so a bad saved event can't cost the new one.
+            # Requests that never share a body, so a bad saved event can't cost a new one, and one
+            # new event's refusal never touches the other.
             if new_event is not None:
                 threads.append(
                     start_ledger_thread(
                         work=lambda: sent.append(
                             send_ledger_events(config=config, events=[new_event], ledger_http=ledger_http)
+                        )
+                    )
+                )
+            if investigation is not None:
+                threads.append(
+                    start_ledger_thread(
+                        work=lambda: sent_investigation.append(
+                            send_ledger_events(config=config, events=[investigation], ledger_http=ledger_http)
                         )
                     )
                 )
@@ -1254,9 +1507,11 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
             _remove_old_start_times()
         for thread in threads:
             thread.join(max(0.0, deadline - time.monotonic()))
-        if new_event is not None:
-            result = sent[0] if sent else LedgerSendResult(answered=False, save=[new_event])
-            save_ledger_events(config=config, events=result.save)
+        # Each event by its own result: one whose thread did not finish is saved.
+        for new, results in ((new_event, sent), (investigation, sent_investigation)):
+            if new is not None:
+                result = results[0] if results else LedgerSendResult(answered=False, save=[new])
+                save_ledger_events(config=config, events=result.save)
         print_ledger_messages()
     except Exception as error:
         ledger_warn(message=f"Mezmo ledger failed: {str(error) or type(error).__name__}")

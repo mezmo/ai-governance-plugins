@@ -45,6 +45,9 @@ ACCOUNT = "test-acct"
 # real request to it. `.invalid` never resolves, so this names no real host or port.
 LEDGER_URL = "https://audit.ledger.invalid/v1/events"
 REAL_POST_LEDGER = ledger.post_ledger_events
+# LedgerTestCase stands in for it, so no test picks up the developer's own git email.
+REAL_OPERATOR_EMAIL = ledger.operator_email
+OPERATOR_EMAIL = "operator@example.test"
 # Bound from the real home when the module loaded. Only compared, never opened.
 HOME_AT_IMPORT = Path.home()
 REAL_DEFAULT_LEDGER_SPOOL = ledger.DEFAULT_LEDGER_SPOOL
@@ -76,8 +79,8 @@ EVENT_NAME = re.compile(r"^[a-z0-9]+(?:[_-][a-z0-9]+)*(?:\.[a-z0-9]+(?:[_-][a-z0
 # Every key the epic allows in `extra`.
 EXTRA_KEYS = {
     "access", "agent", "arguments", "call_id", "decision_id", "duration_ms", "entry_key", "exit_status",
-    "incident_key", "intent_source", "output", "references", "request_id", "session_id", "target", "thread_id",
-    "tool_name", "tool_namespace",
+    "incident_key", "intent_source", "operator_email", "output", "references", "request_id", "session_id", "target",
+    "thread_id", "tool_name", "tool_namespace",
 }
 
 
@@ -128,11 +131,20 @@ class FakeLedger:
     callable that returns or raises one.
 
     A request for events already in the retry file is a resend. With `resends`, a resend takes its
-    answer from there, so the new event and the resend, sent in parallel, each get their own.
+    answer from there, so the new event and the resend, sent in parallel, each get their own. With
+    `by_event`, a new request whose first event's name it holds takes its answer from there, so two
+    new events sent in parallel each get their own.
     """
 
-    def __init__(self, *answers: Any, resends: list[Any] | None = None, spool: Path | None = None) -> None:
+    def __init__(
+        self,
+        *answers: Any,
+        by_event: Mapping[str, Any] | None = None,
+        resends: list[Any] | None = None,
+        spool: Path | None = None,
+    ) -> None:
         self.answers = list(answers)
+        self.by_event = by_event
         self.calls: list[dict[str, Any]] = []
         self.during: Any = None
         self.release = threading.Event()
@@ -146,7 +158,10 @@ class FakeLedger:
         if self.during is not None:
             self.during()
         queue = self.resends if resend and self.resends is not None else self.answers
-        answer = queue.pop(0) if queue else (202, b"{}")
+        if not resend and self.by_event is not None and events and events[0].get("event") in self.by_event:
+            answer = self.by_event[events[0]["event"]]
+        else:
+            answer = queue.pop(0) if queue else (202, b"{}")
         if callable(answer):
             answer = answer()
         if answer == "hang":
@@ -316,6 +331,8 @@ class LedgerTestCase(unittest.TestCase):
             patch.object(ledger, "DEFAULT_CALL_STATE_DIR", self.dir / "home" / ".mezmo" / "governance" / "codex-calls"),
             patch.object(ledger, "DEFAULT_LEDGER_SPOOL", self.default_spool),
             patch.object(ledger, "DEFAULT_STATE_DIR", self.default_state_dir),
+            # No git email unless a test asks for one. OperatorEmailTests puts the real lookup back.
+            patch.object(ledger, "operator_email", lambda: None),
             # A request to LEDGER_URL means a test reached past its fake. Requests to the servers
             # defined here go through.
             patch.object(ledger, "post_ledger_events", self.guarded_post_ledger),
@@ -352,8 +369,10 @@ class LedgerTestCase(unittest.TestCase):
         deadline.start()
         self.addCleanup(deadline.stop)
 
-    def fake(self, *answers: Any, resends: list[Any] | None = None) -> FakeLedger:
-        fake = FakeLedger(*answers, resends=resends, spool=self.spool)
+    def fake(
+        self, *answers: Any, by_event: Mapping[str, Any] | None = None, resends: list[Any] | None = None
+    ) -> FakeLedger:
+        fake = FakeLedger(*answers, by_event=by_event, resends=resends, spool=self.spool)
         self.fakes.append(fake)
         return fake
 
@@ -854,6 +873,196 @@ class InvestigationTests(LedgerTestCase):
         self.assertNotIn("correlation_id", event)
         for field in ("incident_key", "references", "thread_id"):
             self.assertNotIn(field, event["extra"])
+
+
+class InvestigationChangeTests(LedgerTestCase):
+    """A Bash call that runs ledger_investigation.py join or close, and prints its result line."""
+
+    def cli_input(self, command: str, action: str) -> dict[str, Any]:
+        # The printed thread_id is the agent's to read. The hook derives its own.
+        line = json.dumps({"action": action, "incident_key": INCIDENT_KEY, "thread_id": "printed-thread"})
+        cli = "python3 ~/.codex/hooks/ledger_investigation.py"
+        return hook_input(
+            "PostToolUse",
+            tool_input={"command": f"{cli} {command} --incident-key {INCIDENT_KEY}"},
+            tool_response=f"starting\n{line}\n",
+        )
+
+    def state(self) -> dict[str, Any]:
+        return json.loads(ledger.session_state_path("session-1").read_text(encoding="utf-8"))
+
+    def assert_investigation_event(self, event: Mapping[str, Any], action: str) -> None:
+        self.assertEqual(event["event"], f"agent.investigation.{action}")
+        self.assertEqual(event["entity_type"], "investigation")
+        self.assertEqual(event["entity_id"], CHECK_THREAD_ID)
+        self.assertEqual(event["correlation_id"], CHECK_THREAD_ID)
+        self.assertEqual(
+            event["extra"],
+            {"agent": "codex", "incident_key": INCIDENT_KEY, "session_id": "session-1", "thread_id": CHECK_THREAD_ID},
+        )
+
+    def test_a_join_writes_the_state_and_sends_joined(self) -> None:
+        fake = self.fake()
+        self.run_hook(self.cli_input("join", "joined"), fake)
+        state = self.state()
+        joined_at = state["investigation"]["joined_at"]
+        datetime.fromisoformat(joined_at)
+        self.assertEqual(
+            state["investigation"], {"incident_key": INCIDENT_KEY, "joined_at": joined_at, "thread_id": CHECK_THREAD_ID}
+        )
+        self.assertEqual((state["session_id"], state["version"]), ("session-1", 1))
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(self.state_dir.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(ledger.session_state_path("session-1").stat().st_mode), 0o600)
+        # One request each, and the join call's own event is stamped with the thread it joined.
+        self.assertEqual([len(call["events"]) for call in fake.new_calls()], [1, 1])
+        joined, ran = sorted(fake.events(), key=lambda event: event["event"])
+        self.assert_investigation_event(joined, "joined")
+        self.assertEqual(ran["event"], "agent.tool_call.ran")
+        self.assertEqual(ran["extra"]["thread_id"], CHECK_THREAD_ID)
+        self.assertEqual(self.spool_lines(), [])
+        self.assertEqual(self.stderr, "")
+
+    def test_a_close_clears_the_state_and_sends_closed(self) -> None:
+        references = [{"kind": "pr", "url": "https://example.test/1"}]
+        joined_at = "2026-11-09T00:00:00+00:00"
+        self.write_state({
+            "investigation": {"incident_key": INCIDENT_KEY, "joined_at": joined_at, "thread_id": CHECK_THREAD_ID},
+            "references": references,
+        })
+        fake = self.fake()
+        self.run_hook(self.cli_input("close", "closed"), fake)
+        state = self.state()
+        self.assertNotIn("investigation", state)
+        self.assertEqual(state["references"], references)
+        self.assertEqual([len(call["events"]) for call in fake.new_calls()], [1, 1])
+        closed, ran = sorted(fake.events(), key=lambda event: event["event"])
+        self.assert_investigation_event(closed, "closed")
+        # Built before the state was cleared.
+        self.assertEqual(ran["extra"]["thread_id"], CHECK_THREAD_ID)
+        self.assertEqual(self.spool_lines(), [])
+        self.assertEqual(self.stderr, "")
+        # A session that never joined still sends `closed`, and gets no state file from it.
+        never_joined = self.fake()
+        self.run_hook({**self.cli_input("close", "closed"), "session_id": "session-2"}, never_joined)
+        self.assertIn("agent.investigation.closed", [event["event"] for event in never_joined.events()])
+        self.assertFalse(ledger.session_state_path("session-2").exists())
+
+    def test_a_join_the_state_did_not_take_warns_and_sends_only_the_calls_event(self) -> None:
+        # The environment names the same investigation, so only a check of the state itself fails here.
+        os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
+        fake = self.fake()
+        with patch.object(ledger, "update_session_state", lambda *, change, session_id: None):
+            self.run_hook(self.cli_input("join", "joined"), fake)
+        self.assertIn(f"did not join investigation {INCIDENT_KEY}", self.stderr)
+        self.assertEqual([event["event"] for event in fake.events()], ["agent.tool_call.ran"])
+        self.assertEqual(self.spool_lines(), [])
+
+    def test_a_join_that_outwaits_the_state_lock_is_never_written(self) -> None:
+        try:
+            import fcntl
+        except ImportError:
+            self.skipTest("no fcntl")
+        with patch.object(ledger, "INVESTIGATION_STATE_TIMEOUT_SECONDS", 0.05):
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            path = ledger.session_state_path("session-1")
+            # Another open file's lock, as another process would hold it, freed after the wait ends.
+            lock = open(f"{path}.lock", "a")
+            self.addCleanup(lock.close)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            release = threading.Timer(0.3, lock.close)
+            self.addCleanup(release.cancel)
+            release.start()
+            fake = self.fake()
+            self.run_hook(self.cli_input("join", "joined"), fake)
+        self.assertIn(f"did not join investigation {INCIDENT_KEY}", self.stderr)
+        self.assertEqual([event["event"] for event in fake.events()], ["agent.tool_call.ran"])
+        # The abandoned change gets the lock once it is free, and must still write nothing.
+        release.join(5)
+        for thread in ledger.LEDGER_THREADS:
+            thread.join(5)
+        state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        self.assertNotIn("investigation", state)
+
+    def test_only_the_refused_event_is_saved_for_retry(self) -> None:
+        names = ["agent.investigation.joined", "agent.tool_call.ran"]
+        for refused in names:
+            with self.subTest(refused=refused):
+                fake = self.fake(by_event={refused: (503, b"")})
+                self.run_hook(self.cli_input("join", "joined"), fake)
+                self.assertEqual(sorted(event["event"] for event in fake.events()), names)
+                self.assertEqual([event["event"] for event in self.spooled()], [refused])
+                self.spool.unlink()
+
+
+class OperatorEmailTests(LedgerTestCase):
+    """Every event carries the git email of whoever runs the session, when git has one."""
+
+    def git(self, answer: Any) -> list[Any]:
+        """Point operator_email at a stand-in git: (stdout, exit code), or an exception it raises.
+
+        Returns the list of commands it was asked to run.
+        """
+        calls: list[Any] = []
+
+        def run(command: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            calls.append(command)
+            if isinstance(answer, BaseException):
+                raise answer
+            stdout, returncode = answer
+            return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr="")
+
+        for started in (
+            patch.object(ledger, "operator_email", REAL_OPERATOR_EMAIL),
+            patch.object(ledger.subprocess, "run", run),
+        ):
+            started.start()
+            self.addCleanup(started.stop)
+        REAL_OPERATOR_EMAIL.cache_clear()
+        self.addCleanup(REAL_OPERATOR_EMAIL.cache_clear)
+        return calls
+
+    def test_every_event_carries_the_git_email(self) -> None:
+        calls = self.git((f"{OPERATOR_EMAIL}\n", 0))
+        config = ledger.load_ledger_config()
+        assert config is not None
+        post = hook_input("PostToolUse")
+        events = [
+            ledger.ledger_event(config=config, hook_input=hook_input(), kind="started"),
+            ledger.ledger_event(config=config, hook_input=post, kind="ran"),
+            ledger.ledger_event(config=config, exit_status=1, hook_input=post, kind="failed"),
+            ledger.ledger_event(config=config, hook_input=hook_input(), kind="not_run", outcome="denied", reason="No."),
+        ] + [
+            ledger.investigation_event(
+                action=action, config=config, hook_input=post, incident_key=INCIDENT_KEY, thread_id=CHECK_THREAD_ID
+            )
+            for action in ("closed", "joined")
+        ]
+        for event in events:
+            assert event is not None
+            with self.subTest(event=event["event"]):
+                self.assertEqual(event["extra"]["operator_email"], OPERATOR_EMAIL)
+                self.assert_valid(event)
+        self.assertEqual(calls, [["git", "config", "--get", "user.email"]])
+
+    def test_no_email_leaves_the_event_unchanged(self) -> None:
+        def without_time(event: Mapping[str, Any]) -> dict[str, Any]:
+            return {key: value for key, value in event.items() if key != "timestamp"}
+
+        expected = without_time(self.build("started"))
+        cases = {
+            "git missing": FileNotFoundError("git"),
+            "git timed out": subprocess.TimeoutExpired(["git"], 1),
+            "non-zero exit": (f"{OPERATOR_EMAIL}\n", 1),
+            "only whitespace": (" \n", 0),
+        }
+        for case, answer in cases.items():
+            with self.subTest(case=case):
+                self.git(answer)
+                event = self.build("started")
+                self.assertNotIn("operator_email", event["extra"])
+                self.assert_no_null(event["extra"])
+                self.assertEqual(without_time(event), expected)
 
 
 class SettingsTests(LedgerTestCase):
@@ -1808,8 +2017,11 @@ class ScriptTestCase(unittest.TestCase):
             shutil.copy(path, self.hooks / path.name)
         self.spool = self.dir / "spool" / "ledger-spool.jsonl"
         self.recorder = Recorder()
-        # Built from nothing, so no setting of the developer's own reaches the scripts.
+        # Built from nothing, so no setting of the developer's own reaches the scripts. The GIT_
+        # settings keep the developer's git email out too: no system config, and no repository.
         self.env = {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_DIR": str(self.dir / "no-git"),
             "HOME": str(self.dir),
             "MEZMO_GOVERNANCE_AUDIT_LOG": str(self.dir / "audit.jsonl"),
             "MEZMO_GOVERNANCE_STATE_DIR": str(self.dir / "codex-sessions"),
@@ -2235,9 +2447,12 @@ class ResolveTargetTests(unittest.TestCase):
 
 # Both plugins read and write ~/.mezmo/ledger-spool.jsonl, so the code that touches the file or
 # sends a batch must stay identical to claude-code/scripts/ledger.py: a fix in one reaches the
-# other, and neither can leave a line the other misreads.
+# other, and neither can leave a line the other misreads. The same holds for how both read a join
+# or close and derive an investigation's thread id.
 CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "DEFAULT_LEDGER_SPOOL",
+    "INVESTIGATION_ACTIONS",
+    "INVESTIGATION_SCRIPT",
     "LEDGER_ACCOUNT_ENV",
     "LEDGER_DRAIN_BATCH",
     "LEDGER_KEY_ENV",
@@ -2262,8 +2477,10 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "_spool_ledger_events",
     "_spool_locked",
     "drain_ledger_spool",
+    "investigation_thread_id",
     "ledger_json",
     "ledger_spool_path",
+    "operator_email",
     "post_ledger_events",
     "save_ledger_events",
     "send_ledger_events",
