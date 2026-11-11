@@ -67,6 +67,7 @@ DEFAULT_CALL_STATE_DIR = Path.home() / ".mezmo" / "governance" / "codex-calls"
 STATE_RETENTION_SECONDS = 7 * 24 * 3600
 LEDGER_APPLICATION = "mezmo-codex-plugin"
 LEDGER_EVENTS = frozenset({"PostToolUse", "PreToolUse"})
+SKIP_LEDGER_MCP_TOOL_NAMES = frozenset({"get_ledger_investigation", "list_ledger_entries"})
 # For application.version. A file install has no manifest beside the script, so this is a
 # constant, and test_ledger.py checks it against .codex-plugin/plugin.json.
 LEDGER_VERSION = "0.4.0"
@@ -95,7 +96,7 @@ MAX_LEDGER_JSON_CHARACTERS = 4096
 MAX_LEDGER_MESSAGE_CHARACTERS = 200
 # The first line of an apply_patch result.
 EXIT_CODE_LINE = re.compile(r"Exit code: (-?\d+)")
-LEDGER_ENDINGS = {"failed": "failed", "not_run": "not run", "ran": "ok"}
+LEDGER_ENDINGS = {"failed": "failed", "not_run": "not run"}
 
 # Ledger threads never print. They leave messages here, which the main thread prints after its
 # wait.
@@ -174,6 +175,7 @@ def load_ledger_config() -> Optional[LedgerConfig]:
     url = _setting(LEDGER_URL_ENV)
     if account is None or url is None:
         return None
+    url = url.rstrip("/")
     # MEZMO_LEDGER_KEY, else the governance token, else no header.
     key = _setting(LEDGER_KEY_ENV)
     key_setting = LEDGER_KEY_ENV
@@ -290,6 +292,15 @@ def _is_apply_patch(hook_input: Mapping[str, Any]) -> bool:
     return (tool.namespace, tool.name) == (AGENT, "apply_patch")
 
 
+def _skip_ledger_mcp_tool(*, hook_input: Mapping[str, Any]) -> bool:
+    """Whether this MCP call reads the ledger and should not itself be recorded in the ledger."""
+    tool_name = hook_input.get("tool_name")
+    if not isinstance(tool_name, str) or not tool_name.startswith("mcp__"):
+        return False
+    parts = tool_name.split("__", 2)
+    return len(parts) == 3 and parts[2] in SKIP_LEDGER_MCP_TOOL_NAMES
+
+
 def ledger_result(*, hook_input: Mapping[str, Any]) -> Tuple[str, Optional[int]]:
     """(kind, exit_status) for a call Codex reports back on. exit_status is None when none is stated.
 
@@ -354,6 +365,12 @@ def ledger_context(*, account: str, hook_input: Mapping[str, Any]) -> Dict[str, 
     if thread_id is not None:
         context["thread_id"] = thread_id
     return context
+
+
+def _ledger_message_ending(*, exit_status: Optional[int], kind: str) -> Optional[str]:
+    if kind == "ran":
+        return "ok" if exit_status == 0 else "ran"
+    return LEDGER_ENDINGS.get(kind)
 
 
 def ledger_envelope(
@@ -451,8 +468,9 @@ def ledger_event(
     extra["tool_namespace"] = tool.namespace
 
     message = intent
-    if kind in LEDGER_ENDINGS:
-        message = f"{intent}: {LEDGER_ENDINGS[kind]}" + (f" - {line}" if line else "")
+    ending = _ledger_message_ending(exit_status=exit_status, kind=kind)
+    if ending is not None:
+        message = f"{intent}: {ending}" + (f" - {line}" if line else "")
     return ledger_envelope(
         account=config.account,
         correlation_id=context.get("thread_id"),
@@ -503,13 +521,21 @@ def _ledger_statuses(body: Any) -> Optional[Dict[int, str]]:
     for entry in entries:
         if isinstance(entry, dict) and isinstance(entry.get("index"), int) and isinstance(entry.get("status"), str):
             statuses[entry["index"]] = entry["status"]
-    return statuses
+    return statuses or None
 
 
 def _retryable(status: int) -> bool:
     # A 401 means the key is wrong, not the event.
     # Keep the event so it can be sent once the key is fixed.
     return status in (401, 408, 429) or 500 <= status < 600
+
+
+def _read_lines(path: Path) -> List[str]:
+    # A bad byte must not stop every later drain: it reads as a lone surrogate, and its line is bad.
+    lines = path.read_text(encoding="utf-8", errors="surrogateescape").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
 
 
 def _open_retry_file(*, mode: str, path: Path) -> Any:
@@ -535,7 +561,11 @@ def _spool_locked(path: Path) -> Iterator[None]:
 
 
 def _spool_ledger_events(*, config: LedgerConfig, events: Sequence[Mapping[str, Any]]) -> None:
-    """Append `events` to the retry file. The file keeps arguments and output, so it's private."""
+    """Append `events` to the retry file. The file keeps arguments and output, so it's private.
+
+    Past LEDGER_SPOOL_MAX_LINES the oldest lines are removed here too, not only by
+    drain_ledger_spool, whose resend can still be running when the hook ends.
+    """
     if not events:
         return
     path = ledger_spool_path()
@@ -544,6 +574,17 @@ def _spool_ledger_events(*, config: LedgerConfig, events: Sequence[Mapping[str, 
     with _spool_locked(path):
         with _open_retry_file(mode="a", path=path) as handle:
             handle.write(text)
+        lines = _read_lines(path)
+        over = max(0, len(lines) - LEDGER_SPOOL_MAX_LINES)
+        if over:
+            temporary = Path(f"{path}.tmp")
+            with _open_retry_file(mode="w", path=temporary) as handle:
+                handle.write("".join(line + "\n" for line in lines[over:]))
+            os.replace(temporary, path)
+    if over:
+        LEDGER_MESSAGES.append(
+            f"Mezmo ledger dropped {over} saved event(s): the retry file keeps at most {LEDGER_SPOOL_MAX_LINES}"
+        )
 
 
 def save_ledger_events(*, config: LedgerConfig, events: Sequence[Mapping[str, Any]]) -> None:
@@ -577,7 +618,11 @@ def send_ledger_events(
         if status == 207:
             statuses = _ledger_statuses(body)
             if statuses is None:
-                return LedgerSendResult(answered=True, save=events)
+                LEDGER_MESSAGES.append(
+                    f"Mezmo ledger dropped {len(events)} event(s): "
+                    "the ledger service answered HTTP 207 without usable event statuses"
+                )
+                return LedgerSendResult(answered=True, save=[])
             return LedgerSendResult(
                 answered=True, save=[event for index, event in enumerate(events) if statuses.get(index) == "rejected"]
             )
@@ -590,14 +635,6 @@ def send_ledger_events(
     except Exception as error:
         LEDGER_MESSAGES.append(f"Mezmo ledger dropped {len(events)} event(s): {str(error) or type(error).__name__}")
         return LedgerSendResult(answered=False, save=[])
-
-
-def _read_lines(path: Path) -> List[str]:
-    # A bad byte must not stop every later drain: it reads as a lone surrogate, and its line is bad.
-    lines = path.read_text(encoding="utf-8", errors="surrogateescape").split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
-    return lines
 
 
 @contextmanager
@@ -691,7 +728,13 @@ def _resend_ledger_events(
         LEDGER_MESSAGES.append(f"Mezmo ledger could not resend saved events: {str(error) or type(error).__name__}")
         return []
     if status == 207:
-        statuses = _ledger_statuses(body) or {}
+        statuses = _ledger_statuses(body)
+        if statuses is None:
+            LEDGER_MESSAGES.append(
+                f"Mezmo ledger dropped {len(taken)} saved event(s): "
+                "the ledger service answered HTTP 207 without usable event statuses"
+            )
+            return [line for line, _ in taken]
         return [line for index, (line, _) in enumerate(taken) if statuses.get(index) == "accepted"]
     if 200 <= status < 300:
         return [line for line, _ in taken]
@@ -743,6 +786,8 @@ def record_governance_refusal(
     """
     thread: Optional[threading.Thread] = None
     try:
+        if _skip_ledger_mcp_tool(hook_input=hook_input):
+            return False
         config = load_ledger_config()
         if config is None:
             return False
@@ -902,6 +947,8 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
         # Looked up per call, not bound at definition, so tests can stand in for it.
         ledger_http = ledger_http or post_ledger_events
         if event.get("hook_event_name") not in LEDGER_EVENTS:
+            return
+        if _skip_ledger_mcp_tool(hook_input=event):
             return
         try:
             config = load_ledger_config()

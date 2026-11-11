@@ -546,6 +546,22 @@ class EventTests(LedgerTestCase):
         self.assertEqual(fake.calls, [])
         self.assertEqual(ledger.LEDGER_THREADS, [])
 
+    def test_ledger_read_mcp_tools_are_not_recorded(self) -> None:
+        fake = self.fake()
+        for event_name in ("PreToolUse", "PostToolUse"):
+            for tool_name in ("get_ledger_investigation", "list_ledger_entries"):
+                with self.subTest(event_name=event_name, tool_name=tool_name):
+                    event = mcp_input(event_name, tool_name=f"mcp__any_server__{tool_name}")
+                    self.assertIsNone(self.run_hook(event, fake))
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(ledger.LEDGER_THREADS, [])
+
+    def test_non_mcp_ledger_tool_names_are_recorded(self) -> None:
+        fake = self.fake()
+        self.run_hook(hook_input(tool_name="get_ledger_investigation"), fake)
+        (event,) = fake.events()
+        self.assertEqual(event["extra"]["tool_name"], "get_ledger_investigation")
+
     def test_an_unknown_identity_sends_nothing(self) -> None:
         fake = self.fake()
         for name in ("PreToolUse", "PostToolUse"):
@@ -581,6 +597,12 @@ class FieldTests(LedgerTestCase):
                 ran = ledger.ledger_event(
                     config=config, hook_input=builder("PostToolUse", tool_response="first\nsecond", **fields), kind="ran"
                 )
+                ok = ledger.ledger_event(
+                    config=config,
+                    exit_status=0,
+                    hook_input=builder("PostToolUse", tool_response="first\nsecond", **fields),
+                    kind="ran",
+                )
                 failed = ledger.ledger_event(
                     config=config, hook_input=builder("PostToolUse", tool_response={"content": "bad", "isError": True}, **fields),
                     kind="failed",
@@ -589,10 +611,11 @@ class FieldTests(LedgerTestCase):
                     config=config, hook_input=builder("PreToolUse", **fields), kind="not_run", outcome="denied", reason="No."
                 )
                 self.assertEqual(started["message"], intent)
-                self.assertEqual(ran["message"], f"{intent}: ok - first")
+                self.assertEqual(ran["message"], f"{intent}: ran - first")
+                self.assertEqual(ok["message"], f"{intent}: ok - first")
                 self.assertEqual(failed["message"], f"{intent}: failed - bad")
                 self.assertEqual(not_run["message"], f"{intent}: not run - No.")
-                for event in (started, ran, failed, not_run):
+                for event in (started, ran, ok, failed, not_run):
                     self.assert_valid(event)
                     self.assertEqual(event["extra"]["intent_source"], "none")
 
@@ -623,17 +646,17 @@ class FieldTests(LedgerTestCase):
 
     def test_output_text_shapes_give_the_message_line(self) -> None:
         cases = [
-            ("plain text\nmore", "ok - plain text"),
-            ("\n\n  first   line \nsecond", "ok - first line"),
-            (PATCH_RESPONSE, "ok - Exit code: 0"),
+            ("plain text\nmore", "ran - plain text"),
+            ("\n\n  first   line \nsecond", "ran - first line"),
+            (PATCH_RESPONSE, "ran - Exit code: 0"),
             (dict(MCP_RESPONSE), "ok - pod deleted"),
-            ({"content": "pod deleted"}, "ok - pod deleted"),
-            ({"content": [{"type": "image"}, {"text": "\nfrom blocks", "type": "text"}, "loose"]}, "ok - from blocks"),
-            ([{"text": "listed", "type": "text"}], "ok - listed"),
-            ({"stderr": "warning: x", "stdout": "  "}, "ok - warning: x"),
-            ("", "ok"),
-            (42, "ok"),
-            ({"other": "x"}, "ok"),
+            ({"content": "pod deleted"}, "ran - pod deleted"),
+            ({"content": [{"type": "image"}, {"text": "\nfrom blocks", "type": "text"}, "loose"]}, "ran - from blocks"),
+            ([{"text": "listed", "type": "text"}], "ran - listed"),
+            ({"stderr": "warning: x", "stdout": "  "}, "ran - warning: x"),
+            ("", "ran"),
+            (42, "ran"),
+            ({"other": "x"}, "ran"),
         ]
         for response, ending in cases:
             with self.subTest(response=response):
@@ -680,7 +703,7 @@ class FieldTests(LedgerTestCase):
         self.run_hook(hook_input("PostToolUse", tool_response=DROP), fake)
         (ran,) = fake.events()
         self.assertNotIn("output", ran["extra"])
-        self.assertEqual(ran["message"], "codex.Bash: ls -la: ok")
+        self.assertEqual(ran["message"], "codex.Bash: ls -la: ran")
 
     def start_time(self, event: Mapping[str, Any], approved_at: float) -> Path:
         """The file the governance hook writes when it approves `event`."""
@@ -753,6 +776,23 @@ class StartTimeTests(LedgerTestCase):
         if os.name != "nt":
             self.assertEqual(stat.S_IMODE(start_time.parent.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(start_time.stat().st_mode), 0o600)
+
+    def test_post_tool_use_finds_the_pre_tool_use_start_time(self) -> None:
+        pre = hook_input("PreToolUse")
+        post = hook_input("PostToolUse")
+        decision_id = identity(pre).decision_id
+        self.assertEqual(identity(post).decision_id, decision_id)
+        with patch.dict(os.environ, GOVERNANCE):
+            self.assertIsNone(hook.handle_event(pre, http=GovernanceHttp((200, {"approved": True}))))
+        start_time = ledger.start_time_path(decision_id)
+        self.assertTrue(start_time.exists())
+
+        fake = self.fake()
+        self.run_hook(post, fake)
+
+        (ran,) = fake.events()
+        self.assertIsInstance(ran["extra"].get("duration_ms"), int)
+        self.assertFalse(start_time.exists())
 
     def test_a_start_time_that_cannot_be_written_leaves_the_approval_alone(self) -> None:
         self.state_dir.write_text("a file where the folder should be", encoding="utf-8")
@@ -861,6 +901,10 @@ class SettingsTests(LedgerTestCase):
         self.assertEqual(ledger.ledger_spool_path(), self.spool)
         del os.environ["MEZMO_LEDGER_SPOOL"]
         self.assertEqual(ledger.ledger_spool_path(), self.default_spool)
+
+    def test_the_ledger_url_drops_trailing_slashes(self) -> None:
+        os.environ["MEZMO_LEDGER_URL"] = "https://audit.example.test/v1/events///"
+        self.assertEqual(ledger.load_ledger_config().url, "https://audit.example.test/v1/events")
 
     def test_post_ledger_events_builds_the_authorization_header_from_the_key(self) -> None:
         recorder = Recorder()
@@ -1001,7 +1045,12 @@ class SettingsTests(LedgerTestCase):
             with self.subTest(body=unusable):
                 self.assertEqual(
                     ledger.send_ledger_events(config=config, events=events, ledger_http=self.fake((207, unusable))),
-                    ledger.LedgerSendResult(answered=True, save=events),
+                    ledger.LedgerSendResult(answered=True, save=[]),
+                )
+                self.assertEqual(
+                    ledger.LEDGER_MESSAGES.pop(),
+                    "Mezmo ledger dropped 3 event(s): "
+                    "the ledger service answered HTTP 207 without usable event statuses",
                 )
         self.assertEqual(self.spool_lines(), [])
 
@@ -1056,6 +1105,15 @@ class RetryFileTests(LedgerTestCase):
         body = json.dumps({"events": [{"index": 0, "status": "accepted"}, {"index": 1, "status": "rejected"}]}).encode()
         ledger.drain_ledger_spool(config=ledger.load_ledger_config(), ledger_http=self.fake((207, body)))
         self.assertEqual(self.spool_lines(), lines[1:])
+        ledger.drain_ledger_spool(config=ledger.load_ledger_config(), ledger_http=self.fake((207, b"x")))
+        self.assertEqual(self.spool_lines(), [])
+        self.assertEqual(
+            ledger.LEDGER_MESSAGES,
+            [
+                "Mezmo ledger dropped 2 saved event(s): "
+                "the ledger service answered HTTP 207 without usable event statuses"
+            ],
+        )
 
     def test_bad_lines_are_removed(self) -> None:
         good = self.spool_line()
@@ -1318,6 +1376,21 @@ class RefusedTests(LedgerTestCase):
                 self.assertNotIn("exit_status", event["extra"])
                 self.assertEqual(self.spool_lines(), [])
                 self.assertEqual(self.stderr, "")
+
+    def test_refused_ledger_read_mcp_tools_are_not_recorded(self) -> None:
+        fake = self.fake((202, b'{"accepted":1}'))
+        event = mcp_input("PreToolUse", tool_name="mcp__dev__get_ledger_investigation")
+        with patch.object(sys, "stderr", StringIO()) as stderr, patch.object(sys, "stdout", StringIO()) as stdout:
+            alive = ledger.record_governance_refusal(
+                hook_input=event,
+                ledger_http=fake,
+                outcome="denied",
+                reason="no",
+            )
+        self.assertFalse(alive)
+        self.assertEqual(fake.calls, [])
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(stdout.getvalue(), "")
 
     def test_refused_sends_on_a_daemon_thread_with_the_refused_timeout(self) -> None:
         threads: list[threading.Thread] = []
@@ -2047,6 +2120,7 @@ class RefusalBudgetTests(ScriptTestCase):
         try:
             process.stdin.write(json.dumps(hook_input("PreToolUse")).encode())
             process.stdin.close()
+            process.stdin = None
             # The hook flushes the deny before it tells the ledger.
             deny = process.stdout.readline()
             arrived = time.monotonic()
@@ -2164,6 +2238,7 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "LedgerSendResult",
     "MAX_LEDGER_JSON_CHARACTERS",
     "MAX_LEDGER_MESSAGE_CHARACTERS",
+    "SKIP_LEDGER_MCP_TOOL_NAMES",
     "SPOOL_LOCK",
     "_drain_lock",
     "_ledger_statuses",
@@ -2171,6 +2246,7 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "_read_lines",
     "_resend_ledger_events",
     "_retryable",
+    "_skip_ledger_mcp_tool",
     "_spool_ledger_events",
     "_spool_locked",
     "drain_ledger_spool",
