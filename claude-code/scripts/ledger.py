@@ -64,6 +64,12 @@ SKIP_LEDGER_MCP_TOOL_NAMES = frozenset({"get_ledger_investigation", "list_ledger
 # The investigation CLI, and what its join and close print as `action` when they succeed.
 INVESTIGATION_ACTIONS = {"close": "closed", "join": "joined"}
 INVESTIGATION_SCRIPT = "ledger_investigation.py"
+# What _investigation_call takes for a Python interpreter's file name, and for its flags that take
+# no argument, such as -I or -Su.
+PYTHON_FLAGS = re.compile(r"-[BEIOPRSbdiqsuvx]+")
+PYTHON_INTERPRETER = re.compile(r"python(3(\.[0-9]+)?)?")
+# A `NAME=value` word, which before a command sets that variable for it.
+SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 # The plugin's manifest, for application.version. This file is in <plugin>/scripts.
 PLUGIN_MANIFEST = Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
 # The socket timeout of each ledger_hook.py request, and the deadline its main thread waits for
@@ -539,12 +545,50 @@ def _skip_ledger_mcp_tool(*, hook_input: Mapping[str, Any]) -> bool:
     return len(parts) == 3 and parts[2] in SKIP_LEDGER_MCP_TOOL_NAMES
 
 
+def _investigation_call(words: Sequence[str]) -> Optional[Tuple[str, str]]:
+    """(subcommand, incident_key) when the call starts by running the investigation CLI's join or
+    close, else None.
+
+    Only the call's first simple command is read: its words up to the first shell punctuation word.
+    They must be any `NAME=value` words, a Python interpreter, its flags that take no argument,
+    INVESTIGATION_SCRIPT, `join` or `close`, and arguments that give the key as `--incident-key K`
+    or `--incident-key=K`. The last key given wins, as argparse takes it, and other arguments are
+    left to the CLI, which refuses them. What follows, such as `2>&1` or a pipe, is not read, so a
+    later command, a here-doc's body or an echo or printf of the CLI's words is no call.
+    """
+    punctuation = tuple(SHELL_PUNCTUATION)
+    end = next((index for index, word in enumerate(words) if word.startswith(punctuation)), len(words))
+    position = 0
+    while position < end and SHELL_ASSIGNMENT.fullmatch(words[position]):
+        position += 1
+    if position == end or not PYTHON_INTERPRETER.fullmatch(words[position].rsplit("/", 1)[-1]):
+        return None
+    position += 1
+    while position < end and PYTHON_FLAGS.fullmatch(words[position]):
+        position += 1
+    if end - position < 2 or words[position].rsplit("/", 1)[-1] != INVESTIGATION_SCRIPT:
+        return None
+    subcommand = words[position + 1]
+    if subcommand not in INVESTIGATION_ACTIONS:
+        return None
+    key: Optional[str] = None
+    for index in range(position + 2, end):
+        if words[index] == "--incident-key" and index + 1 < end:
+            key = words[index + 1]
+        elif words[index].startswith("--incident-key="):
+            key = words[index][len("--incident-key="):]
+    if key is None or not key.strip():
+        return None
+    return subcommand, key.strip()
+
+
 def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str, str]]:
     """("joined" or "closed", incident_key) when this Bash call ran the investigation CLI's join or
     close and it succeeded, else None. Never raises.
 
-    Both must hold: a word of the command names the CLI and the next word is join or close, and a
-    line of the output is the JSON object that subcommand prints, with its `action` and a key.
+    Both must hold: the command starts by running the CLI, as _investigation_call reads it, and a
+    line of the output is the JSON object that subcommand prints, with its `action` and the key the
+    command gave. So a key the command passes through a shell variable is not recognized.
     """
     try:
         if hook_input.get("hook_event_name") != "PostToolUse" or hook_input.get("tool_name") != "Bash":
@@ -553,24 +597,18 @@ def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str
         command = tool_input.get("command") if isinstance(tool_input, dict) else None
         if not isinstance(command, str):
             return None
-        words = _command_words(command)
-        actions = {
-            INVESTIGATION_ACTIONS[after]
-            for word, after in zip(words, words[1:])
-            if os.path.basename(word) == INVESTIGATION_SCRIPT and after in INVESTIGATION_ACTIONS
-        }
-        if not actions:
+        call = _investigation_call(_command_words(command))
+        if call is None:
             return None
+        action, incident_key = INVESTIGATION_ACTIONS[call[0]], call[1]
         for line in _output_text(hook_input.get("tool_response")).splitlines():
             try:
                 printed = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(printed, dict) or printed.get("action") not in actions:
-                continue
-            incident_key = printed.get("incident_key")
-            if isinstance(incident_key, str) and incident_key.strip():
-                return printed["action"], incident_key.strip()
+            if isinstance(printed, dict) and printed.get("action") == action \
+                    and printed.get("incident_key") == incident_key:
+                return action, incident_key
     except Exception:
         pass
     return None

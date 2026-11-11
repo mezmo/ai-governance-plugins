@@ -84,7 +84,7 @@ LEDGER_TIMEOUT_SECONDS = 3.0
 # save and the prints after the wait. A retry file that another process holds locked would
 # otherwise hold the call until Codex kills the hook.
 LEDGER_EXIT_MARGIN_SECONDS = 1.0
-# The longest a join or close waits for the session state's lock. Past it the change counts as not made.
+# The longest a join or close waits for the session state's lock. Past it the change is not made.
 INVESTIGATION_STATE_TIMEOUT_SECONDS = 1.0
 # How long record_governance_refusal waits for its request, and that request's socket timeout.
 # Kept short because it runs inside the governance hook.
@@ -107,6 +107,12 @@ LEDGER_ENDINGS = {"failed": "failed", "not_run": "not run"}
 # The investigation CLI, and what its join and close print as `action` when they succeed.
 INVESTIGATION_ACTIONS = {"close": "closed", "join": "joined"}
 INVESTIGATION_SCRIPT = "ledger_investigation.py"
+# What _investigation_call takes for a Python interpreter's file name, and for its flags that take
+# no argument, such as -I or -Su.
+PYTHON_FLAGS = re.compile(r"-[BEIOPRSbdiqsuvx]+")
+PYTHON_INTERPRETER = re.compile(r"python(3(\.[0-9]+)?)?")
+# A `NAME=value` word, which before a command sets that variable for it.
+SHELL_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
 
 # What resolve_target reads. Demo only, until there is a service catalog: DEMO_DEFAULT_ENV is the
 # environment of a call that names none, and DEMO_TARGETS maps a lowercase substring of a kubectl
@@ -202,15 +208,33 @@ def authorization_header(*, key: str) -> str:
 
 
 @contextmanager
-def _locked(path: Path) -> Iterator[None]:
-    """Hold an exclusive lock on `path`.lock, so parallel tool calls don't lose updates."""
+def _locked(path: Path, timeout: Optional[float] = None) -> Iterator[None]:
+    """Hold an exclusive lock on `path`.lock, so parallel tool calls don't lose updates.
+
+    With a `timeout`, waits that many seconds at most, then raises TimeoutError without running the body.
+    """
+    held_elsewhere = False
     with open(f"{path}.lock", "a") as lock:
         try:
             import fcntl
 
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            give_up = None if timeout is None else time.monotonic() + timeout
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX if give_up is None else fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if give_up is None:
+                        raise
+                    if time.monotonic() >= give_up:
+                        held_elsewhere = True
+                        break
+                    time.sleep(0.01)
         except (ImportError, OSError):
             pass  # no fcntl on Windows: best effort
+        # Raised out here, so a lock held elsewhere can't be taken for the best-effort case above.
+        if held_elsewhere:
+            raise TimeoutError(f"{lock.name} is held elsewhere")
         yield
 
 
@@ -796,12 +820,50 @@ def ledger_event(
     )
 
 
+def _investigation_call(words: Sequence[str]) -> Optional[Tuple[str, str]]:
+    """(subcommand, incident_key) when the call starts by running the investigation CLI's join or
+    close, else None.
+
+    Only the call's first simple command is read: its words up to the first shell punctuation word.
+    They must be any `NAME=value` words, a Python interpreter, its flags that take no argument,
+    INVESTIGATION_SCRIPT, `join` or `close`, and arguments that give the key as `--incident-key K`
+    or `--incident-key=K`. The last key given wins, as argparse takes it, and other arguments are
+    left to the CLI, which refuses them. What follows, such as `2>&1` or a pipe, is not read, so a
+    later command, a here-doc's body or an echo or printf of the CLI's words is no call.
+    """
+    punctuation = tuple(SHELL_PUNCTUATION)
+    end = next((index for index, word in enumerate(words) if word.startswith(punctuation)), len(words))
+    position = 0
+    while position < end and SHELL_ASSIGNMENT.fullmatch(words[position]):
+        position += 1
+    if position == end or not PYTHON_INTERPRETER.fullmatch(words[position].rsplit("/", 1)[-1]):
+        return None
+    position += 1
+    while position < end and PYTHON_FLAGS.fullmatch(words[position]):
+        position += 1
+    if end - position < 2 or words[position].rsplit("/", 1)[-1] != INVESTIGATION_SCRIPT:
+        return None
+    subcommand = words[position + 1]
+    if subcommand not in INVESTIGATION_ACTIONS:
+        return None
+    key: Optional[str] = None
+    for index in range(position + 2, end):
+        if words[index] == "--incident-key" and index + 1 < end:
+            key = words[index + 1]
+        elif words[index].startswith("--incident-key="):
+            key = words[index][len("--incident-key="):]
+    if key is None or not key.strip():
+        return None
+    return subcommand, key.strip()
+
+
 def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str, str]]:
     """(action, incident_key) for a Bash call that joined or closed an investigation, else None.
 
-    `action` is "joined" or "closed". Both must hold: the command runs INVESTIGATION_SCRIPT with `join`
-    or `close` right after it, and the output has a line that is a JSON object stating the matching
-    action and an incident key. Codex gives a Bash call no exit code, so that line is the only sign
+    `action` is "joined" or "closed". Both must hold: the command starts by running the CLI, as
+    _investigation_call reads it, and the output has a line that is a JSON object stating the
+    matching action and the key the command gave. So a key the command passes through a shell
+    variable is not recognized. Codex gives a Bash call no exit code, so that line is the only sign
     the command worked. Only for PostToolUse. Never raises.
     """
     try:
@@ -811,14 +873,10 @@ def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str
         command = tool.arguments.get("command")
         if (tool.namespace, tool.name) != (AGENT, "Bash") or not isinstance(command, str):
             return None
-        words = _command_words(command)
-        actions = {
-            INVESTIGATION_ACTIONS[after]
-            for word, after in zip(words, words[1:])
-            if word.rsplit("/", 1)[-1] == INVESTIGATION_SCRIPT and after in INVESTIGATION_ACTIONS
-        }
-        if not actions:
+        call = _investigation_call(_command_words(command))
+        if call is None:
             return None
+        action, incident_key = INVESTIGATION_ACTIONS[call[0]], call[1]
         for line in _output_text(hook_input.get("tool_response")).splitlines():
             if not line.lstrip().startswith("{"):
                 continue
@@ -826,11 +884,9 @@ def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str
                 printed = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(printed, dict) or printed.get("action") not in actions:
-                continue
-            incident_key = printed.get("incident_key")
-            if isinstance(incident_key, str) and incident_key.strip():
-                return printed["action"], incident_key.strip()
+            if isinstance(printed, dict) and printed.get("action") == action \
+                    and printed.get("incident_key") == incident_key:
+                return action, incident_key
         return None
     except Exception:
         return None
@@ -1251,11 +1307,15 @@ def save_start_time(*, decision_id: str) -> None:
         pass
 
 
-def update_session_state(*, change: Callable[[Dict[str, Any]], None], session_id: str) -> None:
+def update_session_state(
+    *, change: Callable[[Dict[str, Any]], None], lock_timeout: Optional[float] = None, session_id: str
+) -> None:
     """Apply `change` to this session's state, under its lock, keeping what else it holds. Never raises.
 
     The file is replaced whole, so a reader never sees half of it, and it is private, as
-    save_start_time's files are. A file that can't be read starts again empty.
+    save_start_time's files are. A file that can't be read starts again empty. With a
+    `lock_timeout`, a lock still held elsewhere after that many seconds means nothing is read or
+    written.
     """
     try:
         path = session_state_path(session_id)
@@ -1264,7 +1324,7 @@ def update_session_state(*, change: Callable[[Dict[str, Any]], None], session_id
         def private(name: str, flags: int) -> int:
             return os.open(name, flags, 0o600)
 
-        with _locked(path):
+        with _locked(path, lock_timeout):
             try:
                 state = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
@@ -1357,28 +1417,9 @@ def _state_thread_id(*, session_id: str) -> Any:
         return None
 
 
-def _change_state(*, change: Callable[[Dict[str, Any]], None], deadline: float, session_id: str) -> bool:
-    """Apply `change` to the session state on a ledger thread. False when it has not finished in time.
-
-    Waits at most INVESTIGATION_STATE_TIMEOUT_SECONDS and never past `deadline`, so a lock another
-    process holds can't cost this call its own event. A change still waiting is abandoned and
-    never written.
-    """
-    abandoned = threading.Event()
-
-    def guarded(state: Dict[str, Any]) -> None:
-        # The lock may come free after the wait gave up. The hook has then already said the change
-        # was not made, so it raises, and update_session_state writes nothing.
-        if abandoned.is_set():
-            raise RuntimeError("the wait for the session state ended")
-        change(state)
-
-    thread = start_ledger_thread(work=lambda: update_session_state(change=guarded, session_id=session_id))
-    thread.join(max(0.0, min(INVESTIGATION_STATE_TIMEOUT_SECONDS, deadline - time.monotonic())))
-    if thread.is_alive():
-        abandoned.set()
-        return False
-    return True
+def _lock_timeout(*, deadline: float) -> float:
+    """How long a join or close may wait for the session state's lock: never past `deadline`."""
+    return max(0.0, min(INVESTIGATION_STATE_TIMEOUT_SECONDS, deadline - time.monotonic()))
 
 
 def _change_investigation(
@@ -1407,11 +1448,9 @@ def _change_investigation(
                 del state["investigation"]
 
         if action == "joined":
-            if (
-                not session_id
-                or not _change_state(change=join, deadline=deadline, session_id=session_id)
-                or _state_thread_id(session_id=session_id) != thread_id
-            ):
+            if session_id:
+                update_session_state(change=join, lock_timeout=_lock_timeout(deadline=deadline), session_id=session_id)
+            if not session_id or _state_thread_id(session_id=session_id) != thread_id:
                 ledger_warn(
                     message=f"Mezmo ledger did not join investigation {incident_key}: the session state was not written"
                 )
@@ -1424,10 +1463,8 @@ def _change_investigation(
         )
         # No write for another investigation, so a close can't create a state file.
         if session_id and _state_thread_id(session_id=session_id) == thread_id:
-            if (
-                not _change_state(change=leave, deadline=deadline, session_id=session_id)
-                or _state_thread_id(session_id=session_id) == thread_id
-            ):
+            update_session_state(change=leave, lock_timeout=_lock_timeout(deadline=deadline), session_id=session_id)
+            if _state_thread_id(session_id=session_id) == thread_id:
                 ledger_warn(
                     message=f"Mezmo ledger did not leave investigation {incident_key}: the session state still holds it"
                 )
@@ -1447,7 +1484,9 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
 
     A join or close of an investigation changes the session state before any send starts, since
     main() may end the process at the deadline: a join before this call's event is built, so the
-    event is stamped with it, and a close after. Its `joined` or `closed` goes in its own request.
+    event is stamped with it, and a close after. Each waits for the state's lock at most
+    INVESTIGATION_STATE_TIMEOUT_SECONDS and never past the deadline. Its `joined` or `closed` goes in
+    its own request.
     """
     try:
         # Looked up per call, not bound at definition, so tests can stand in for it.

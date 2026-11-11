@@ -42,6 +42,11 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/ledger_investigation.py" join --incident-
 It prints one line with the `incident_key` and the investigation's `thread_id`. From here on, the
 ledger files each tool call under that investigation.
 
+Run it on its own, as the whole Bash call, with the key written out as above: no `cd` or other
+command before it, and no shell variable such as `"$KEY"` for the key. The ledger records the join
+only when the Bash call starts with this command and the command itself gives the key the line
+shows.
+
 ## 3. Read the investigation before changing anything
 
 Call the `get_ledger_investigation` MCP tool with the same `incident_key`. It shows what other
@@ -62,7 +67,8 @@ work: don't repeat a change someone already made, or undo one they are waiting o
 
 ## 5. Close
 
-When the work is done, or the user stops it, close the investigation with the same key:
+When the work is done, or the user stops it, close the investigation with the same key. As with
+the join, run it on its own as the whole Bash call, with the key written out:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/ledger_investigation.py" close --incident-key <key>

@@ -901,6 +901,26 @@ class InvestigationChangeTests(LedgerTestCase):
             {"agent": "codex", "incident_key": INCIDENT_KEY, "session_id": "session-1", "thread_id": CHECK_THREAD_ID},
         )
 
+    def test_only_a_real_join_or_close_with_its_own_key_is_recognized(self) -> None:
+        # Compact: claude-code/tests/test_ledger.py covers _investigation_call, which is the same text.
+        cli = "python3 ~/.codex/hooks/ledger_investigation.py"
+        joined = json.dumps({"action": "joined", "incident_key": INCIDENT_KEY, "thread_id": "printed-thread"})
+        runbook = f"{cli} join --incident-key {INCIDENT_KEY}\n{joined}\n"
+        cases = (
+            (f"{cli} join --incident-key {INCIDENT_KEY}", ("joined", INCIDENT_KEY)),
+            (f"{cli} join --incident-key={INCIDENT_KEY} 2>&1", ("joined", INCIDENT_KEY)),
+            (f"{cli} join --incident-key {INCIDENT_KEY} | tail -n 5", ("joined", INCIDENT_KEY)),
+            (f"{cli} join --incident-key jira:OPS-1", None),
+            (f'{cli} join --incident-key "$KEY"', None),
+            (f"cd /tmp && {cli} join --incident-key {INCIDENT_KEY}", None),
+            (f"tee runbook.md <<'EOF'\n{runbook}EOF", None),
+            (f"printf '%s\\n' '(example)' {cli} join --incident-key {INCIDENT_KEY} '{joined}'", None),
+        )
+        for command, expected in cases:
+            with self.subTest(command=command):
+                event = hook_input("PostToolUse", tool_input={"command": command}, tool_response=f"run\n{joined}\n")
+                self.assertEqual(ledger.investigation_action(hook_input=event), expected)
+
     def test_a_join_writes_the_state_and_sends_joined(self) -> None:
         fake = self.fake()
         self.run_hook(self.cli_input("join", "joined"), fake)
@@ -952,7 +972,7 @@ class InvestigationChangeTests(LedgerTestCase):
         # The environment names the same investigation, so only a check of the state itself fails here.
         os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
         fake = self.fake()
-        with patch.object(ledger, "update_session_state", lambda *, change, session_id: None):
+        with patch.object(ledger, "update_session_state", lambda *, change, lock_timeout, session_id: None):
             self.run_hook(self.cli_input("join", "joined"), fake)
         self.assertIn(f"did not join investigation {INCIDENT_KEY}", self.stderr)
         self.assertEqual([event["event"] for event in fake.events()], ["agent.tool_call.ran"])
@@ -966,7 +986,8 @@ class InvestigationChangeTests(LedgerTestCase):
         with patch.object(ledger, "INVESTIGATION_STATE_TIMEOUT_SECONDS", 0.05):
             self.state_dir.mkdir(parents=True, exist_ok=True)
             path = ledger.session_state_path("session-1")
-            # Another open file's lock, as another process would hold it, freed after the wait ends.
+            # Another open file's lock, as another process would hold it. Freed after the hook's wait
+            # ends, so a hook that waits for it without a bound fails here instead of hanging.
             lock = open(f"{path}.lock", "a")
             self.addCleanup(lock.close)
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -977,7 +998,7 @@ class InvestigationChangeTests(LedgerTestCase):
             self.run_hook(self.cli_input("join", "joined"), fake)
         self.assertIn(f"did not join investigation {INCIDENT_KEY}", self.stderr)
         self.assertEqual([event["event"] for event in fake.events()], ["agent.tool_call.ran"])
-        # The abandoned change gets the lock once it is free, and must still write nothing.
+        # Once the lock is free, nothing left over from the hook may still write the state.
         release.join(5)
         for thread in ledger.LEDGER_THREADS:
             thread.join(5)
@@ -2465,9 +2486,13 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "LedgerSendResult",
     "MAX_LEDGER_JSON_CHARACTERS",
     "MAX_LEDGER_MESSAGE_CHARACTERS",
+    "PYTHON_FLAGS",
+    "PYTHON_INTERPRETER",
+    "SHELL_ASSIGNMENT",
     "SKIP_LEDGER_MCP_TOOL_NAMES",
     "SPOOL_LOCK",
     "_drain_lock",
+    "_investigation_call",
     "_ledger_statuses",
     "_open_retry_file",
     "_read_lines",
