@@ -1,7 +1,8 @@
 """The Mezmo ledger: tool-call events for Mezmo audit-service, shared by two hooks.
 
 - ledger_hook.py, registered beside governance_hook.py, sends `started` for each Bash or MCP
-  call and, when Claude Code reports back, `ran`, `failed` or auto mode's `not_run`.
+  call and, when Claude Code reports back, `ran`, `failed` or auto mode's `not_run`. After a
+  Bash call that ran ledger_investigation.py's join or close, it also sends `joined` or `closed`.
 - governance_hook.py calls `record_governance_refusal` when governance denies a call, its
   approval expires or it errors, since no hook runs after a deny. That is its only use of this
   module.
@@ -14,12 +15,14 @@
 from __future__ import annotations
 
 import errno
+import functools
 import json
 import math
 import os
 import re
 import shlex
 import stat
+import subprocess
 import sys
 import threading
 import uuid
@@ -58,6 +61,9 @@ LEDGER_URL_ENV = "MEZMO_LEDGER_URL"
 DEFAULT_LEDGER_SPOOL = Path.home() / ".mezmo" / "ledger-spool.jsonl"
 LEDGER_APPLICATION = "mezmo-claude-code-plugin"
 SKIP_LEDGER_MCP_TOOL_NAMES = frozenset({"get_ledger_investigation", "list_ledger_entries"})
+# The investigation CLI, and what its join and close print as `action` when they succeed.
+INVESTIGATION_ACTIONS = {"close": "closed", "join": "joined"}
+INVESTIGATION_SCRIPT = "ledger_investigation.py"
 # The plugin's manifest, for application.version. This file is in <plugin>/scripts.
 PLUGIN_MANIFEST = Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
 # The socket timeout of each ledger_hook.py request, and the deadline its main thread waits for
@@ -195,6 +201,23 @@ def plugin_version() -> str:
         return "unknown"
     version = version.strip() if isinstance(version, str) else ""
     return version or "unknown"
+
+
+@functools.lru_cache(maxsize=None)
+def operator_email() -> Optional[str]:
+    """The git email of whoever runs this session, or None. Asks git once per run and never raises."""
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "user.email"],
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            timeout=1,
+        )
+    except Exception:
+        return None
+    email = result.stdout.strip() if result.returncode == 0 else ""
+    return email or None
 
 
 def _plain_name(value: Any) -> Optional[str]:
@@ -516,6 +539,48 @@ def _skip_ledger_mcp_tool(*, hook_input: Mapping[str, Any]) -> bool:
     return len(parts) == 3 and parts[2] in SKIP_LEDGER_MCP_TOOL_NAMES
 
 
+def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str, str]]:
+    """("joined" or "closed", incident_key) when this Bash call ran the investigation CLI's join or
+    close and it succeeded, else None. Never raises.
+
+    Both must hold: a word of the command names the CLI and the next word is join or close, and a
+    line of the output is the JSON object that subcommand prints, with its `action` and a key.
+    """
+    try:
+        if hook_input.get("hook_event_name") != "PostToolUse" or hook_input.get("tool_name") != "Bash":
+            return None
+        tool_input = hook_input.get("tool_input")
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        if not isinstance(command, str):
+            return None
+        words = _command_words(command)
+        actions = {
+            INVESTIGATION_ACTIONS[after]
+            for word, after in zip(words, words[1:])
+            if os.path.basename(word) == INVESTIGATION_SCRIPT and after in INVESTIGATION_ACTIONS
+        }
+        if not actions:
+            return None
+        for line in _output_text(hook_input.get("tool_response")).splitlines():
+            try:
+                printed = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(printed, dict) or printed.get("action") not in actions:
+                continue
+            incident_key = printed.get("incident_key")
+            if isinstance(incident_key, str) and incident_key.strip():
+                return printed["action"], incident_key.strip()
+    except Exception:
+        pass
+    return None
+
+
+def investigation_thread_id(*, account: str, incident_key: str) -> str:
+    """The investigation's thread id, as mcp-service and the investigation CLI derive it."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"mezmo-investigation:{account}:{incident_key}"))
+
+
 def ledger_context(*, account: str, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
     """{incident_key, references, thread_id} for this session, absent ones left out.
 
@@ -544,7 +609,7 @@ def ledger_context(*, account: str, hook_input: Mapping[str, Any]) -> Dict[str, 
     incident_key = _setting(LEDGER_INCIDENT_KEY_ENV)
     thread_id = _setting(LEDGER_INVESTIGATION_ID_ENV)
     if thread_id is None and incident_key is not None:
-        thread_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"mezmo-investigation:{account}:{incident_key}"))
+        thread_id = investigation_thread_id(account=account, incident_key=incident_key)
     if incident_key is not None:
         context["incident_key"] = incident_key
     if thread_id is not None:
@@ -563,7 +628,14 @@ def ledger_envelope(
     message: str,
     session_id: str,
 ) -> Dict[str, Any]:
-    """The top-level fields audit-service takes, for any entity. `event` is the event name."""
+    """The top-level fields audit-service takes, for any entity. `event` is the event name.
+
+    `extra` gets the operator's git email when there is one, unless the caller already set it.
+    """
+    extra = dict(extra)
+    email = operator_email()
+    if email is not None:
+        extra.setdefault("operator_email", email)
     envelope: Dict[str, Any] = {
         "actor": {"account": account, "pk": f"{AGENT}:{session_id}", "type": "agent"},
         "application": {"name": LEDGER_APPLICATION, "version": plugin_version()},
@@ -575,7 +647,7 @@ def ledger_envelope(
             "entity_id": entity_id,
             "entity_type": entity_type,
             "event": event,
-            "extra": dict(extra),
+            "extra": extra,
             "internal": False,
             "message": message,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -673,6 +745,26 @@ def ledger_event(
         extra=extra,
         message=message[:MAX_LEDGER_MESSAGE_CHARACTERS],
         session_id=identity.session_id,
+    )
+
+
+def investigation_event(
+    *, action: str, config: LedgerConfig, hook_input: Mapping[str, Any], incident_key: str, thread_id: str
+) -> Optional[Dict[str, Any]]:
+    """The session's `agent.investigation.<action>`: `action` is joined or closed. None without an identity."""
+    try:
+        session_id = call_identity(hook_input).session_id
+    except Exception:
+        return None
+    return ledger_envelope(
+        account=config.account,
+        correlation_id=thread_id,
+        entity_id=thread_id,
+        entity_type="investigation",
+        event=f"agent.investigation.{action}",
+        extra={"agent": AGENT, "incident_key": incident_key, "session_id": session_id, "thread_id": thread_id},
+        message=f"{AGENT} {action} investigation {incident_key}"[:MAX_LEDGER_MESSAGE_CHARACTERS],
+        session_id=session_id,
     )
 
 

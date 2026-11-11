@@ -61,11 +61,12 @@ config change.
 Run them from the repository root. With `CODEX_HOME` set, use `$CODEX_HOME`
 for `~/.codex`.
 
-1. Copy both hook scripts, the governance hook and the ledger hook:
+1. Copy both hook scripts, the governance hook and the ledger hook, and the
+   [investigation](#investigations) CLI:
 
 ```bash
 mkdir -p ~/.codex/hooks
-cp codex/mezmo_governance_hook.py codex/mezmo_ledger_hook.py ~/.codex/hooks/
+cp codex/mezmo_governance_hook.py codex/mezmo_ledger_hook.py codex/ledger_investigation.py ~/.codex/hooks/
 ```
 
 2. Merge [hooks.example.json](hooks.example.json) into `~/.codex/hooks.json`, or
@@ -310,6 +311,9 @@ tool's arguments. `ran` and `failed` carry the result, and the exit status
 when the result states one. `not_run` carries why the call did not run.
 Arguments and results are cut at 4,096 characters and are not redacted.
 
+Each record also carries your git email (`git config user.email`) when one is
+set, so the ledger can show who ran the session.
+
 Each record also names the service and environment the call touched, such as
 `checkout/prod`, or `unknown`, and whether the call reads or writes. Both are
 worked out from the kubectl commands in a Bash call or from an MCP tool's name
@@ -363,6 +367,96 @@ seconds on it. A record cut off at that limit is lost, and a slow send can
 deliver a record twice. Nothing is recorded when the deadline watchdog ends
 the hook, or for input the hook cannot read.
 
+### Investigations
+
+Agents working the same incident can share one investigation. Their records
+carry the same `thread_id`, so a second agent can read what the first did,
+with the `get_ledger_investigation` MCP tool, before it acts. The `thread_id`
+is worked out from `MEZMO_LEDGER_ACCOUNT` and the incident key, so every
+session on the account that uses the same key gets the same one.
+
+| Event | When |
+| --- | --- |
+| `agent.investigation.closed` | The session ran `ledger_investigation.py close` |
+| `agent.investigation.joined` | The session ran `ledger_investigation.py join` |
+| `agent.investigation.opened` | `ledger_investigation.py launch` started a command for an alert |
+
+Each carries the incident key and the `thread_id`. `joined` and `closed` also
+carry the session id, and `opened` carries `opened_by: "alert"`.
+
+An incident key is `<source>:<id>`, with source `jira`, `pagerduty` or
+`slack`, such as `pagerduty:Q34FCCWSTU9OI2`. The CLI,
+`ledger_investigation.py`, has four commands:
+
+| Command | What it does |
+| --- | --- |
+| `close --incident-key <key>` | Prints one line, `{"action": "closed", "incident_key": ..., "thread_id": ...}` |
+| `id --incident-key <key>` | Prints the key and its `thread_id`. Nothing is recorded |
+| `join --incident-key <key>` | Prints one line, `{"action": "joined", "incident_key": ..., "thread_id": ...}` |
+| `launch --incident-key <key> -- <command...>` | Sends `opened`, then runs the command in the investigation |
+
+`id`, `join` and `close` need only `MEZMO_LEDGER_ACCOUNT` and send nothing
+themselves. The ledger hook does the rest when a `Bash` call runs the CLI with
+`join` or `close` and its output has that line. Codex gives the hook no exit
+code, so the line is the sign the command worked.
+
+- After a `join`, the hook writes the investigation to the
+  [session state](#session-state) and then sends `joined`. Every later call of
+  the session carries the `thread_id`, and so does the join call's own `ran`.
+  If the state can't be written, it warns on stderr and sends no `joined`.
+- After a `close`, it sends `closed` and clears the session's investigation,
+  but only when it is the one closed.
+
+The CLI is at `~/.codex/hooks/ledger_investigation.py` for the file install,
+where `./mezmo-governance install codex` copies it, and under
+`~/.codex/plugins/cache/mezmo/mezmo-governance/<version>/` for the plugin.
+
+Codex has no skills, so the instructions go in `AGENTS.md`. Paste this block
+there and put the CLI's path in place of `<cli>`:
+
+```markdown
+## Incident investigations
+
+Record your work on an incident in its Mezmo investigation. Below, `<cli>` is
+the path of `ledger_investigation.py`.
+
+1. Work out the incident's key: `pagerduty:<incident id>`, else
+   `jira:<issue key>`, else `slack:<channel id>`. One incident can have all
+   three, so when you start from a Slack channel or a Jira issue, use your
+   PagerDuty, Slack and Jira tools to find its PagerDuty incident, and use that
+   when there is one. Two agents that pick different keys get different
+   investigations and never see each other's work.
+2. Run `python3 <cli> join --incident-key <key>`. Do this even when the session
+   was started by `ledger_investigation.py launch`.
+3. Before you change anything, call the `get_ledger_investigation` MCP tool
+   with `incident_key` set to the key, and read what was already done.
+4. Run one command per shell call while you work on the incident: no `;`,
+   `&&` or `||` chains. The ledger records one entry per tool call, so
+   separate calls give each action its own entry, outcome and approval.
+5. Stay on the incident's service and namespace: act only on the service and
+   environment the incident names. If a command fails because a target isn't
+   found, report it and stop. Don't search the cluster for another deployment
+   with the same name and act on that.
+6. When you are done, run `python3 <cli> close --incident-key <key>` with the
+   same key.
+```
+
+`launch` is for an alert that starts an agent, for example
+`python3 ~/.codex/hooks/ledger_investigation.py launch --incident-key <key> -- codex exec "<prompt>"`.
+It sends `opened` with `opened_by: "alert"`, then runs the command in its
+place with `MEZMO_LEDGER_INCIDENT_KEY` and `MEZMO_LEDGER_INVESTIGATION_ID`
+set, so `launch` exits with the command's exit code. It needs `MEZMO_LEDGER_ACCOUNT` and
+`MEZMO_LEDGER_URL`, and `MEZMO_LEDGER_KEY` (or `MEZMO_GOVERNANCE_TOKEN`)
+exported in the shell it runs from. Without a key the ledger refuses `opened`
+with a 401, and it waits in the retry file, so it may arrive after `joined`.
+An `opened` that can't be sent is saved for retry and the command still runs.
+
+Codex may run hooks in a background process whose environment was fixed when
+it started, so the two variables `launch` sets may never reach the ledger
+hook. That is why a launched session still runs `join`: the session state
+wins over the environment. When the variables do reach the hook, every call
+of the session carries the investigation, even after `close`.
+
 ### What Codex does not report
 
 Read from the Codex 0.167.0 source. Codex gives hooks no exit code and no
@@ -387,14 +481,19 @@ wait included.
 
 The local audit log and the ledger can disagree. For a `Bash` output that is
 itself JSON, such as `{"exit_code":1}`, the audit log may say `failed` while
-the ledger says `ran`: the ledger never parses a `Bash` string.
+the ledger says `ran`: the ledger never takes an exit code from a `Bash`
+string. The only `Bash` output it reads is the result line of an
+[investigation](#investigations) `join` or `close`.
 
 ### Session state
 
 The ledger hook reads a session's investigation and references from
 `~/.mezmo/governance/codex-sessions/<session id>.json`, when that file exists.
-An investigation there wins over `MEZMO_LEDGER_INVESTIGATION_ID`. The hook
-only reads those files, and no part of this plugin writes them yet.
+An investigation there wins over `MEZMO_LEDGER_INVESTIGATION_ID`. The ledger
+hook writes the investigation there after an [investigation](#investigations)
+`join` and clears it after a `close`, keeping whatever else the file holds.
+The file is readable only by you (file 0600, folder 0700). Nothing else in
+this plugin writes these files.
 `MEZMO_GOVERNANCE_STATE_DIR` moves the folder. Claude Code reads the same
 variable, so with it set the two share one folder, and Claude Code's 7 day
 prune also removes old Codex files there. That is harmless.
@@ -417,8 +516,9 @@ error and its fix. The top cause for Codex: a hook not trusted in `/hooks`.
 ## Tests
 
 ```bash
-python3 -m unittest test_hook.py test_ledger.py -v
+python3 -m unittest test_hook.py test_ledger.py test_ledger_investigation.py -v
 ```
 
-`test_hook.py` covers the governance hook and `test_ledger.py` the ledger
-hook. From the repo root, `make test-codex` runs both.
+`test_hook.py` covers the governance hook, `test_ledger.py` the ledger hook
+and `test_ledger_investigation.py` the investigation CLI. From the repo root,
+`make test-codex` runs all three.

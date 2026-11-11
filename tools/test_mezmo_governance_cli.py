@@ -283,7 +283,9 @@ class InstallTests(CliTestCase):
     def test_install_over_an_older_install_replaces_each_stale_copied_file(self) -> None:
         # A user reinstalls to get a fix, such as a new deny in the hook; a stale copy keeps the old hook running.
         copied = {
-            "codex": ("codex/hooks/mezmo_governance_hook.py", "codex/hooks/mezmo_ledger_hook.py"),
+            "codex": (
+                "codex/hooks/mezmo_governance_hook.py", "codex/hooks/mezmo_ledger_hook.py", "codex/hooks/ledger_investigation.py",
+            ),
             "cursor": ("home/.cursor/hooks/mezmo_governance_hook.py",),
             "copilot": ("copilot/hooks/mezmo_governance_hook.py", "copilot/hooks/mezmo-governance.json"),
             "goose": tuple(
@@ -583,6 +585,7 @@ class InstallTests(CliTestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertRegex(result.stdout, r"delete \S*/codex/hooks/mezmo_governance_hook\.py\n")
         self.assertRegex(result.stdout, r"delete \S*/codex/hooks/mezmo_ledger_hook\.py\n")
+        self.assertRegex(result.stdout, r"delete \S*/codex/hooks/ledger_investigation\.py\n")
         after = {name: content for name, content in self.files().items() if ".mezmo-backup-" not in name}
         self.assertEqual(sorted(after), sorted(original))
         self.assertEqual(json.loads(after["codex/hooks.json"]), json.loads(original["codex/hooks.json"]))
@@ -697,7 +700,9 @@ class InstallTests(CliTestCase):
             self.assertEqual(len(group["hooks"]), 2, event)
             ledger = {"command": f'python3 "{self.tmp}/codex/hooks/mezmo_ledger_hook.py" || true', "timeout": timeout, "type": "command"}
             self.assertEqual(group["hooks"][1], ledger)
-        self.assertEqual((self.tmp / "codex/hooks/mezmo_ledger_hook.py").read_bytes(), (REPO / "codex/mezmo_ledger_hook.py").read_bytes())
+        # Beside it, the investigation CLI, which no handler runs.
+        for name in ("mezmo_ledger_hook.py", "ledger_investigation.py"):
+            self.assertEqual((self.tmp / "codex/hooks" / name).read_bytes(), (REPO / "codex" / name).read_bytes())
         self.assertIn("next: Start codex, run /hooks, and trust the four Mezmo hook entries", result.stdout)
         # No other agent has a ledger script.
         self.assertEqual([path for path in self.tmp.rglob("mezmo_ledger_hook.py") if "codex" not in path.parts], [])
@@ -810,12 +815,13 @@ class InstallTests(CliTestCase):
         self.write({"gemini/.gemini/settings.json": gemini, "codex/hooks.json": codex, "factory/.factory/hooks.json": droid,
                     "home/.codeium/windsurf/hooks.json": windsurf, "home/.gemini/config/hooks.json": antigravity})
         shutil.copytree(REPO / "pi", self.tmp / "pi/extensions/mezmo-governance")
-        # Each README's first step copies the hook script; Codex's copies the ledger script beside it.
+        # Each README's first step copies the hook script; Codex's copies the ledger script and the investigation CLI beside it.
         for adapter, folder in (("codex", "codex"), ("droid", "factory/.factory"), ("windsurf", "home/.codeium/windsurf"),
                                 ("antigravity", "home/.gemini/config")):
             (self.tmp / folder / "hooks").mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO / adapter / "mezmo_governance_hook.py", self.tmp / folder / "hooks")
-        shutil.copy2(REPO / "codex/mezmo_ledger_hook.py", self.tmp / "codex/hooks")
+        for name in ("mezmo_ledger_hook.py", "ledger_investigation.py"):
+            shutil.copy2(REPO / "codex" / name, self.tmp / "codex/hooks")
         before = self.files()
         result = self.cli("install", "gemini-cli", "codex", "pi", "droid", "windsurf", "antigravity")
         self.assertEqual(result.returncode, 0, result.stdout)

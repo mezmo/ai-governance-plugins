@@ -67,6 +67,7 @@ again. Telemetry settings live in `~/.claude/settings.json` and the MCP server i
 | `/mezmo:setup [governance\|telemetry\|mcp\|all]` | Sets up governance, telemetry, MCP or all of them. Governance and telemetry can also go in a managed-settings file for your organization |
 | `/mezmo:test` | Checks your keys and shows what's configured |
 | `/mezmo:remove [governance\|telemetry\|mcp\|all]` | Undoes setup. Uninstalling the plugin doesn't |
+| `/mezmo:investigate <incident>` | Joins the incident's investigation in the [ledger](#investigations), so other agents working on it see this session's tool calls |
 | `/mezmo` | Shows this session's status right away, without a Claude turn |
 
 To try the plugin for one session without installing it, run
@@ -268,6 +269,9 @@ Each record carries the session id, a call id shared by its start and end, and t
 exit status and how long the tool took. `not_run` carries why the call didn't run. Arguments and
 results are cut at 4,096 characters and are not redacted.
 
+Each record also carries your git email (`git config user.email`) when one is set, so the ledger
+can show who ran the session.
+
 Each record also names the service and environment the call touched, such as `checkout/prod`, or
 `unknown`, and whether the call reads or writes. Both are worked out from the kubectl commands in a
 Bash call or from an MCP tool's name and arguments, with `prod` when no namespace or environment
@@ -299,6 +303,40 @@ dropped. The retry file keeps at most 200 records and drops the oldest past that
 saved for a different `MEZMO_LEDGER_URL` are discarded once you change it. The retry file holds
 the full records, including arguments and output, and is readable only by you. Delete it to
 discard what's waiting.
+
+### Investigations
+
+Agents working on the same incident file their tool calls under one investigation, so each can
+read what the others already did before it acts. The investigation's id is worked out from your
+`MEZMO_LEDGER_ACCOUNT` and the incident's key, `pagerduty:<incident id>`, `jira:<issue key>` or
+`slack:<channel id>`, so every agent that starts from the same key lands in the same one. While a
+session is in an investigation, each of its records carries the investigation's id and the key.
+
+| Event | When |
+| --- | --- |
+| `agent.investigation.closed` | The session left the investigation |
+| `agent.investigation.joined` | The session joined the investigation |
+| `agent.investigation.opened` | The launcher started a command in the investigation |
+
+`/mezmo:investigate <incident>` works out the incident's key, preferring the PagerDuty incident
+when a Slack channel or Jira issue has one, then joins. It runs
+`scripts/ledger_investigation.py join --incident-key <key>`, and the ledger hook, seeing that call
+succeed, puts the session in the investigation and sends `joined`. Claude then reads the
+investigation with the `get_ledger_investigation` tool of [Mezmo MCP](#mezmo-mcp) before changing
+anything, runs one command per Bash call, and at the end runs `close`, which sends `closed` and
+takes the session out of it. Both need ledger sending on.
+
+To start an agent inside an investigation, such as from an alert, use the launcher:
+
+```bash
+python3 scripts/ledger_investigation.py launch --incident-key <key> -- <command...>
+```
+
+It sends `opened` with `opened_by: "alert"`, then runs the command with
+`MEZMO_LEDGER_INCIDENT_KEY` and `MEZMO_LEDGER_INVESTIGATION_ID` set, so a `claude -p` it starts
+files every call under the investigation. Its exit code is the command's. Export
+`MEZMO_LEDGER_KEY` in the shell you run it from: the fallback to the governance key only exists
+inside Claude Code, so without it `opened` is refused and waits in the retry file.
 
 ## Telemetry
 

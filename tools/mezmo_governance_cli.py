@@ -39,6 +39,9 @@ LIBRARIES = (
 # Codex's second script: its own handler in each group records the call in the Mezmo ledger. The two scripts
 # import each other, so it sits beside HOOK_FILE.
 LEDGER_FILE = "mezmo_ledger_hook.py"
+# Codex's investigation CLI: the agent runs it by hand, so it is copied beside LEDGER_FILE, which it imports, and
+# never registered as a handler.
+INVESTIGATION_FILE = "ledger_investigation.py"
 # The mock denies each agent's shell tool and approves the rest.
 SHELL_TOOLS = list(dict.fromkeys(agent.shell for agent in doctor.AGENTS))
 SMOKE_KEY = "smoke-test"
@@ -412,10 +415,12 @@ def file_hook_agent(
     """Codex, Cursor and Windsurf: a hook script plus entries merged into hooks.json; default is the folder under HOME.
 
     gates names each event that gates its own tools, where one event does not cover the others.
-    ledger adds the ledger script beside the hook script, and its handler to each event's group.
+    ledger adds the ledger script and the investigation CLI beside the hook script, and the ledger's handler to each
+    event's group.
     """
     events = gates or (event,)
     scripts = (HOOK_FILE, LEDGER_FILE) if ledger else (HOOK_FILE,)
+    copied = scripts + (INVESTIGATION_FILE,) if ledger else scripts
 
     def home_folder() -> Path:
         return doctor.home() / (default or f".{adapter}")
@@ -427,7 +432,7 @@ def file_hook_agent(
 
     def install() -> list:
         # The entries go last: a handler added before its script is there would run nothing.
-        steps = [step for name in scripts for step in hook_refresh(REPO / adapter / name, folder() / "hooks" / name)]
+        steps = [step for name in copied for step in hook_refresh(REPO / adapter / name, folder() / "hooks" / name)]
         data = example(adapter, "hooks.example.json", folder(), home_folder())
         if ledger:
             return steps + ledger_steps(data, folder() / "hooks.json")
@@ -447,7 +452,7 @@ def file_hook_agent(
             )
         # TODO: the Codex scripts import each other, so Python leaves a __pycache__ folder beside them.
         # Uninstall must remove it too.
-        return unmerge_steps(path, heads) + [step for name in scripts for step in hook_removal(folder() / "hooks" / name, folder())]
+        return unmerge_steps(path, heads) + [step for name in copied for step in hook_removal(folder() / "hooks" / name, folder())]
 
     return Installer(installed, install, uninstall, next_step)
 
