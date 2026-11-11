@@ -555,16 +555,17 @@ class FieldTests(LedgerTestCase):
         self.run_hook(hook_input("PostToolUse", error="bad thing", tool_response={"exit_code": 1, "stdout": "x"}), fake)
         self.run_hook(hook_input("PostToolUse", tool_response={"exit_code": 1, "stdout": "x"}), fake)
         with_error, without = fake.events()
-        self.assertEqual(with_error["extra"]["output"], '"bad thing"')
+        self.assertEqual(with_error["extra"]["output"], "bad thing")
         self.assertEqual(with_error["message"], "List files: failed - bad thing")
         self.assertEqual(without["extra"]["output"], '{"exit_code":1,"stdout":"x"}')
 
-    def test_output_is_rendered_as_sorted_compact_json(self) -> None:
+    def test_output_is_rendered_as_text_or_sorted_compact_json(self) -> None:
         fake = self.fake()
         self.run_hook(hook_input("PostToolUse", tool_response={"b": "é", "a": [1, 2]}), fake)
         self.assertEqual(fake.events()[0]["extra"]["output"], '{"a":[1,2],"b":"é"}')
         self.assertEqual(ledger.ledger_json({1: "x", "a": "y"}), str({1: "x", "a": "y"}))
-        self.assertEqual(ledger.ledger_json("abcdef", 3), '"ab')
+        self.assertEqual(ledger.ledger_json("abcdef", 3), "abc")
+        self.assertEqual(ledger.ledger_json("Exit code 1\nboom"), "Exit code 1\nboom")
 
     def test_arguments_output_and_message_are_cut(self) -> None:
         fake = self.fake()
@@ -724,10 +725,6 @@ class SettingsTests(LedgerTestCase):
                 self.assertFalse(self.spool.exists())
                 self.assertEqual(ledger_hook.LEDGER_THREADS, [])
 
-    def test_the_ledger_url_drops_trailing_slashes(self) -> None:
-        os.environ["MEZMO_LEDGER_URL"] = "https://audit.example.test/v1/events///"
-        self.assertEqual(ledger.load_ledger_config().url, "https://audit.example.test/v1/events")
-
     def test_post_ledger_events_builds_the_authorization_header_from_the_key(self) -> None:
         recorder = Recorder()
         url = serve(self, recorder)
@@ -878,20 +875,22 @@ class SettingsTests(LedgerTestCase):
         )
         self.assertEqual(self.spool_lines(), [])
 
-    def test_a_207_without_a_usable_list_drops_them_all(self) -> None:
+    def test_a_207_without_a_usable_list_drops_them(self) -> None:
         config = ledger.load_ledger_config()
         events = [self.build("started", tool_use_id=f"call-{n}") for n in range(2)]
-        for body in (b"not json", b"[]", b'{"events": "x"}'):
+        for body in (b"not json", b"[]", b'{"events": "x"}', b'{"events": []}'):
             with self.subTest(body=body):
                 self.assertEqual(
                     ledger.send_ledger_events(config=config, events=events, ledger_http=self.fake((207, body))),
                     ledger.LedgerSendResult(answered=True, save=[]),
                 )
-                self.assertEqual(
-                    ledger.LEDGER_MESSAGES.pop(),
-                    "Mezmo ledger dropped 2 event(s): "
-                    "the ledger service answered HTTP 207 without usable event statuses",
-                )
+        self.assertEqual(
+            ledger.LEDGER_MESSAGES,
+            [
+                "Mezmo ledger dropped 2 event(s): "
+                "the ledger service answered HTTP 207 without usable event statuses",
+            ] * 4,
+        )
 
     def test_send_ledger_events_says_whether_the_service_answered_and_never_saves(self) -> None:
         config = ledger.load_ledger_config()
@@ -973,7 +972,7 @@ class RetryFileTests(LedgerTestCase):
             ledger.LEDGER_MESSAGES,
             [
                 "Mezmo ledger dropped 2 saved event(s): "
-                "the ledger service answered HTTP 207 without usable event statuses"
+                "the ledger service answered HTTP 207 without usable event statuses",
             ],
         )
 
@@ -1038,6 +1037,20 @@ class RetryFileTests(LedgerTestCase):
         self.assertEqual(
             ledger.LEDGER_MESSAGES,
             [f"Mezmo ledger dropped 5 saved event(s): the retry file keeps at most {ledger.LEDGER_SPOOL_MAX_LINES}"],
+        )
+
+    def test_saving_lines_over_the_limit_drops_the_oldest(self) -> None:
+        lines = [self.spool_line() for _ in range(ledger.LEDGER_SPOOL_MAX_LINES)]
+        self.write_spool(lines)
+        config = ledger.load_ledger_config()
+        late = self.build("started", tool_use_id="late")
+
+        ledger.save_ledger_events(config=config, events=[late])
+
+        self.assertEqual(self.spool_lines(), lines[1:] + [self.spool_line(late)])
+        self.assertEqual(
+            ledger.LEDGER_MESSAGES,
+            [f"Mezmo ledger dropped 1 saved event(s): the retry file keeps at most {ledger.LEDGER_SPOOL_MAX_LINES}"],
         )
 
     def test_delivered_lines_leave_before_the_limit_is_applied(self) -> None:

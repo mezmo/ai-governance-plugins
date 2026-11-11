@@ -288,7 +288,7 @@ Turn it on by setting `MEZMO_LEDGER_ACCOUNT` and `MEZMO_LEDGER_URL`:
 and the records are dropped. The key is sent as `Authorization: Token <key>`, or as given when it
 starts with `Token ` or `Bearer `. Setting `MEZMO_LEDGER_KEY` doesn't turn governance on. Without
 it, the governance key is sent to `MEZMO_LEDGER_URL`. The URL must use `https`, or `http` to this
-machine only. On Mezmo's dev environment it is `https://api.use.dev.logdna.net/v1/audit/events`.
+machine only. For Mezmo, use `https://<Mezmo API host>/v1/audit/events`.
 
 The ledger never blocks a tool call or changes a governance decision, because its hook always
 exits successfully. If the ledger is slow or unreachable, the ledger hook stops waiting after 3

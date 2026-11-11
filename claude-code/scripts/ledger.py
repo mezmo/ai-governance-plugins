@@ -89,6 +89,13 @@ KUBECTL_KINDS = (
 )
 # `rollout` subcommands that only read. Every other `rollout` writes.
 KUBECTL_READ_ROLLOUTS = ("history", "status")
+# `create service` subcommands, which sit between kind and name.
+KUBECTL_SERVICE_TYPES = ("clusterip", "externalname", "loadbalancer", "nodeport")
+# kubectl resource flags whose value is the next word, and which can sit between kind and name.
+KUBECTL_TARGET_VALUE_FLAGS = (
+    "--clusterip", "--external-name", "--field-selector", "--label-columns", "--node-port", "--output",
+    "--selector", "--sort-by", "--tcp", "--template", "--templatefile", "-l", "-o",
+)
 # kubectl's global flags whose value is the next word.
 KUBECTL_VALUE_FLAGS = (
     "--as", "--as-group", "--as-uid", "--as-user-extra", "--cache-dir", "--certificate-authority",
@@ -98,11 +105,13 @@ KUBECTL_VALUE_FLAGS = (
     "--vmodule", "-n", "-s", "-v",
 )
 KUBECTL_WRITE_VERBS = (
-    "annotate", "apply", "create", "delete", "edit", "patch", "replace", "restart", "rollout", "scale", "set",
+    "annotate", "apply", "create", "delete", "drain", "edit", "label", "patch", "replace", "restart",
+    "rollout", "scale", "set", "taint",
 )
 # Above this many characters, _command_words skips shlex, which takes quadratic time on a long word.
 MAX_SHLEX_CHARACTERS = 100_000
 MCP_ENV_ARGUMENTS = ("env", "environment", "namespace")
+MCP_READ_PREFIXES = ("describe", "fetch", "find", "get", "list", "query", "read", "search", "show", "watch")
 MCP_SERVICE_ARGUMENTS = ("service", "service_name")
 MCP_WRITE_WORDS = ("apply", "create", "delete", "patch", "restart", "rollback", "scale", "undo", "update")
 # A service, namespace or environment: a DNS label. _plain_name also refuses one that is all digits.
@@ -147,7 +156,6 @@ def load_ledger_config() -> Optional[LedgerConfig]:
     url = _setting(LEDGER_URL_ENV)
     if account is None or url is None:
         return None
-    url = url.rstrip("/")
     # MEZMO_LEDGER_KEY, else the governance key when governance is configured, else no header.
     key = _setting(LEDGER_KEY_ENV)
     key_setting = LEDGER_KEY_ENV
@@ -198,11 +206,11 @@ def _plain_name(value: Any) -> Optional[str]:
 def _command_words(command: str) -> List[str]:
     """The command's words. Each run of shell punctuation, newlines included, is its own word.
 
-    Comment lines go first, so an apostrophe in one can't open a quote, then backslash-newlines.
-    A command shlex can't read, or one longer than MAX_SHLEX_CHARACTERS, is split as UNQUOTED_WORD
-    says, with its quotes left in.
+    Shell comments go first, without touching quoted strings, so an apostrophe in one can't open a
+    quote, then backslash-newlines. A command shlex can't read, or one longer than
+    MAX_SHLEX_CHARACTERS, is split as UNQUOTED_WORD says, with its quotes left in.
     """
-    command = re.sub(r"(?m)^[ \t]*#.*", "", command).replace("\\\r\n", "").replace("\\\n", "")
+    command = _without_shell_comments(command).replace("\\\r\n", "").replace("\\\n", "")
     # shlex adds to a word one character at a time, so one long word takes quadratic time.
     if len(command) <= MAX_SHLEX_CHARACTERS:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=SHELL_PUNCTUATION)
@@ -214,6 +222,45 @@ def _command_words(command: str) -> List[str]:
         except ValueError:  # An unclosed quote, or a backslash at the end.
             pass
     return UNQUOTED_WORD.findall(command)
+
+
+def _without_shell_comments(command: str) -> str:
+    """`command` without unquoted shell comments, preserving newlines and quoted strings."""
+    result: List[str] = []
+    escaped = False
+    quote: Optional[str] = None
+    start = True
+    position = 0
+    while position < len(command):
+        character = command[position]
+        position += 1
+        if escaped:
+            result.append(character)
+            escaped = False
+            start = False
+            continue
+        if character == "\\" and quote != "'":
+            result.append(character)
+            escaped = True
+            start = False
+            continue
+        if quote is None and character == "#" and start:
+            while position < len(command) and command[position] != "\n":
+                position += 1
+            continue
+        result.append(character)
+        if quote is not None:
+            if character == quote:
+                quote = None
+            continue
+        if character in ("'", '"'):
+            quote = character
+            start = False
+        elif character in SHELL_PUNCTUATION or character.isspace():
+            start = True
+        else:
+            start = False
+    return "".join(result)
 
 
 def _kubectl_calls(words: Sequence[str]) -> List[List[str]]:
@@ -236,7 +283,7 @@ def _kubectl_parts(words: Sequence[str]) -> Tuple[Optional[str], List[str]]:
 
     `rest` is the call's words without the KUBECTL_VALUE_FLAGS and their values, up to a bare `--`
     that follows the verb. `namespace` is None when no flag gives one, "" when a flag gives one
-    that can't be read, else the name. The first namespace flag wins.
+    that can't be read, else the name. The last namespace flag wins.
     """
     namespace: Optional[str] = None
     rest: List[str] = []
@@ -261,7 +308,7 @@ def _kubectl_parts(words: Sequence[str]) -> Tuple[Optional[str], List[str]]:
         else:
             rest.append(word)
             has_verb = has_verb or not word.startswith("-")
-        if value is not None and namespace is None:
+        if value is not None:
             namespace = _plain_name(value) or ""
     return namespace, rest
 
@@ -285,6 +332,26 @@ def _demo_target(words: Sequence[str]) -> Tuple[Optional[str], str]:
     return None, ""
 
 
+def _kubectl_target_words(words: Sequence[str]) -> List[str]:
+    """`words` without flags and flag values that can sit between resource kind and name."""
+    kept: List[str] = []
+    position = 0
+    while position < len(words):
+        word = words[position]
+        position += 1
+        if word in KUBECTL_TARGET_VALUE_FLAGS:
+            position += 1
+        elif any(word.startswith(f"{flag}=") for flag in KUBECTL_TARGET_VALUE_FLAGS if flag.startswith("--")):
+            pass
+        elif any(word.startswith(flag) and word != flag for flag in ("-l", "-o")):
+            pass
+        elif word.startswith("-"):
+            pass
+        else:
+            kept.append(word)
+    return kept
+
+
 def _kubectl_target(namespace: Optional[str], rest: Sequence[str]) -> Optional[str]:
     """One call's target: None when it names no service, "unknown" when its namespace can't be read."""
     verb = next((index for index, word in enumerate(rest) if not word.startswith("-")), len(rest))
@@ -293,8 +360,13 @@ def _kubectl_target(namespace: Optional[str], rest: Sequence[str]) -> Optional[s
     file_flags = () if "logs" in rest[verb:verb + 1] else KUBECTL_FILE_FLAGS
     words = ["" if index and after[index - 1] in file_flags else word for index, word in enumerate(after)]
     # `deploy/checkout` anywhere comes before `deploy checkout`. A flag is never a plain name.
-    named = [(kind, name) for kind, _, name in (word.partition("/") for word in words)]
-    named += [(kind, name) for kind, name in zip(words, words[1:]) if "/" not in kind]
+    target_words = _kubectl_target_words(words)
+    # In `create service clusterip payments`, the service type sits between kind and name.
+    if "create" in rest[verb:verb + 1] and target_words[:1] in (["service"], ["svc"]):
+        if target_words[1:2] and target_words[1] in KUBECTL_SERVICE_TYPES:
+            del target_words[1]
+    named = [(kind, name) for kind, _, name in (word.partition("/") for word in target_words)]
+    named += [(kind, name) for kind, name in zip(target_words, target_words[1:]) if "/" not in kind]
     services = (_plain_name(name) for kind, name in named if kind.lower().split(".")[0] in KUBECTL_KINDS)
     service = next((found for found in services if found), None)
     env = ""
@@ -324,6 +396,21 @@ def _mcp_target(arguments: Mapping[str, Any], name: str) -> str:
     return f"{service}/{env or DEMO_DEFAULT_ENV}"
 
 
+def _name_tokens(name: str) -> List[str]:
+    """`name` split into lowercase words on separators and camelCase boundaries."""
+    spaced = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", name)
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", spaced)
+    return [token.lower() for token in re.split(r"[^A-Za-z0-9]+", spaced) if token]
+
+
+def _mcp_access(name: str) -> str:
+    """An MCP call's access, with read-like leading tokens taking precedence."""
+    tokens = _name_tokens(name)
+    if tokens and tokens[0] in MCP_READ_PREFIXES:
+        return "read"
+    return "write" if any(token in MCP_WRITE_WORDS for token in tokens) else "read"
+
+
 def resolve_target(namespace: str, name: str, arguments: Mapping[str, Any]) -> Tuple[str, str]:
     """(target, access) for a call: "<service>/<env>" or "unknown", and "read" or "write".
 
@@ -334,7 +421,7 @@ def resolve_target(namespace: str, name: str, arguments: Mapping[str, Any]) -> T
     access = "read"
     try:
         if namespace != AGENT:
-            access = "write" if any(word in name.lower() for word in MCP_WRITE_WORDS) else "read"
+            access = _mcp_access(name)
             return _mcp_target(arguments, name), access
         command = arguments.get("command")
         if name != "Bash" or not isinstance(command, str):
@@ -350,7 +437,9 @@ def resolve_target(namespace: str, name: str, arguments: Mapping[str, Any]) -> T
 
 
 def ledger_json(value: Any, limit: int = MAX_LEDGER_JSON_CHARACTERS) -> str:
-    """`value` as compact JSON, cut at `limit` characters. A cut string needn't be valid JSON."""
+    """`value` as text, cut at `limit` characters. JSON-encode only non-strings."""
+    if isinstance(value, str):
+        return value[:limit]
     try:
         rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     except Exception:
@@ -634,14 +723,6 @@ def _retryable(status: int) -> bool:
     return status in (401, 408, 429) or 500 <= status < 600
 
 
-def _read_lines(path: Path) -> List[str]:
-    # A bad byte must not stop every later drain: it reads as a lone surrogate, and its line is bad.
-    lines = path.read_text(encoding="utf-8", errors="surrogateescape").split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
-    return lines
-
-
 def _open_retry_file(*, mode: str, path: Path) -> Any:
     """Open the retry file for writing, readable only by its owner (mode 0600), as append_audit does."""
 
@@ -739,6 +820,14 @@ def send_ledger_events(
     except Exception as error:
         LEDGER_MESSAGES.append(f"Mezmo ledger dropped {len(events)} event(s): {str(error) or type(error).__name__}")
         return LedgerSendResult(answered=False, save=[])
+
+
+def _read_lines(path: Path) -> List[str]:
+    # A bad byte must not stop every later drain: it reads as a lone surrogate, and its line is bad.
+    lines = path.read_text(encoding="utf-8", errors="surrogateescape").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
 
 
 @contextmanager
