@@ -104,7 +104,7 @@ class LedgerInvestigationTests(unittest.TestCase):
         self.assertEqual(opened["actor"], {"account": ACCOUNT, "pk": "codex:launcher", "type": "agent"})
         self.assertEqual(opened["application"]["name"], "mezmo-codex-plugin")
         self.assertEqual((opened["entity_id"], opened["event"]), (CHECK_THREAD_ID, "agent.investigation.opened"))
-        # Whole, with no session_id and, since git reports no email here, no operator_email.
+        # Whole, with no session_id and, since git reports no email here, no person_email.
         self.assertEqual(
             opened["extra"],
             {"agent": "codex", "incident_key": INCIDENT_KEY, "opened_by": "alert", "thread_id": CHECK_THREAD_ID},

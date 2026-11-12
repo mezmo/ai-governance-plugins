@@ -46,8 +46,8 @@ ACCOUNT = "test-acct"
 LEDGER_URL = "https://audit.ledger.invalid/v1/events"
 REAL_POST_LEDGER = ledger.post_ledger_events
 # LedgerTestCase stands in for it, so no test picks up the developer's own git email.
-REAL_OPERATOR_EMAIL = ledger.operator_email
-OPERATOR_EMAIL = "operator@example.test"
+REAL_PERSON_EMAIL = ledger.person_email
+PERSON_EMAIL = "person@example.test"
 # Bound from the real home when the module loaded. Only compared, never opened.
 HOME_AT_IMPORT = Path.home()
 REAL_DEFAULT_LEDGER_SPOOL = ledger.DEFAULT_LEDGER_SPOOL
@@ -79,7 +79,7 @@ EVENT_NAME = re.compile(r"^[a-z0-9]+(?:[_-][a-z0-9]+)*(?:\.[a-z0-9]+(?:[_-][a-z0
 # Every key the epic allows in `extra`.
 EXTRA_KEYS = {
     "access", "agent", "arguments", "call_id", "decision_id", "duration_ms", "entry_key", "exit_status",
-    "incident_key", "intent_source", "operator_email", "output", "references", "request_id", "session_id", "target",
+    "incident_key", "intent_source", "person_email", "output", "references", "request_id", "session_id", "target",
     "thread_id", "tool_name", "tool_namespace",
 }
 
@@ -331,8 +331,8 @@ class LedgerTestCase(unittest.TestCase):
             patch.object(ledger, "DEFAULT_CALL_STATE_DIR", self.dir / "home" / ".mezmo" / "governance" / "codex-calls"),
             patch.object(ledger, "DEFAULT_LEDGER_SPOOL", self.default_spool),
             patch.object(ledger, "DEFAULT_STATE_DIR", self.default_state_dir),
-            # No git email unless a test asks for one. OperatorEmailTests puts the real lookup back.
-            patch.object(ledger, "operator_email", lambda: None),
+            # No git email unless a test asks for one. PersonEmailTests puts the real lookup back.
+            patch.object(ledger, "person_email", lambda: None),
             # A request to LEDGER_URL means a test reached past its fake. Requests to the servers
             # defined here go through.
             patch.object(ledger, "post_ledger_events", self.guarded_post_ledger),
@@ -1016,11 +1016,11 @@ class InvestigationChangeTests(LedgerTestCase):
                 self.spool.unlink()
 
 
-class OperatorEmailTests(LedgerTestCase):
+class PersonEmailTests(LedgerTestCase):
     """Every event carries the git email of whoever runs the session, when git has one."""
 
     def git(self, answer: Any) -> list[Any]:
-        """Point operator_email at a stand-in git: (stdout, exit code), or an exception it raises.
+        """Point person_email at a stand-in git: (stdout, exit code), or an exception it raises.
 
         Returns the list of commands it was asked to run.
         """
@@ -1034,17 +1034,17 @@ class OperatorEmailTests(LedgerTestCase):
             return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr="")
 
         for started in (
-            patch.object(ledger, "operator_email", REAL_OPERATOR_EMAIL),
+            patch.object(ledger, "person_email", REAL_PERSON_EMAIL),
             patch.object(ledger.subprocess, "run", run),
         ):
             started.start()
             self.addCleanup(started.stop)
-        REAL_OPERATOR_EMAIL.cache_clear()
-        self.addCleanup(REAL_OPERATOR_EMAIL.cache_clear)
+        REAL_PERSON_EMAIL.cache_clear()
+        self.addCleanup(REAL_PERSON_EMAIL.cache_clear)
         return calls
 
     def test_every_event_carries_the_git_email(self) -> None:
-        calls = self.git((f"{OPERATOR_EMAIL}\n", 0))
+        calls = self.git((f"{PERSON_EMAIL}\n", 0))
         config = ledger.load_ledger_config()
         assert config is not None
         post = hook_input("PostToolUse")
@@ -1062,7 +1062,7 @@ class OperatorEmailTests(LedgerTestCase):
         for event in events:
             assert event is not None
             with self.subTest(event=event["event"]):
-                self.assertEqual(event["extra"]["operator_email"], OPERATOR_EMAIL)
+                self.assertEqual(event["extra"]["person_email"], PERSON_EMAIL)
                 self.assert_valid(event)
         self.assertEqual(calls, [["git", "config", "--get", "user.email"]])
 
@@ -1074,14 +1074,14 @@ class OperatorEmailTests(LedgerTestCase):
         cases = {
             "git missing": FileNotFoundError("git"),
             "git timed out": subprocess.TimeoutExpired(["git"], 1),
-            "non-zero exit": (f"{OPERATOR_EMAIL}\n", 1),
+            "non-zero exit": (f"{PERSON_EMAIL}\n", 1),
             "only whitespace": (" \n", 0),
         }
         for case, answer in cases.items():
             with self.subTest(case=case):
                 self.git(answer)
                 event = self.build("started")
-                self.assertNotIn("operator_email", event["extra"])
+                self.assertNotIn("person_email", event["extra"])
                 self.assert_no_null(event["extra"])
                 self.assertEqual(without_time(event), expected)
 
@@ -2505,7 +2505,7 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "investigation_thread_id",
     "ledger_json",
     "ledger_spool_path",
-    "operator_email",
+    "person_email",
     "post_ledger_events",
     "save_ledger_events",
     "send_ledger_events",
