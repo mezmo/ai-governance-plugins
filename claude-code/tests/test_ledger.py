@@ -7,6 +7,7 @@ file in a temp folder. The end-to-end tests run the real scripts against servers
 
 import contextlib
 import errno
+import hashlib
 import json
 import os
 import pathlib
@@ -50,6 +51,16 @@ DENY_REASON = "mock policy: Bash is denied"
 INCIDENT_KEY = "pagerduty:Q34FCCWSTU9OI2"
 CHECK_THREAD_ID = "ab2763da-3eea-5b82-a1bf-7922641cdf6c"
 DROP = object()
+# Whole PostToolUse hook inputs, written from mcp-service's source until real captures replace them.
+FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
+# What tests/fixtures/mezmo_memory_brief.synthetic.json saves: its record, then the record's remediation.
+BRIEF_REFERENCES = [
+    {"record": "claim_3f6c2a9e8b1d4f7a9c0e5b2d8a6f1c34", "type": "memory", "version": 3},
+    {"record": "claim_9d4b7e21c6a84f03b5e2a1d7c8f60b39", "type": "memory", "version": 1},
+]
+MEMORY_REFERENCE = BRIEF_REFERENCES[0]
+# The first template_id in tests/fixtures/find_log_patterns.synthetic.json.
+PATTERN_ID = "3647542932298209019"
 
 # What audit-service's schema/audit-event.js enforces.
 REQUIRED_FIELDS = {"actor", "application", "entity_id", "entity_type", "event", "internal", "message", "timestamp"}
@@ -96,6 +107,18 @@ def cli_call(subcommand: str, action: str) -> Dict[str, Any]:
         },
         tool_response={"interrupted": False, "isImage": False, "stderr": "", "stdout": printed + "\n"},
     )
+
+
+def fixture(name: str, **fields: Any) -> Dict[str, Any]:
+    """The hook input in tests/fixtures/<name>.synthetic.json, with `fields` set over it. A field set
+    to DROP is left out."""
+    event = json.loads((FIXTURES / f"{name}.synthetic.json").read_text(encoding="utf-8"))
+    for key, value in fields.items():
+        if value is DROP:
+            event.pop(key, None)
+        else:
+            event[key] = value
+    return event
 
 
 def mcp_input(name: str = "PreToolUse", **fields: Any) -> Dict[str, Any]:
@@ -691,14 +714,14 @@ class InvestigationTests(LedgerTestCase):
     def test_investigation_and_references_come_from_session_state(self) -> None:
         self.write_state({
             "investigation": {"incident_key": "jira:LOG-1", "joined_at": "2026-11-09T00:00:00Z", "thread_id": "thread-1"},
-            "references": [{"kind": "pr", "url": "https://example.test/1"}],
+            "references": [MEMORY_REFERENCE],
         })
         for name in ("PreToolUse", "PostToolUse"):
             event = self.sent(name)
             self.assertEqual(event["correlation_id"], "thread-1")
             self.assertEqual(event["extra"]["thread_id"], "thread-1")
             self.assertEqual(event["extra"]["incident_key"], "jira:LOG-1")
-            self.assertEqual(event["extra"]["references"], [{"kind": "pr", "url": "https://example.test/1"}])
+            self.assertEqual(event["extra"]["references"], [MEMORY_REFERENCE])
 
     def test_session_state_wins_over_the_environment_without_mixing(self) -> None:
         os.environ.update({"MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY, "MEZMO_LEDGER_INVESTIGATION_ID": "env-thread"})
@@ -740,7 +763,7 @@ class InvestigationTests(LedgerTestCase):
         self.assertNotIn("incident_key", event["extra"])
 
     def test_references_that_are_not_a_list_are_left_out(self) -> None:
-        self.write_state({"references": {"kind": "pr"}})
+        self.write_state({"references": MEMORY_REFERENCE})
         self.assertNotIn("references", self.sent()["extra"])
 
     def test_no_investigation_fields_without_a_source(self) -> None:
@@ -900,6 +923,210 @@ class JoinCloseTests(LedgerTestCase):
                 self.assertEqual(len(fake.new_calls()), 2)
                 self.assertEqual([event["event"] for event in self.spooled()], [refused])
                 self.spool.unlink()
+
+
+class ReferenceTests(LedgerTestCase):
+    """The references a Mezmo Memory brief or Insights read saves in the session state."""
+
+    def state_path(self) -> pathlib.Path:
+        return hook.session_state_path("session-1")
+
+    def references(self) -> List[Dict[str, Any]]:
+        return json.loads(self.state_path().read_text(encoding="utf-8"))["references"]
+
+    def identities(self) -> List[Dict[str, Any]]:
+        """The saved references without `read_at`, which changes with each read."""
+        return [{key: value for key, value in item.items() if key != "read_at"} for item in self.references()]
+
+    def test_the_fixtures_save_their_references_and_a_reread_moves_to_the_end(self) -> None:
+        pattern = {"id": PATTERN_ID, "tool": "find_log_patterns", "type": "insights"}
+        # (the call, what it saves, another call, what that one saves)
+        for name, saved, other, other_saved in (
+            ("mezmo_memory_brief", BRIEF_REFERENCES, "find_log_patterns", [pattern]),
+            ("find_log_patterns", [pattern], "mezmo_memory_brief", BRIEF_REFERENCES),
+        ):
+            with self.subTest(fixture=name):
+                self.state_path().unlink(missing_ok=True)
+                self.run_hook(fixture(name))
+                self.assertEqual(self.identities(), saved)
+                for item in self.references():
+                    if "read_at" in item:
+                        self.assertEqual(datetime.fromisoformat(item["read_at"]).utcoffset().total_seconds(), 0)
+                self.run_hook(fixture(other))
+                self.run_hook(fixture(name))
+                self.assertEqual(self.identities(), other_saved + saved)
+
+    def test_a_full_list_keeps_the_newest_in_order(self) -> None:
+        seeded = [{"record": f"claim_{index:032x}", "type": "memory", "version": 1} for index in range(20)]
+        self.write_state({"references": seeded})
+        self.run_hook(fixture("find_log_patterns"))
+        references = self.references()
+        self.assertEqual(len(references), 20)
+        self.assertEqual(references[:19], seeded[1:])
+        self.assertEqual(references[19]["id"], PATTERN_ID)
+
+    def test_nothing_is_saved_for_a_call_that_reads_no_memory_or_insights(self) -> None:
+        brief = fixture("mezmo_memory_brief")
+        empty = dict(brief["tool_response"]["structuredContent"], records=[])
+        cases = {
+            "a get tool not in the list": fixture("find_log_patterns", tool_name="mcp__mezmo__get_pipeline_overview"),
+            "Bash": hook_input("PostToolUse"),
+            "get_ledger_investigation": fixture("find_log_patterns", tool_name="mcp__mezmo__get_ledger_investigation"),
+            "list_ledger_entries": fixture("find_log_patterns", tool_name="mcp__mezmo__list_ledger_entries"),
+            # These keep the brief's records, so only the event or its result keeps them out.
+            "a failed brief": fixture("mezmo_memory_brief", tool_response=dict(brief["tool_response"], isError=True)),
+            "a brief with no records": fixture("mezmo_memory_brief", tool_response={
+                "content": [{"text": json.dumps(empty), "type": "text"}], "isError": False, "structuredContent": empty,
+            }),
+            "PreToolUse": fixture("mezmo_memory_brief", duration_ms=DROP, hook_event_name="PreToolUse"),
+            "PostToolUseFailure": fixture(
+                "mezmo_memory_brief", error="brief failed", hook_event_name="PostToolUseFailure"
+            ),
+        }
+        for case, event in cases.items():
+            with self.subTest(case=case):
+                self.state_path().unlink(missing_ok=True)
+                self.run_hook(event)
+                self.assertFalse(self.state_path().exists())
+
+    def test_only_valid_state_references_are_sent(self) -> None:
+        bad = {"record": "claim_bad", "type": "memory", "version": -1}
+        for references, expected in (([bad, MEMORY_REFERENCE], [MEMORY_REFERENCE]), ([bad, {"kind": "pr"}], None)):
+            with self.subTest(references=references):
+                self.write_state({"references": references})
+                fake = self.fake()
+                self.run_hook(hook_input(), fake)
+                (event,) = fake.events()
+                self.assertEqual(event["extra"].get("references"), expected)
+
+    def test_the_next_calls_started_carries_the_references_and_the_reads_own_ran_does_not(self) -> None:
+        for name in ("mezmo_memory_brief", "find_log_patterns"):
+            with self.subTest(fixture=name):
+                self.state_path().unlink(missing_ok=True)
+                fake = self.fake()
+                self.run_hook(fixture(name), fake)
+                self.run_hook(hook_input(), fake)
+                ran, started = fake.events()
+                self.assertEqual(ran["event"], "agent.tool_call.ran")
+                self.assertNotIn("references", ran["extra"])
+                self.assertEqual(started["event"], "agent.tool_call.started")
+                self.assertEqual(started["extra"]["references"], self.references())
+
+    def test_an_insights_tool_with_no_id_gets_a_hash_of_its_arguments(self) -> None:
+        arguments = {"end_time": "2026-11-12T10:00:00Z", "service": "checkout", "start_time": "2026-11-12T09:00:00Z"}
+        response = {"content": [{"text": '{"edges":[],"nodes":[{"service":"checkout"}]}', "type": "text"}]}
+        for tool in ("get_service_failure_rates", "get_service_graph"):
+            with self.subTest(tool=tool):
+                self.state_path().unlink(missing_ok=True)
+                call = fixture(
+                    "find_log_patterns", tool_input=arguments, tool_name=f"mcp__mezmo__{tool}", tool_response=response
+                )
+                text = json.dumps([tool, arguments], separators=(",", ":"), sort_keys=True)
+                self.run_hook(call)
+                self.run_hook(call)
+                self.run_hook(dict(call, tool_input=dict(arguments, service="payments")))
+                ids = [item["id"] for item in self.references()]
+                self.assertEqual(len(ids), 2)
+                self.assertEqual(ids[0], hashlib.sha256(text.encode("utf-8")).hexdigest()[:16])
+                self.assertRegex(ids[1], r"^[0-9a-f]{16}$")
+                self.assertNotEqual(ids[1], ids[0])
+
+    def test_saved_items_hold_only_their_keys_and_none_of_the_calls_content(self) -> None:
+        marker = "MARKER_NOT_FOR_THE_STATE"
+        brief = fixture("mezmo_memory_brief")
+        result = brief["tool_response"]["structuredContent"]
+        result["records"][0]["note"] = marker
+        result["text"] = marker
+        brief["tool_response"]["content"][0]["text"] = json.dumps(result)
+        brief["tool_input"]["symptoms"] = marker
+        patterns = fixture("find_log_patterns")
+        found = json.loads(patterns["tool_response"]["content"][0]["text"])
+        found["patterns"][0]["template_text"] = marker
+        patterns["tool_response"]["content"][0]["text"] = json.dumps(found)
+        patterns["tool_input"]["query"] = marker
+        self.run_hook(brief)
+        self.run_hook(patterns)
+        self.assertNotIn(marker, self.state_path().read_text(encoding="utf-8"))
+        allowed = {"insights": {"id", "read_at", "tool", "type"}, "memory": {"record", "type", "version"}}
+        references = self.references()
+        self.assertEqual([item["type"] for item in references], ["memory", "memory", "insights"])
+        for item in references:
+            with self.subTest(item=item):
+                self.assertEqual(set(item), allowed[item["type"]])
+
+    def test_the_shared_reference_functions(self) -> None:
+        result = {"records": []}
+        text = json.dumps(result)
+        # (response, the result object _response_object finds in it)
+        for response, expected in (
+            ({"content": [{"text": "{}", "type": "text"}], "structuredContent": result}, result),
+            ({"content": [{"text": text, "type": "text"}], "structuredContent": None}, result),
+            ({"content": [{"text": text, "type": "text"}]}, result),
+            ([{"text": text, "type": "text"}], result),
+            (text, result),
+            (json.dumps({"content": [{"text": text, "type": "text"}], "isError": False}), result),
+            ("[1, 2]", None),
+            ({"content": [{"text": "[1, 2]", "type": "text"}]}, None),
+            ({"content": [{"text": "not json", "type": "text"}]}, None),
+            ({"content": [{"text": " " * ledger.MAX_REFERENCE_RESPONSE_CHARACTERS + text, "type": "text"}]}, None),
+        ):
+            with self.subTest(response=repr(response)[:80]):
+                self.assertEqual(ledger._response_object(response=response), expected)
+
+        memory = {"record": "claim_1", "type": "memory", "version": 1}
+        read_at = "2026-11-12T10:00:00.123456+00:00"
+        insights = {"id": PATTERN_ID, "read_at": read_at, "tool": "find_log_patterns", "type": "insights"}
+        # (item, what _reference rebuilds from it)
+        for item, expected in (
+            (dict(memory, version=True), None),
+            (dict(memory, version=1.0), None),
+            (dict(memory, version=-1), None),
+            (dict(memory, version=2**53), None),
+            (dict(memory, record="c" * 129), None),
+            (dict(insights, read_at="r" * 129), None),
+            (insights, insights),
+        ):
+            with self.subTest(item=repr(item)[:80]):
+                self.assertEqual(ledger._reference(item=item), expected)
+
+        call = fixture("find_log_patterns", tool_response={"structuredContent": {"patterns": [{"template_id": 42}]}})
+        (reference,) = ledger.tool_references(hook_input=call, read_at=read_at)
+        with self.subTest(case="an id that is not a string"):
+            self.assertRegex(reference["id"], r"^[0-9a-f]{16}$")
+        with self.subTest(case="read_at as an ISO 8601 string"):
+            self.assertEqual(reference["read_at"], read_at)
+
+        # (tool, the references it gives on a server not named mezmo)
+        for tool, expected in (("find_log_patterns", [insights]), ("mezmo_memory_brief", BRIEF_REFERENCES)):
+            with self.subTest(tool=tool):
+                call = fixture(tool, tool_name=f"mcp__other__{tool}")
+                self.assertEqual(ledger.tool_references(hook_input=call, read_at=read_at), expected)
+
+        hashed = hashlib.sha256(b'["find_log_patterns",{"a":1,"b":2}]').hexdigest()[:16]
+        # (arguments, result, the id a find_log_patterns call with them gets)
+        for arguments, result, expected in (
+            ({}, {"edge_key": "e", "x": {"template_id": "t"}}, "t"),
+            ({}, {"trace_id": "tr", "x": {"edge_key": "e"}}, "e"),
+            ({}, {"a": {"template_id": "first"}, "template_id": "second"}, "first"),
+            ({"a": 1, "b": 2}, {"pad": list(range(10000)), "template_id": "late"}, hashed),
+            ({"b": 2, "a": 1}, {}, hashed),
+        ):
+            with self.subTest(arguments=arguments, result=repr(result)[:80]):
+                call = fixture("find_log_patterns", tool_input=arguments, tool_response={"structuredContent": result})
+                (reference,) = ledger.tool_references(hook_input=call, read_at=read_at)
+                self.assertEqual(reference["id"], expected)
+
+        # (existing, what merge_references keeps of it)
+        for existing, expected in (
+            ([{"record": "claim_1", "version": 1}], []),
+            ([dict(memory, url="https://example.test/1")], [memory]),
+            ({"0": memory}, []),
+            ([None, 1, "junk", [memory], {"type": "pr"}, memory], [memory]),
+            ([insights, dict(insights, tool="get_trace_spans")], [insights, dict(insights, tool="get_trace_spans")]),
+            ([memory, dict(memory, version=2)], [memory, dict(memory, version=2)]),
+        ):
+            with self.subTest(existing=existing):
+                self.assertEqual(ledger.merge_references(existing=existing, new=[]), expected)
 
 
 class PersonEmailTests(LedgerTestCase):

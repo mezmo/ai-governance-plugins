@@ -1,0 +1,24 @@
+{
+  "cwd": "/tmp/demo",
+  "hook_event_name": "PostToolUse",
+  "permission_mode": "default",
+  "session_id": "session-1",
+  "tool_input": {
+    "end_time": "2026-11-12T10:00:00Z",
+    "service": "checkout",
+    "start_time": "2026-11-12T09:00:00Z"
+  },
+  "tool_name": "mcp__mezmo__find_log_patterns",
+  "tool_response": {
+    "content": [
+      {
+        "text": "{\"overflow\":[],\"patterns\":[{\"count\":42,\"template_id\":\"3647542932298209019\",\"template_text\":\"POST /api/checkout <*> status=500 upstream=payments\"},{\"count\":7,\"template_id\":\"1180591620717411303\",\"template_text\":\"payment authorization timed out after <*> ms\"}],\"query_info\":{\"end_time\":\"2026-11-12T10:00:00Z\",\"query\":\"app:checkout\",\"start_time\":\"2026-11-12T09:00:00Z\"}}",
+        "type": "text"
+      }
+    ],
+    "isError": false,
+    "structuredContent": null
+  },
+  "tool_use_id": "tool-use-patterns-1",
+  "turn_id": "turn-1"
+}

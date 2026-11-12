@@ -342,6 +342,35 @@ files every call under the investigation. Its exit code is the command's. Export
 `MEZMO_LEDGER_KEY` in the shell you run it from: the fallback to the governance key only exists
 inside Claude Code, so without it `opened` is refused and waits in the retry file.
 
+### References
+
+After a `mezmo_memory_brief` call or one of the Insights reads below succeeds, the ledger hook saves
+a small reference to what Claude read in the session's state file, in
+`~/.mezmo/governance/sessions/`. Every later tool call record of the session carries the list
+as `references`, so the ledger can show what Claude knew when it acted. The read's own record
+doesn't carry it: the next call's `started` does.
+
+| Type | Saved from | Fields |
+| --- | --- | --- |
+| `insights` | One of the Insights reads, one per call | `id`: the first `template_id`, `edge_key` or `trace_id` in the result, in that order, else a hash of the tool's name and arguments. `read_at`: when it was read. `tool`: the tool's name |
+| `memory` | `mezmo_memory_brief`, one per record and one per remediation | `record`: the record's id. `version`: its version |
+
+The list is the session's, newest last, and keeps at most 20: a read of the same thing again moves
+it to the end, and past 20 the oldest go. Joining or closing an investigation doesn't clear it.
+Only these small objects are saved, never a tool's arguments or output.
+
+The Insights reads are a fixed list of 15 tools: `find_degraded_service_edges`,
+`find_log_patterns`, `find_metric_analysis_anomalies`, `get_log_dimension_changes`,
+`get_log_overview`, `get_log_pattern_series`, `get_metric_analysis_overview`,
+`get_metric_analysis_series_values`, `get_service_failure_rates`, `get_service_failures`,
+`get_service_graph`, `get_trace_spans`, `list_failed_traces`, `list_metric_analysis_series` and
+`list_service_latency_summaries`. They and `mezmo_memory_brief` are matched by the tool's name on
+any MCP server, so another server's tool by one of these names is counted too, and a tool Mezmo
+adds later is not recognized until the list is updated.
+
+The state file is the one governance keeps for [`/mezmo`](#status-in-claude-code). With governance
+off, the first reference creates it, and `/mezmo` then shows zero counts for the session.
+
 ## Telemetry
 
 You need a Mezmo ingestion key, from Settings > API Keys in Mezmo, and a pipeline with an

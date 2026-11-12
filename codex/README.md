@@ -463,6 +463,37 @@ hook. That is why a launched session still runs `join`: the session state
 wins over the environment. When the variables do reach the hook, every call
 of the session carries the investigation, even after `close`.
 
+### References
+
+After a `mezmo_memory_brief` call or one of the Insights reads below succeeds,
+the ledger hook saves a small reference to what Codex read in the
+[session state](#session-state). Every later tool call record of the session
+carries the list as `references`, so the ledger can show what Codex knew when
+it acted. The read's own record doesn't carry it: the next call's `started`
+does.
+
+| Type | Saved from | Fields |
+| --- | --- | --- |
+| `insights` | One of the Insights reads, one per call | `id`: the first `template_id`, `edge_key` or `trace_id` in the result, in that order, else a hash of the tool's name and arguments. `read_at`: when it was read. `tool`: the tool's name |
+| `memory` | `mezmo_memory_brief`, one per record and one per remediation | `record`: the record's id. `version`: its version |
+
+The list is the session's, newest last, and keeps at most 20: a read of the
+same thing again moves it to the end, and past 20 the oldest go. Joining or
+closing an investigation doesn't clear it. Only these small objects are saved,
+never a tool's arguments or output.
+
+The Insights reads are a fixed list of 15 tools:
+`find_degraded_service_edges`, `find_log_patterns`,
+`find_metric_analysis_anomalies`, `get_log_dimension_changes`,
+`get_log_overview`, `get_log_pattern_series`, `get_metric_analysis_overview`,
+`get_metric_analysis_series_values`, `get_service_failure_rates`,
+`get_service_failures`, `get_service_graph`, `get_trace_spans`,
+`list_failed_traces`, `list_metric_analysis_series` and
+`list_service_latency_summaries`. They and `mezmo_memory_brief` are matched by
+the tool's name on any MCP server, so another server's tool by one of these
+names is counted too, and a tool Mezmo adds later is not recognized until the
+list is updated.
+
 ### What Codex does not report
 
 Read from the Codex 0.167.0 source. Codex gives hooks no exit code and no
@@ -497,9 +528,12 @@ The ledger hook reads a session's investigation and references from
 `~/.mezmo/governance/codex-sessions/<session id>.json`, when that file exists.
 An investigation there wins over `MEZMO_LEDGER_INVESTIGATION_ID`. The ledger
 hook writes the investigation there after an [investigation](#investigations)
-`join` and clears it after a `close`, keeping whatever else the file holds.
-The file is readable only by you (file 0600, folder 0700). Nothing else in
-this plugin writes these files.
+`join` and clears it after a `close`, and adds the [references](#references)
+of each Memory or Insights read, keeping whatever else the file holds. A call
+that reads neither writes nothing there. The file is readable only by you
+(file 0600, folder 0700). Nothing else in this plugin writes these files, and
+nothing in this plugin removes them, so any session that joined an
+investigation or read Memory or Insights keeps its file. They are small.
 `MEZMO_GOVERNANCE_STATE_DIR` moves the folder. Claude Code reads the same
 variable, so with it set the two share one folder, and Claude Code's 7 day
 prune also removes old Codex files there. That is harmless.
