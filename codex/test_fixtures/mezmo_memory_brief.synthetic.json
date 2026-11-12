@@ -1,0 +1,59 @@
+{
+  "cwd": "/tmp/demo",
+  "hook_event_name": "PostToolUse",
+  "permission_mode": "default",
+  "session_id": "session-1",
+  "tool_input": {
+    "environment": "prod",
+    "service": "checkout",
+    "symptoms": "checkout errors after a deploy"
+  },
+  "tool_name": "mcp__mezmo__mezmo_memory_brief",
+  "tool_response": {
+    "content": [
+      {
+        "text": "{\"knowledge_revision\":9,\"omitted_count\":0,\"records\":[{\"checks\":[],\"claim_type\":\"causal_explanation\",\"conditions\":[],\"counterevidence\":[],\"epistemic_status\":\"supported\",\"limitations\":[],\"record_id\":\"claim_3f6c2a9e8b1d4f7a9c0e5b2d8a6f1c34\",\"remediation\":{\"checks\":[],\"claim_type\":\"remediation\",\"conditions\":[],\"counterevidence\":[],\"epistemic_status\":\"supported\",\"limitations\":[],\"record_id\":\"claim_9d4b7e21c6a84f03b5e2a1d7c8f60b39\",\"statement\":\"Roll back to the previous revision.\",\"title\":\"Roll back the checkout deploy\",\"valid_from\":null,\"valid_to\":null,\"version\":1},\"statement\":\"Checkout errors after a bad deploy.\",\"title\":\"Checkout errors follow a bad deploy\",\"valid_from\":null,\"valid_to\":null,\"version\":3}],\"text\":\"## Memory brief\\n\\n- **Checkout errors follow a bad deploy** (supported): Checkout errors after a bad deploy.\\n  - Remediation: Roll back to the previous revision.\\n\",\"trace_id\":\"trace_brief_1\"}",
+        "type": "text"
+      }
+    ],
+    "isError": false,
+    "structuredContent": {
+      "knowledge_revision": 9,
+      "omitted_count": 0,
+      "records": [
+        {
+          "checks": [],
+          "claim_type": "causal_explanation",
+          "conditions": [],
+          "counterevidence": [],
+          "epistemic_status": "supported",
+          "limitations": [],
+          "record_id": "claim_3f6c2a9e8b1d4f7a9c0e5b2d8a6f1c34",
+          "remediation": {
+            "checks": [],
+            "claim_type": "remediation",
+            "conditions": [],
+            "counterevidence": [],
+            "epistemic_status": "supported",
+            "limitations": [],
+            "record_id": "claim_9d4b7e21c6a84f03b5e2a1d7c8f60b39",
+            "statement": "Roll back to the previous revision.",
+            "title": "Roll back the checkout deploy",
+            "valid_from": null,
+            "valid_to": null,
+            "version": 1
+          },
+          "statement": "Checkout errors after a bad deploy.",
+          "title": "Checkout errors follow a bad deploy",
+          "valid_from": null,
+          "valid_to": null,
+          "version": 3
+        }
+      ],
+      "text": "## Memory brief\n\n- **Checkout errors follow a bad deploy** (supported): Checkout errors after a bad deploy.\n  - Remediation: Roll back to the previous revision.\n",
+      "trace_id": "trace_brief_1"
+    }
+  },
+  "tool_use_id": "tool-use-brief-1",
+  "turn_id": "turn-1"
+}

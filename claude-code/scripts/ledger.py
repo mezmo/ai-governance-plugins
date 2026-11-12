@@ -3,6 +3,8 @@
 - ledger_hook.py, registered beside governance_hook.py, sends `started` for each Bash or MCP
   call and, when Claude Code reports back, `ran`, `failed` or auto mode's `not_run`. After a
   Bash call that ran ledger_investigation.py's join or close, it also sends `joined` or `closed`.
+  After a Mezmo Memory brief or Insights read, it saves the references that call gives in the
+  session state, and every later tool call event carries them.
 - governance_hook.py calls `record_governance_refusal` when governance denies a call, its
   approval expires or it errors, since no hook runs after a deny. That is its only use of this
   module.
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import errno
 import functools
+import hashlib
 import json
 import math
 import os
@@ -29,6 +32,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.client import HTTPException
+from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
 from urllib.error import HTTPError
@@ -61,6 +65,40 @@ LEDGER_URL_ENV = "MEZMO_LEDGER_URL"
 DEFAULT_LEDGER_SPOOL = Path.home() / ".mezmo" / "ledger-spool.jsonl"
 LEDGER_APPLICATION = "mezmo-claude-code-plugin"
 SKIP_LEDGER_MCP_TOOL_NAMES = frozenset({"get_ledger_investigation", "list_ledger_entries"})
+# What tool_references reads. The fields an Insights reference takes its id from, in priority order,
+# not alphabetical: the first template_id found wins over any edge_key, and an edge_key over any trace_id.
+INSIGHTS_ID_FIELDS = ("template_id", "edge_key", "trace_id")
+# mcp-service's Insights reads, matched by the tool's name on any MCP server. A tool added there later
+# is not read until it is listed here.
+INSIGHTS_TOOL_NAMES = frozenset({
+    "find_degraded_service_edges",
+    "find_log_patterns",
+    "find_metric_analysis_anomalies",
+    "get_log_dimension_changes",
+    "get_log_overview",
+    "get_log_pattern_series",
+    "get_metric_analysis_overview",
+    "get_metric_analysis_series_values",
+    "get_service_failure_rates",
+    "get_service_failures",
+    "get_service_graph",
+    "get_trace_spans",
+    "list_failed_traces",
+    "list_metric_analysis_series",
+    "list_service_latency_summaries",
+})
+# The longest record, id, tool name or read_at a reference may hold, after strip.
+MAX_REFERENCE_ID_CHARACTERS = 128
+# Response text longer than this is not parsed for references.
+MAX_REFERENCE_RESPONSE_CHARACTERS = 1_000_000
+# The most values the search for an Insights id visits in one response.
+MAX_REFERENCE_VALUES = 10_000
+# The largest version a memory reference may hold: the largest integer every JSON reader keeps exact.
+MAX_REFERENCE_VERSION = 2**53 - 1
+# The most references the session state keeps. Past it the oldest go.
+MAX_REFERENCES = 20
+# The Memory tool whose records become references.
+MEMORY_BRIEF_TOOL_NAME = "mezmo_memory_brief"
 # The investigation CLI, and what its join and close print as `action` when they succeed.
 INVESTIGATION_ACTIONS = {"close": "closed", "join": "joined"}
 INVESTIGATION_SCRIPT = "ledger_investigation.py"
@@ -619,10 +657,188 @@ def investigation_thread_id(*, account: str, incident_key: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"mezmo-investigation:{account}:{incident_key}"))
 
 
+def _reference_string(*, value: Any) -> Optional[str]:
+    """`value` stripped, when it is a string of 1 to MAX_REFERENCE_ID_CHARACTERS characters, else None."""
+    text = value.strip() if isinstance(value, str) else ""
+    return text if 0 < len(text) <= MAX_REFERENCE_ID_CHARACTERS else None
+
+
+def _reference(*, item: Any) -> Optional[Dict[str, Any]]:
+    """`item` rebuilt from a reference's own keys, or None when it is not a valid reference. Never raises.
+
+    A memory reference is {record, type, version} and an insights one {id, read_at, tool, type}. Its
+    strings are stripped and hold 1 to MAX_REFERENCE_ID_CHARACTERS characters, and no other key is
+    kept. `version` is an int, not a bool, from 0 to MAX_REFERENCE_VERSION.
+    """
+    try:
+        if not isinstance(item, dict):
+            return None
+        kind = item.get("type")
+        if kind == "memory":
+            record = _reference_string(value=item.get("record"))
+            version = item.get("version")
+            if record is None or isinstance(version, bool) or not isinstance(version, int):
+                return None
+            if not 0 <= version <= MAX_REFERENCE_VERSION:
+                return None
+            return {"record": record, "type": "memory", "version": version}
+        if kind == "insights":
+            reference_id = _reference_string(value=item.get("id"))
+            read_at = _reference_string(value=item.get("read_at"))
+            tool = _reference_string(value=item.get("tool"))
+            if reference_id is None or read_at is None or tool is None:
+                return None
+            return {"id": reference_id, "read_at": read_at, "tool": tool, "type": "insights"}
+    except Exception:
+        pass
+    return None
+
+
+def _response_object(*, response: Any) -> Optional[Dict[str, Any]]:
+    """The result object of an MCP tool's response, or None. Never raises.
+
+    A string is first parsed as JSON, and the object it gives is then read as any object is, once.
+    From an object: its `structuredContent` when that is an object, else the first text block of its
+    `content` list, or its `content` string, parsed as JSON, else, with neither key, the object itself.
+    From a list of content blocks: its first text block parsed as JSON. Parsed text counts only when it
+    is a JSON object, and text longer than MAX_REFERENCE_RESPONSE_CHARACTERS is not parsed.
+    """
+    try:
+        if isinstance(response, str):
+            response = json.loads(response) if len(response) <= MAX_REFERENCE_RESPONSE_CHARACTERS else None
+            if not isinstance(response, dict):
+                return None
+        content = response
+        if isinstance(response, dict):
+            if isinstance(response.get("structuredContent"), dict):
+                return response["structuredContent"]
+            if "content" not in response:
+                return None if "structuredContent" in response else response
+            content = response["content"]
+        if isinstance(content, list):
+            blocks = (block for block in content if isinstance(block, dict) and block.get("type") == "text")
+            content = next((block.get("text") for block in blocks), None)
+        if not isinstance(content, str) or len(content) > MAX_REFERENCE_RESPONSE_CHARACTERS:
+            return None
+        parsed = json.loads(content)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _insights_id(*, response: Any) -> Optional[str]:
+    """The id an Insights response gives its reference, or None. Never raises.
+
+    One depth-first pass with an explicit stack, an object's values in the order the JSON gives them
+    and a list's by index, that keeps the first valid value seen for each of INSIGHTS_ID_FIELDS and
+    stops after MAX_REFERENCE_VALUES values. The id is the value found for the first field of
+    INSIGHTS_ID_FIELDS that has one.
+    """
+    found: Dict[str, str] = {}
+    try:
+        # (the key the value has in its object, or None, the value), next to visit last.
+        stack: List[Tuple[Any, Any]] = [(None, response)]
+        visited = 0
+        while stack and visited < MAX_REFERENCE_VALUES and INSIGHTS_ID_FIELDS[0] not in found:
+            key, value = stack.pop()
+            visited += 1
+            if isinstance(key, str) and key in INSIGHTS_ID_FIELDS and key not in found:
+                text = _reference_string(value=value)
+                if text is not None:
+                    found[key] = text
+            # Only what the budget can still visit, so a wide object or list costs no more than that.
+            remaining = MAX_REFERENCE_VALUES - visited
+            if isinstance(value, dict):
+                stack.extend(reversed(list(islice(value.items(), remaining))))
+            elif isinstance(value, list):
+                stack.extend((None, item) for item in reversed(value[:remaining]))
+    except Exception:
+        pass
+    return next((found[field] for field in INSIGHTS_ID_FIELDS if field in found), None)
+
+
+def merge_references(*, existing: Any, new: Sequence[Any]) -> List[Dict[str, Any]]:
+    """The valid items of `existing` and then of `new`, each once, at most MAX_REFERENCES. Never raises.
+
+    Each item is rebuilt by _reference, and one it refuses is dropped. `existing` that isn't a list
+    counts as empty. Of the items with one identity, `record` and `version` for memory and `tool` and
+    `id` for insights, only the last is kept, so a re-read moves to the end: the list is walked from
+    its end, the first item seen for each identity is kept, and the result is reversed. Then only the
+    last MAX_REFERENCES are kept.
+    """
+    try:
+        items = (list(existing) if isinstance(existing, list) else []) + list(new)
+        kept: List[Dict[str, Any]] = []
+        seen: Dict[Tuple[Any, ...], bool] = {}
+        for item in reversed(items):
+            reference = _reference(item=item)
+            if reference is None:
+                continue
+            if reference["type"] == "memory":
+                identity: Tuple[Any, ...] = ("memory", reference["record"], reference["version"])
+            else:
+                identity = ("insights", reference["tool"], reference["id"])
+            if identity not in seen:
+                seen[identity] = True
+                kept.append(reference)
+        kept.reverse()
+        return kept[-MAX_REFERENCES:]
+    except Exception:
+        return []
+
+
+def tool_references(*, hook_input: Mapping[str, Any], read_at: str) -> List[Dict[str, Any]]:
+    """The references this MCP call gives, or [] for any other tool. Never raises.
+
+    Only the tool's own name is read, from `mcp__<server>__<tool>`, never the server's. A
+    MEMORY_BRIEF_TOOL_NAME call gives one memory reference for each valid entry of the first
+    MAX_REFERENCES of the result's `records`, each followed by one for its `remediation` when that is
+    valid, and [] when it can't read the result. An INSIGHTS_TOOL_NAMES call gives one insights
+    reference, read at `read_at`, even when it can't read the result. Its id is what _insights_id finds
+    in the result, else the first 16 hex characters of the sha256 of the tool's name and its arguments
+    as sorted JSON. Neither the arguments nor the output are kept.
+    """
+    try:
+        tool_name = hook_input.get("tool_name")
+        if not isinstance(tool_name, str) or not tool_name.startswith("mcp__"):
+            return []
+        parts = tool_name.split("__", 2)
+        if len(parts) != 3:
+            return []
+        tool = parts[2]
+        if tool == MEMORY_BRIEF_TOOL_NAME:
+            result = _response_object(response=hook_input.get("tool_response"))
+            records = result.get("records") if result is not None else None
+            references: List[Dict[str, Any]] = []
+            for record in records[:MAX_REFERENCES] if isinstance(records, list) else []:
+                for entry in (record, record.get("remediation")) if isinstance(record, dict) else ():
+                    if not isinstance(entry, dict):
+                        continue
+                    reference = _reference(
+                        item={"record": entry.get("record_id"), "type": "memory", "version": entry.get("version")}
+                    )
+                    if reference is not None:
+                        references.append(reference)
+            return references
+        if tool not in INSIGHTS_TOOL_NAMES:
+            return []
+        reference_id = _insights_id(response=_response_object(response=hook_input.get("tool_response")))
+        if reference_id is None:
+            arguments = hook_input.get("tool_input")
+            call = [tool, arguments if isinstance(arguments, dict) else {}]
+            text = json.dumps(call, default=str, separators=(",", ":"), sort_keys=True)
+            reference_id = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        reference = _reference(item={"id": reference_id, "read_at": read_at, "tool": tool, "type": "insights"})
+        return [reference] if reference is not None else []
+    except Exception:
+        return []
+
+
 def ledger_context(*, account: str, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
     """{incident_key, references, thread_id} for this session, absent ones left out.
 
     The session state's investigation wins over the environment's, and the two are never mixed.
+    `references` are the state's valid ones as merge_references keeps them, left out when none is.
     """
     state: Any = {}
     session_id = hook_input.get("session_id")
@@ -634,8 +850,9 @@ def ledger_context(*, account: str, hook_input: Mapping[str, Any]) -> Dict[str, 
     if not isinstance(state, dict):
         state = {}
     context: Dict[str, Any] = {}
-    if isinstance(state.get("references"), list):
-        context["references"] = state["references"]
+    references = merge_references(existing=state.get("references"), new=[])
+    if references:
+        context["references"] = references
     investigation = state.get("investigation")
     if isinstance(investigation, dict) and isinstance(investigation.get("thread_id"), str) \
             and investigation["thread_id"].strip():

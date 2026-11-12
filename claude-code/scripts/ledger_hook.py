@@ -11,6 +11,8 @@ the two in parallel:
 - Off until MEZMO_LEDGER_ACCOUNT and MEZMO_LEDGER_URL are both set: until then it exits at once.
 - A Bash call that ran ledger_investigation.py's join or close puts the session in that
   investigation, or takes it out, in the session state, and sends `joined` or `closed`.
+- A Mezmo Memory brief or Insights read that ran adds its references to the session state, so
+  the next call's `started` carries what the agent knew when it acted.
 - It never prints hook output and always exits 0, so it can never block or change a tool call.
 - Each run sends its events and resends saved ones on their own threads, waits for all of them up
   to one short deadline, and saves what it couldn't send to ~/.mezmo/ledger-spool.jsonl for a
@@ -32,7 +34,8 @@ import ledger
 from governance_hook import governed, session_state_path, update_session_state
 
 LEDGER_EVENTS = frozenset({"PermissionDenied", "PostToolUse", "PostToolUseFailure", "PreToolUse"})
-# The longest a join or close waits for the session state's lock. Past it the change is not made.
+# The longest a join, a close or a reference write waits for the session state's lock. Past it the
+# change is not made.
 INVESTIGATION_STATE_TIMEOUT_SECONDS = 1.0
 
 # Every ledger thread this process started, so main() knows whether one is still running.
@@ -93,7 +96,7 @@ def _state_thread_id(*, hook_input: Mapping[str, Any]) -> Any:
 
 
 def _lock_timeout(*, deadline: float) -> float:
-    """How long a join or close may wait for the session state's lock: never past `deadline`."""
+    """How long a state change may wait for the session state's lock: never past `deadline`."""
     return max(0.0, min(INVESTIGATION_STATE_TIMEOUT_SECONDS, deadline - time.monotonic()))
 
 
@@ -156,6 +159,25 @@ def _close(
     return closed
 
 
+def _record_references(*, deadline: float, hook_input: Mapping[str, Any]) -> None:
+    """Add the references this call gives to the session state. Never raises, and never warns.
+
+    A call that gives none writes nothing, so it never creates or rewrites a state file. The merge
+    runs on the state update_session_state read under its lock, which it waits for as a join does.
+    """
+    try:
+        references = ledger.tool_references(hook_input=hook_input, read_at=datetime.now(timezone.utc).isoformat())
+        if not references:
+            return
+
+        def add(state: Dict[str, Any]) -> None:
+            state["references"] = ledger.merge_references(existing=state.get("references"), new=references)
+
+        update_session_state(hook_input, add, lock_timeout=_lock_timeout(deadline=deadline))
+    except Exception:
+        pass
+
+
 def _send(
     *,
     config: ledger.LedgerConfig,
@@ -171,8 +193,10 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
     """Send this call's events while resending saved ones, and wait up to one deadline. Never raises.
 
     A join is written to the session state before the call's event is built, so the join's own
-    `ran` carries the investigation, and a close is cleared after. Each waits for the state's lock
-    at most INVESTIGATION_STATE_TIMEOUT_SECONDS and never past the deadline. Each new event goes in a request
+    `ran` carries the investigation, and a close is cleared after. A call that ran and read Mezmo
+    Memory or Insights adds its references to the state once the requests are started, so its own
+    `ran` doesn't carry them. Each waits for the state's lock at most
+    INVESTIGATION_STATE_TIMEOUT_SECONDS and never past the deadline. Each new event goes in a request
     of its own, so one event's refusal or retry never touches another. Only this thread saves the
     new events, each by its own result, so each is saved at most once and never by a thread os._exit
     could cut off. A thread still running at the deadline is abandoned, and the duplicate it may
@@ -223,6 +247,11 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
             )
         except Exception as error:
             ledger.ledger_warn(message=f"Mezmo ledger could not start: {str(error) or type(error).__name__}")
+        # While the requests run, and after this call's own event was built, so its `ran` never
+        # claims what it read and the next call's `started` does.
+        if event.get("hook_event_name") == "PostToolUse" and new_event is not None \
+                and new_event.get("event") == "agent.tool_call.ran":
+            _record_references(deadline=deadline, hook_input=event)
         for thread in threads:
             thread.join(max(0.0, deadline - time.monotonic()))
         for new, sent in sends:
