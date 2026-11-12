@@ -288,7 +288,7 @@ class LedgerTestCase(unittest.TestCase):
         self.git(FileNotFoundError("git"))
 
     def git(self, answer: Any) -> List[List[str]]:
-        """Make operator_email's git call give `answer`, a CompletedProcess or an exception to raise.
+        """Make person_email's git call give `answer`, a CompletedProcess or an exception to raise.
 
         Returns the list each git command is added to.
         """
@@ -303,8 +303,8 @@ class LedgerTestCase(unittest.TestCase):
         stand_in = patch.object(ledger, "subprocess", types.SimpleNamespace(DEVNULL=subprocess.DEVNULL, run=run))
         stand_in.start()
         self.addCleanup(stand_in.stop)
-        ledger.operator_email.cache_clear()
-        self.addCleanup(ledger.operator_email.cache_clear)
+        ledger.person_email.cache_clear()
+        self.addCleanup(ledger.person_email.cache_clear)
         return commands
 
     def guarded_post_ledger(self, *, events: Any, key: Optional[str], timeout: float, url: str) -> Tuple[int, bytes]:
@@ -902,7 +902,7 @@ class JoinCloseTests(LedgerTestCase):
                 self.spool.unlink()
 
 
-class OperatorEmailTests(LedgerTestCase):
+class PersonEmailTests(LedgerTestCase):
     def test_every_event_carries_the_git_email(self) -> None:
         commands = self.git(subprocess.CompletedProcess([], 0, stdout="ops@example.test\n", stderr=""))
         fake = self.fake()
@@ -926,15 +926,15 @@ class OperatorEmailTests(LedgerTestCase):
             "agent.tool_call.started",
         ])
         for event in fake.events():
-            self.assertEqual(event["extra"]["operator_email"], "ops@example.test")
+            self.assertEqual(event["extra"]["person_email"], "ops@example.test")
         # Asked once per run.
         self.assertEqual(commands, [["git", "config", "--get", "user.email"]])
         # The caller's value wins.
         envelope = ledger.ledger_envelope(
             account=ACCOUNT, correlation_id=None, entity_id="e", entity_type="t", event="agent.test.sent",
-            extra={"operator_email": "launcher@example.test"}, message="m", session_id="session-1",
+            extra={"person_email": "launcher@example.test"}, message="m", session_id="session-1",
         )
-        self.assertEqual(envelope["extra"]["operator_email"], "launcher@example.test")
+        self.assertEqual(envelope["extra"]["person_email"], "launcher@example.test")
 
     def test_no_email_leaves_the_field_out(self) -> None:
         expected = self.build("started")["extra"]
@@ -947,7 +947,7 @@ class OperatorEmailTests(LedgerTestCase):
             with self.subTest(answer=answer):
                 self.git(answer)
                 extra = self.build("started")["extra"]
-                self.assertNotIn("operator_email", extra)
+                self.assertNotIn("person_email", extra)
                 self.assertEqual(extra, expected)
                 self.assert_no_null(extra)
 

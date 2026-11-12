@@ -168,7 +168,7 @@ class LaunchTests(unittest.TestCase):
             (opened["correlation_id"], opened["entity_id"], opened["entity_type"], opened["event"]),
             (CHECK_THREAD_ID, CHECK_THREAD_ID, "investigation", "agent.investigation.opened"),
         )
-        # Whole, with no session_id and, since git reports no email here, no operator_email.
+        # Whole, with no session_id and, since git reports no email here, no person_email.
         self.assertEqual(
             opened["extra"],
             {"agent": "claude_code", "incident_key": INCIDENT_KEY, "opened_by": "alert", "thread_id": CHECK_THREAD_ID},

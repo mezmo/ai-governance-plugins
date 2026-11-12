@@ -687,7 +687,7 @@ def ledger_context(*, account: str, hook_input: Mapping[str, Any]) -> Dict[str, 
 
 
 @functools.lru_cache(maxsize=None)
-def operator_email() -> Optional[str]:
+def person_email() -> Optional[str]:
     """The git email of whoever runs this session, or None. Asks git once per run and never raises."""
     try:
         result = subprocess.run(
@@ -716,12 +716,12 @@ def ledger_envelope(
 ) -> Dict[str, Any]:
     """The top-level fields audit-service takes, for any entity. `event` is the event name.
 
-    `extra` gains operator_email when git has one and `extra` gives none.
+    `extra` gains person_email when git has one and `extra` gives none.
     """
     stamped = dict(extra)
-    email = operator_email()
+    email = person_email()
     if email is not None:
-        stamped.setdefault("operator_email", email)
+        stamped.setdefault("person_email", email)
     envelope: Dict[str, Any] = {
         "actor": {"account": account, "pk": f"{AGENT}:{session_id}", "type": "agent"},
         "application": {"name": LEDGER_APPLICATION, "version": LEDGER_VERSION},
@@ -1215,7 +1215,7 @@ def record_governance_refusal(
     caller to act on.
     """
     thread: Optional[threading.Thread] = None
-    # From before the event is built, so the git lookup for operator_email counts against the wait.
+    # From before the event is built, so the git lookup for person_email counts against the wait.
     deadline = time.monotonic() + REFUSED_TIMEOUT_SECONDS
     try:
         if _skip_ledger_mcp_tool(hook_input=hook_input):

@@ -210,7 +210,7 @@ def plugin_version() -> str:
 
 
 @functools.lru_cache(maxsize=None)
-def operator_email() -> Optional[str]:
+def person_email() -> Optional[str]:
     """The git email of whoever runs this session, or None. Asks git once per run and never raises."""
     try:
         result = subprocess.run(
@@ -668,12 +668,12 @@ def ledger_envelope(
 ) -> Dict[str, Any]:
     """The top-level fields audit-service takes, for any entity. `event` is the event name.
 
-    `extra` gets the operator's git email when there is one, unless the caller already set it.
+    `extra` gets the person's git email when there is one, unless the caller already set it.
     """
     extra = dict(extra)
-    email = operator_email()
+    email = person_email()
     if email is not None:
-        extra.setdefault("operator_email", email)
+        extra.setdefault("person_email", email)
     envelope: Dict[str, Any] = {
         "actor": {"account": account, "pk": f"{AGENT}:{session_id}", "type": "agent"},
         "application": {"name": LEDGER_APPLICATION, "version": plugin_version()},
