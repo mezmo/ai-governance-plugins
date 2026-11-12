@@ -114,7 +114,7 @@ MAX_REFERENCES = 20
 MEMORY_BRIEF_TOOL_NAME = "mezmo_memory_brief"
 # For application.version. A file install has no manifest beside the script, so this is a
 # constant, and test_ledger.py checks it against .codex-plugin/plugin.json.
-LEDGER_VERSION = "0.4.0"
+LEDGER_VERSION = "0.5.0"
 # The socket timeout of each request this hook makes, and the deadline its main thread waits for
 # its ledger threads from when they start. A socket timeout alone bounds neither DNS nor the whole
 # request, hence the threads. Read at call time, so a test can patch it.
