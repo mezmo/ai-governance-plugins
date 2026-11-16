@@ -2,14 +2,15 @@
 """Join, close or launch a Mezmo investigation: tool calls on one incident share one thread_id.
 
 - `id --incident-key K` prints {incident_key, thread_id} as one line of JSON.
-- `join --incident-key K` and `close --incident-key K` print {action, incident_key, thread_id} as
-  one line of JSON and do nothing else. The ledger hook sees that line in the Bash call's output
+- `join --incident-key K [--service S]` and `close --incident-key K` print {action, incident_key,
+  service, thread_id} as one line of JSON, `service` only when given, and do nothing else. The ledger hook sees that line in the Bash call's output
   and records the join or close itself.
-- `launch --incident-key K -- <command...>` sends `agent.investigation.opened`, sets
+- `launch --incident-key K [--service S] -- <command...>` sends `agent.investigation.opened`, sets
   MEZMO_LEDGER_INCIDENT_KEY and MEZMO_LEDGER_INVESTIGATION_ID, and execs the command, so its exit
   code is the command's. An `opened` it can't send is saved to the retry file and the command
   still runs. A command that can't be found exits 127, and one that can't be run 126, with
   nothing sent.
+- A service is the deployment or app the incident is about, as a DNS label that isn't all digits.
 - An incident key is `<source>:<id>`, source one of INCIDENT_SOURCES. Surrounding whitespace is
   trimmed and nothing else is changed, because the ledger service hashes the key as given.
 - The same file, byte for byte, ships with the Claude Code and the Codex plugin, and test files in
@@ -24,6 +25,7 @@ import errno
 import importlib
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -35,6 +37,8 @@ LEDGER_ACCOUNT_ENV = "MEZMO_LEDGER_ACCOUNT"
 LEDGER_INCIDENT_KEY_ENV = "MEZMO_LEDGER_INCIDENT_KEY"
 LEDGER_INVESTIGATION_ID_ENV = "MEZMO_LEDGER_INVESTIGATION_ID"
 INCIDENT_SOURCES = ("jira", "pagerduty", "slack")
+# The ledgers' PLAIN_NAME: a DNS label.
+SERVICE_NAME = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
 OPENED_EVENT = "agent.investigation.opened"
 # The exit code of a command that can't be found, as a shell gives it.
 COMMAND_NOT_FOUND = 127
@@ -56,6 +60,12 @@ def parse_incident_key(value: str) -> Optional[str]:
     if any(character.isspace() for character in identifier):
         return None
     return key
+
+
+def parse_service(value: str) -> Optional[str]:
+    """`value` with surrounding whitespace trimmed, or None when it isn't a DNS label or is all digits."""
+    service = value.strip()
+    return service if SERVICE_NAME.fullmatch(service) and not service.isdigit() else None
 
 
 def investigation_id(*, account: str, incident_key: str) -> str:
@@ -85,6 +95,8 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument(
             "--incident-key", required=True, help="<source>:<id>, source one of " + ", ".join(INCIDENT_SOURCES)
         )
+        if name in ("join", "launch"):
+            command.add_argument("--service", help="the deployment or app the incident is about, e.g. checkout")
     return parser
 
 
@@ -97,12 +109,15 @@ def _ledger_module() -> Any:
     return importlib.import_module("ledger" if (here / "ledger.py").is_file() else "mezmo_ledger_hook")
 
 
-def _send_opened(*, config: Any, incident_key: str, ledger: Any, thread_id: str) -> None:
+def _send_opened(*, config: Any, incident_key: str, ledger: Any, service: Optional[str], thread_id: str) -> None:
     """Send `opened` on a daemon thread, wait up to the ledger deadline, and save what wasn't sent.
 
     Never raises: a send that fails must not stop the command.
     """
     event: Optional[Dict[str, Any]] = None
+    extra = {"agent": ledger.AGENT, "incident_key": incident_key, "opened_by": "alert", "thread_id": thread_id}
+    if service is not None:
+        extra["service"] = service
     try:
         event = ledger.ledger_envelope(
             account=config.account,
@@ -110,7 +125,7 @@ def _send_opened(*, config: Any, incident_key: str, ledger: Any, thread_id: str)
             entity_id=thread_id,
             entity_type="investigation",
             event=OPENED_EVENT,
-            extra={"agent": ledger.AGENT, "incident_key": incident_key, "opened_by": "alert", "thread_id": thread_id},
+            extra=extra,
             message=f"{incident_key}: opened by an alert",
             session_id="launcher",
         )
@@ -140,7 +155,7 @@ def _send_opened(*, config: Any, incident_key: str, ledger: Any, thread_id: str)
             pass
 
 
-def launch(*, command: Sequence[str], incident_key: str) -> int:
+def launch(*, command: Sequence[str], incident_key: str, service: Optional[str] = None) -> int:
     """Send `opened`, then exec `command` with the investigation in its environment.
 
     Returns only when nothing ran: on a usage or settings error, or a command that can't be run.
@@ -162,7 +177,7 @@ def launch(*, command: Sequence[str], incident_key: str) -> int:
         warn(f"could not run {command[0]}: {os.strerror(errno.EACCES)}")
         return COMMAND_NOT_RUN
     thread_id = investigation_id(account=config.account, incident_key=incident_key)
-    _send_opened(config=config, incident_key=incident_key, ledger=ledger, thread_id=thread_id)
+    _send_opened(config=config, incident_key=incident_key, ledger=ledger, service=service, thread_id=thread_id)
     environment = dict(os.environ)
     environment[LEDGER_INCIDENT_KEY_ENV] = incident_key
     environment[LEDGER_INVESTIGATION_ID_ENV] = thread_id
@@ -198,11 +213,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"and an id with no whitespace: {parsed.incident_key!r}"
         )
         return USAGE_ERROR
+    service = getattr(parsed, "service", None)
+    if service is not None:
+        service = parse_service(service)
+        if service is None:
+            warn(f"service must be a DNS label, such as checkout, that isn't all digits: {parsed.service!r}")
+            return USAGE_ERROR
     if parsed.action == "launch":
         if not command:
             warn("launch needs a command after `--`; nothing was run")
             return USAGE_ERROR
-        return launch(command=command, incident_key=key)
+        return launch(command=command, incident_key=key, service=service)
     if command is not None:
         warn(f"{parsed.action} takes no command")
         return USAGE_ERROR
@@ -214,8 +235,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if parsed.action == "id":
         print_line({"incident_key": key, "thread_id": thread_id})
         return 0
-    action = "joined" if parsed.action == "join" else "closed"
-    print_line({"action": action, "incident_key": key, "thread_id": thread_id})
+    line = {"action": "joined" if parsed.action == "join" else "closed", "incident_key": key, "thread_id": thread_id}
+    if service is not None:
+        line["service"] = service
+    print_line(line)
     return 0
 
 

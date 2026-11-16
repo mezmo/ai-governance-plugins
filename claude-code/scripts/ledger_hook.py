@@ -101,7 +101,12 @@ def _lock_timeout(*, deadline: float) -> float:
 
 
 def _join(
-    *, config: ledger.LedgerConfig, deadline: float, hook_input: Mapping[str, Any], incident_key: str
+    *,
+    config: ledger.LedgerConfig,
+    deadline: float,
+    hook_input: Mapping[str, Any],
+    incident_key: str,
+    service: Optional[str],
 ) -> Optional[Dict[str, Any]]:
     """Put the session in the investigation, then build `joined`. None when the state didn't take it.
 
@@ -114,6 +119,8 @@ def _join(
             "joined_at": datetime.now(timezone.utc).isoformat(),
             "thread_id": thread_id,
         }
+        if service is not None:
+            investigation["service"] = service
         update_session_state(
             hook_input,
             lambda state: state.__setitem__("investigation", investigation),
@@ -123,7 +130,12 @@ def _join(
             ledger.ledger_warn(message=f"Mezmo ledger could not join {incident_key}: the session state was not written")
             return None
         return ledger.investigation_event(
-            action="joined", config=config, hook_input=hook_input, incident_key=incident_key, thread_id=thread_id
+            action="joined",
+            config=config,
+            hook_input=hook_input,
+            incident_key=incident_key,
+            service=service,
+            thread_id=thread_id,
         )
     except Exception as error:
         ledger.ledger_warn(message=f"Mezmo ledger could not join {incident_key}: {str(error) or type(error).__name__}")
@@ -223,7 +235,11 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
         investigation_event: Optional[Dict[str, Any]] = None
         if investigation is not None and investigation[0] == "joined":
             investigation_event = _join(
-                config=config, deadline=deadline, hook_input=event, incident_key=investigation[1]
+                config=config,
+                deadline=deadline,
+                hook_input=event,
+                incident_key=investigation[1],
+                service=investigation[2],
             )
         new_event = _new_event(config=config, hook_input=event)
         if investigation is not None and investigation[0] == "closed":

@@ -90,8 +90,8 @@ EVENT_NAME = re.compile(r"^[a-z0-9]+(?:[_-][a-z0-9]+)*(?:\.[a-z0-9]+(?:[_-][a-z0
 # Every key the epic allows in `extra`.
 EXTRA_KEYS = {
     "access", "agent", "arguments", "call_id", "decision_id", "duration_ms", "entry_key", "exit_status",
-    "incident_key", "intent_source", "person_email", "output", "references", "request_id", "session_id", "target",
-    "thread_id", "tool_name", "tool_namespace",
+    "incident_key", "intent_source", "person_email", "output", "references", "request_id", "service", "session_id",
+    "target", "thread_id", "tool_name", "tool_namespace",
 }
 
 
@@ -930,11 +930,13 @@ class InvestigationChangeTests(LedgerTestCase):
         joined = json.dumps({"action": "joined", "incident_key": INCIDENT_KEY, "thread_id": "printed-thread"})
         runbook = f"{cli} join --incident-key {INCIDENT_KEY}\n{joined}\n"
         cases = (
-            (f"{cli} join --incident-key {INCIDENT_KEY}", ("joined", INCIDENT_KEY)),
-            (f"{cli} join --incident-key={INCIDENT_KEY} 2>&1", ("joined", INCIDENT_KEY)),
-            (f"{cli} join --incident-key {INCIDENT_KEY} | tail -n 5", ("joined", INCIDENT_KEY)),
+            (f"{cli} join --incident-key {INCIDENT_KEY}", ("joined", INCIDENT_KEY, None)),
+            (f"{cli} join --incident-key={INCIDENT_KEY} 2>&1", ("joined", INCIDENT_KEY, None)),
+            (f"{cli} join --incident-key {INCIDENT_KEY} | tail -n 5", ("joined", INCIDENT_KEY, None)),
             (f"{cli} join --incident-key jira:OPS-1", None),
             (f'{cli} join --incident-key "$KEY"', None),
+            # The printed line names no service, though the command gave one.
+            (f"{cli} join --incident-key {INCIDENT_KEY} --service checkout", None),
             (f"cd /tmp && {cli} join --incident-key {INCIDENT_KEY}", None),
             (f"tee runbook.md <<'EOF'\n{runbook}EOF", None),
             (f"printf '%s\\n' '(example)' {cli} join --incident-key {INCIDENT_KEY} '{joined}'", None),
@@ -943,6 +945,23 @@ class InvestigationChangeTests(LedgerTestCase):
             with self.subTest(command=command):
                 event = hook_input("PostToolUse", tool_input={"command": command}, tool_response=f"run\n{joined}\n")
                 self.assertEqual(ledger.investigation_action(hook_input=event), expected)
+
+    def test_a_join_with_a_service_keeps_it_in_the_state_and_on_joined(self) -> None:
+        line = json.dumps({"action": "joined", "incident_key": INCIDENT_KEY, "service": "checkout", "thread_id": "x"})
+        event = hook_input(
+            "PostToolUse",
+            tool_input={
+                "command": f"python3 ~/.codex/hooks/ledger_investigation.py join --incident-key {INCIDENT_KEY} "
+                "--service checkout"
+            },
+            tool_response=f"{line}\n",
+        )
+        self.assertEqual(ledger.investigation_action(hook_input=event), ("joined", INCIDENT_KEY, "checkout"))
+        fake = self.fake()
+        self.run_hook(event, fake)
+        self.assertEqual(self.state()["investigation"]["service"], "checkout")
+        (joined,) = [sent for sent in fake.events() if sent["event"] == "agent.investigation.joined"]
+        self.assertEqual(joined["extra"]["service"], "checkout")
 
     def test_a_join_writes_the_state_and_sends_joined(self) -> None:
         fake = self.fake()

@@ -87,7 +87,8 @@ class LedgerInvestigationTests(unittest.TestCase):
         }
         result = subprocess.run(
             [
-                sys.executable, str(hooks / "ledger_investigation.py"), "launch", "--incident-key", INCIDENT_KEY, "--",
+                sys.executable, str(hooks / "ledger_investigation.py"), "launch", "--incident-key", INCIDENT_KEY,
+                "--service", "checkout", "--",
                 sys.executable, "-c", "import os; print(os.environ['MEZMO_LEDGER_INVESTIGATION_ID'])",
             ],
             capture_output=True,
@@ -107,7 +108,13 @@ class LedgerInvestigationTests(unittest.TestCase):
         # Whole, with no session_id and, since git reports no email here, no person_email.
         self.assertEqual(
             opened["extra"],
-            {"agent": "codex", "incident_key": INCIDENT_KEY, "opened_by": "alert", "thread_id": CHECK_THREAD_ID},
+            {
+                "agent": "codex",
+                "incident_key": INCIDENT_KEY,
+                "opened_by": "alert",
+                "service": "checkout",
+                "thread_id": CHECK_THREAD_ID,
+            },
         )
         self.assertFalse((folder / "spool").exists())
 

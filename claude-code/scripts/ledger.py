@@ -583,15 +583,15 @@ def _skip_ledger_mcp_tool(*, hook_input: Mapping[str, Any]) -> bool:
     return len(parts) == 3 and parts[2] in SKIP_LEDGER_MCP_TOOL_NAMES
 
 
-def _investigation_call(words: Sequence[str]) -> Optional[Tuple[str, str]]:
-    """(subcommand, incident_key) when the call starts by running the investigation CLI's join or
-    close, else None.
+def _investigation_call(words: Sequence[str]) -> Optional[Tuple[str, str, Optional[str]]]:
+    """(subcommand, incident_key, service) when the call starts by running the investigation CLI's
+    join or close, else None. `service` is None when the command gives none.
 
     Only the call's first simple command is read: its words up to the first shell punctuation word.
     They must be any `NAME=value` words, a Python interpreter, its flags that take no argument,
     INVESTIGATION_SCRIPT, `join` or `close`, and arguments that give the key as `--incident-key K`
-    or `--incident-key=K`. The last key given wins, as argparse takes it, and other arguments are
-    left to the CLI, which refuses them. What follows, such as `2>&1` or a pipe, is not read, so a
+    or `--incident-key=K`, and the service likewise as `--service S`. The last one given wins, as
+    argparse takes it, and other arguments are left to the CLI, which refuses them. What follows, such as `2>&1` or a pipe, is not read, so a
     later command, a here-doc's body or an echo or printf of the CLI's words is no call.
     """
     punctuation = tuple(SHELL_PUNCTUATION)
@@ -609,24 +609,27 @@ def _investigation_call(words: Sequence[str]) -> Optional[Tuple[str, str]]:
     subcommand = words[position + 1]
     if subcommand not in INVESTIGATION_ACTIONS:
         return None
-    key: Optional[str] = None
+    given: Dict[str, str] = {}
     for index in range(position + 2, end):
-        if words[index] == "--incident-key" and index + 1 < end:
-            key = words[index + 1]
-        elif words[index].startswith("--incident-key="):
-            key = words[index][len("--incident-key="):]
-    if key is None or not key.strip():
+        for name in ("--incident-key", "--service"):
+            if words[index] == name and index + 1 < end:
+                given[name] = words[index + 1]
+            elif words[index].startswith(f"{name}="):
+                given[name] = words[index][len(name) + 1:]
+    key = given.get("--incident-key", "").strip()
+    if not key:
         return None
-    return subcommand, key.strip()
+    service = given.get("--service")
+    return subcommand, key, None if service is None else service.strip()
 
 
-def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str, str]]:
-    """("joined" or "closed", incident_key) when this Bash call ran the investigation CLI's join or
-    close and it succeeded, else None. Never raises.
+def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str, str, Optional[str]]]:
+    """("joined" or "closed", incident_key, service) when this Bash call ran the investigation CLI's
+    join or close and it succeeded, else None. Never raises.
 
     Both must hold: the command starts by running the CLI, as _investigation_call reads it, and a
-    line of the output is the JSON object that subcommand prints, with its `action` and the key the
-    command gave. So a key the command passes through a shell variable is not recognized.
+    line of the output is the JSON object that subcommand prints, with its `action` and the key and
+    service the command gave. So a key the command passes through a shell variable is not recognized.
     """
     try:
         if hook_input.get("hook_event_name") != "PostToolUse" or hook_input.get("tool_name") != "Bash":
@@ -638,15 +641,15 @@ def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str
         call = _investigation_call(_command_words(command))
         if call is None:
             return None
-        action, incident_key = INVESTIGATION_ACTIONS[call[0]], call[1]
+        action, incident_key, service = INVESTIGATION_ACTIONS[call[0]], call[1], call[2]
         for line in _output_text(hook_input.get("tool_response")).splitlines():
             try:
                 printed = json.loads(line)
             except ValueError:
                 continue
             if isinstance(printed, dict) and printed.get("action") == action \
-                    and printed.get("incident_key") == incident_key:
-                return action, incident_key
+                    and printed.get("incident_key") == incident_key and printed.get("service") == service:
+                return action, incident_key, service
     except Exception:
         pass
     return None
@@ -1004,20 +1007,29 @@ def ledger_event(
 
 
 def investigation_event(
-    *, action: str, config: LedgerConfig, hook_input: Mapping[str, Any], incident_key: str, thread_id: str
+    *,
+    action: str,
+    config: LedgerConfig,
+    hook_input: Mapping[str, Any],
+    incident_key: str,
+    service: Optional[str] = None,
+    thread_id: str,
 ) -> Optional[Dict[str, Any]]:
     """The session's `agent.investigation.<action>`: `action` is joined or closed. None without an identity."""
     try:
         session_id = call_identity(hook_input).session_id
     except Exception:
         return None
+    extra = {"agent": AGENT, "incident_key": incident_key, "session_id": session_id, "thread_id": thread_id}
+    if service is not None:
+        extra["service"] = service
     return ledger_envelope(
         account=config.account,
         correlation_id=thread_id,
         entity_id=thread_id,
         entity_type="investigation",
         event=f"agent.investigation.{action}",
-        extra={"agent": AGENT, "incident_key": incident_key, "session_id": session_id, "thread_id": thread_id},
+        extra=extra,
         message=f"{AGENT} {action} investigation {incident_key}"[:MAX_LEDGER_MESSAGE_CHARACTERS],
         session_id=session_id,
     )

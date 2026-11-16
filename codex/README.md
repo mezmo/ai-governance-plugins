@@ -382,7 +382,9 @@ session on the account that uses the same key gets the same one.
 | `agent.investigation.opened` | `ledger_investigation.py launch` started a command for an alert |
 
 Each carries the incident key and the `thread_id`. `joined` and `closed` also
-carry the session id, and `opened` carries `opened_by: "alert"`.
+carry the session id, and `opened` carries `opened_by: "alert"`. `joined` and
+`opened` carry `service` when the command gave `--service`: the deployment or
+app the incident is about, such as `checkout`, as a DNS label.
 
 An incident key is `<source>:<id>`, with source `jira`, `pagerduty` or
 `slack`, such as `pagerduty:Q34FCCWSTU9OI2`. The CLI,
@@ -392,8 +394,8 @@ An incident key is `<source>:<id>`, with source `jira`, `pagerduty` or
 | --- | --- |
 | `close --incident-key <key>` | Prints one line, `{"action": "closed", "incident_key": ..., "thread_id": ...}` |
 | `id --incident-key <key>` | Prints the key and its `thread_id`. Nothing is recorded |
-| `join --incident-key <key>` | Prints one line, `{"action": "joined", "incident_key": ..., "thread_id": ...}` |
-| `launch --incident-key <key> -- <command...>` | Sends `opened`, then runs the command in the investigation |
+| `join --incident-key <key> [--service <name>]` | Prints one line, `{"action": "joined", "incident_key": ..., "service": ..., "thread_id": ...}`, `service` only when given |
+| `launch --incident-key <key> [--service <name>] -- <command...>` | Sends `opened`, then runs the command in the investigation |
 
 `id`, `join` and `close` need only `MEZMO_LEDGER_ACCOUNT` and send nothing
 themselves. The ledger hook does the rest when a `Bash` call starts by running
@@ -430,10 +432,14 @@ the path of `ledger_investigation.py`.
    PagerDuty, Slack and Jira tools to find its PagerDuty incident, and use that
    when there is one. Two agents that pick different keys get different
    investigations and never see each other's work.
-2. Run `python3 <cli> join --incident-key <key>` on its own, as the whole
-   shell call, with the key written out in the command: no `cd` or other command
-   before it, and no shell variable for the key. Do this even when the session
-   was started by `ledger_investigation.py launch`.
+2. Run `python3 <cli> join --incident-key <key> --service <name>` on its own,
+   as the whole shell call, with the key written out in the command: no `cd` or
+   other command before it, and no shell variable for the key. Do this even when
+   the session was started by `ledger_investigation.py launch`. `--service` is
+   the service the incident is about, from the incident itself, such as the
+   PagerDuty incident's service or its alert's source. Give the deployment or
+   app name, not a display name: `checkout`, not `Checkout Production`. If you
+   aren't sure which service it is, leave `--service` out rather than guess.
 3. Before you change anything, call the `get_ledger_investigation` MCP tool
    with `incident_key` set to the key, and read what was already done.
 4. Run one command per shell call while you work on the incident: no `;`,

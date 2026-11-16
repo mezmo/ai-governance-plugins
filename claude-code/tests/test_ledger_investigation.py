@@ -96,6 +96,26 @@ class PrintTests(unittest.TestCase):
                     json.loads(stdout), {"action": action, "incident_key": INCIDENT_KEY, "thread_id": CHECK_THREAD_ID}
                 )
 
+    def test_join_prints_the_service_it_is_given(self) -> None:
+        code, stdout, stderr = self.run_main("join", "--incident-key", INCIDENT_KEY, "--service", " checkout ")
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertEqual(
+            stdout,
+            '{"action":"joined","incident_key":"%s","service":"checkout","thread_id":"%s"}\n'
+            % (INCIDENT_KEY, CHECK_THREAD_ID),
+        )
+
+    def test_a_service_that_is_not_a_dns_label_is_refused(self) -> None:
+        for service in ("Checkout Production", "checkout/prod", "Checkout", "123", "", "checkout-", "a" * 64):
+            with self.subTest(service=service):
+                code, stdout, stderr = self.run_main("join", "--incident-key", INCIDENT_KEY, "--service", service)
+                self.assertEqual((code, stdout), (2, ""))
+                self.assertIn("service must be a DNS label", stderr)
+        for command in ("id", "close"):
+            with self.subTest(command=command), redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
+                ledger_investigation.main([command, "--incident-key", INCIDENT_KEY, "--service", "checkout"])
+            self.assertEqual(raised.exception.code, 2)
+
     def test_a_key_that_is_not_source_colon_id_is_refused(self) -> None:
         for key in ("PagerDuty:Q34FCCWSTU9OI2", "github:123", "jira", "jira:", "jira:AB 12", "slack:C1\tT2"):
             with self.subTest(key=key):
@@ -174,6 +194,16 @@ class LaunchTests(unittest.TestCase):
             {"agent": "claude_code", "incident_key": INCIDENT_KEY, "opened_by": "alert", "thread_id": CHECK_THREAD_ID},
         )
         self.assertFalse(self.spool.exists())
+
+    def test_launch_sends_the_service_on_opened(self) -> None:
+        result = self.launch("launch", "--incident-key", INCIDENT_KEY, "--service", "checkout", *self.touch())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.marker.exists())
+        (opened,) = self.events()
+        self.assertEqual(opened["extra"]["service"], "checkout")
+        result = self.launch("launch", "--incident-key", INCIDENT_KEY, "--service", "Checkout", *self.touch())
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(len(self.events()), 1)
 
     def test_launch_exits_as_the_command_does_and_refuses_to_run_without_its_settings(self) -> None:
         with self.subTest(case="the command's exit code"):
