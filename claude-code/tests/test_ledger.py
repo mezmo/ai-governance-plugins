@@ -93,16 +93,21 @@ def hook_input(name: str = "PreToolUse", **fields: Any) -> Dict[str, Any]:
     return event
 
 
-def cli_call(subcommand: str, action: str) -> Dict[str, Any]:
+def cli_call(subcommand: str, action: str, service: Optional[str] = None) -> Dict[str, Any]:
     """The PostToolUse of a Bash call that ran ledger_investigation.py's `subcommand` and printed `action`.
 
     The printed thread_id is not the one the hook derives, and is ignored.
     """
-    printed = json.dumps({"action": action, "incident_key": INCIDENT_KEY, "thread_id": "printed-thread"})
+    line = {"action": action, "incident_key": INCIDENT_KEY, "thread_id": "printed-thread"}
+    arguments = f"--incident-key {INCIDENT_KEY}"
+    if service is not None:
+        line["service"] = service
+        arguments += f" --service {service}"
+    printed = json.dumps(line)
     return hook_input(
         "PostToolUse",
         tool_input={
-            "command": f'python3 "/plugin/scripts/ledger_investigation.py" {subcommand} --incident-key {INCIDENT_KEY}',
+            "command": f'python3 "/plugin/scripts/ledger_investigation.py" {subcommand} {arguments}',
             "description": f"{subcommand.capitalize()} the investigation",
         },
         tool_response={"interrupted": False, "isImage": False, "stderr": "", "stdout": printed + "\n"},
@@ -813,10 +818,12 @@ class JoinCloseTests(LedgerTestCase):
             f"python3 {cli} join --incident-key={INCIDENT_KEY}",
         ):
             with self.subTest(command=command):
-                self.assertEqual(ledger._investigation_call(ledger._command_words(command)), ("join", INCIDENT_KEY))
+                self.assertEqual(
+                    ledger._investigation_call(ledger._command_words(command)), ("join", INCIDENT_KEY, None)
+                )
                 self.assertEqual(
                     ledger.investigation_action(hook_input=bash(command, f"starting\n{joined}\ndone\n")),
-                    ("joined", INCIDENT_KEY),
+                    ("joined", INCIDENT_KEY, None),
                 )
         # (command, what _investigation_call reads from it, the call's output)
         for command, call, stdout in (
@@ -834,9 +841,17 @@ class JoinCloseTests(LedgerTestCase):
             (f"echo python3 {cli} join --incident-key {INCIDENT_KEY}", None, joined),
             (f"cd /tmp && python3 {cli} join --incident-key {INCIDENT_KEY}", None, joined),
             (f"python3 -m ledger_investigation.py join --incident-key {INCIDENT_KEY}", None, joined),
-            (f"python3 {cli} join --incident-key jira:OPS-1", ("join", "jira:OPS-1"), joined),
+            (f"python3 {cli} join --incident-key jira:OPS-1", ("join", "jira:OPS-1", None), joined),
             (f'python3 -c "print(1)" {cli} join --incident-key {INCIDENT_KEY}', None, joined),
-            (f'python3 {cli} join --incident-key "$KEY"', ("join", "$KEY"), joined),
+            (f'python3 {cli} join --incident-key "$KEY"', ("join", "$KEY", None), joined),
+            # The line names no service, or another one, than the command gave.
+            (f"python3 {cli} join --incident-key {INCIDENT_KEY} --service checkout", ("join", INCIDENT_KEY, "checkout"),
+             joined),
+            (f"python3 {cli} join --incident-key {INCIDENT_KEY}", ("join", INCIDENT_KEY, None),
+             json.dumps({"action": "joined", "incident_key": INCIDENT_KEY, "service": "checkout"})),
+            (f"python3 {cli} join --incident-key {INCIDENT_KEY} --service=payments",
+             ("join", INCIDENT_KEY, "payments"),
+             json.dumps({"action": "joined", "incident_key": INCIDENT_KEY, "service": "checkout"})),
             (f"python3 {cli} id --incident-key {INCIDENT_KEY}", None, joined),
             (f"python3 {cli} launch --incident-key {INCIDENT_KEY} -- claude", None, joined),
         ):
@@ -848,6 +863,7 @@ class JoinCloseTests(LedgerTestCase):
         fake = self.fake()
         self.run_hook(cli_call("join", "joined"), fake)
         investigation = self.state()["investigation"]
+        self.assertNotIn("service", investigation)
         self.assertEqual(investigation["incident_key"], INCIDENT_KEY)
         self.assertEqual(investigation["thread_id"], CHECK_THREAD_ID)
         self.assertEqual(datetime.fromisoformat(investigation["joined_at"]).utcoffset().total_seconds(), 0)
@@ -858,6 +874,28 @@ class JoinCloseTests(LedgerTestCase):
         self.assert_investigation_event(events["agent.investigation.joined"], "joined")
         self.assertEqual(events["agent.tool_call.ran"]["extra"]["thread_id"], CHECK_THREAD_ID)
         self.assertEqual(self.spool_lines(), [])
+
+    def test_a_join_with_a_service_keeps_it_in_the_state_and_on_joined(self) -> None:
+        for command in (
+            f'python3 "/plugin/scripts/ledger_investigation.py" join --incident-key {INCIDENT_KEY} --service checkout',
+            # The last one given wins, as argparse takes it.
+            f"python3 ledger_investigation.py join --service=payments --incident-key {INCIDENT_KEY} --service checkout",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    ledger._investigation_call(ledger._command_words(command)), ("join", INCIDENT_KEY, "checkout")
+                )
+        fake = self.fake()
+        self.run_hook(cli_call("join", "joined", service="checkout"), fake)
+        self.assertEqual(self.state()["investigation"]["service"], "checkout")
+        events = {event["event"]: event for event in fake.events()}
+        self.assertEqual(events["agent.investigation.joined"]["extra"], {
+            "agent": hook.AGENT,
+            "incident_key": INCIDENT_KEY,
+            "service": "checkout",
+            "session_id": "session-1",
+            "thread_id": CHECK_THREAD_ID,
+        })
 
     def test_a_close_clears_the_state_and_sends_closed(self) -> None:
         self.write_state({"investigation": {

@@ -36,11 +36,17 @@ can't tell which incident the user means, ask.
 ## 2. Join
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/ledger_investigation.py" join --incident-key <key>
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/ledger_investigation.py" join --incident-key <key> --service <name>
 ```
 
-It prints one line with the `incident_key` and the investigation's `thread_id`. From here on, the
-ledger files each tool call under that investigation.
+It prints one line with the `incident_key`, the `service` and the investigation's `thread_id`.
+From here on, the ledger files each tool call under that investigation.
+
+`--service` records the service the incident is about, so people reading the investigation see
+it even when no tool call targets it. Take it from the incident, such as the PagerDuty incident's
+service or its alert's source, and give the deployment or app name, not a display name: `checkout`,
+not `Checkout Production`. It must be lowercase letters, digits and `-`. If you aren't sure which
+service it is, leave `--service` out rather than guess.
 
 Run it on its own, as the whole Bash call, with the key written out as above: no `cd` or other
 command before it, and no shell variable such as `"$KEY"` for the key. The ledger records the join

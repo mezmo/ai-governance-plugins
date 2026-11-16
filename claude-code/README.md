@@ -320,9 +320,11 @@ session is in an investigation, each of its records carries the investigation's 
 
 `/mezmo:investigate <incident>` works out the incident's key, preferring the PagerDuty incident
 when a Slack channel or Jira issue has one, then joins. It runs
-`python3 scripts/ledger_investigation.py join --incident-key <key>`, and the ledger hook, seeing
-that command print its result line for the same key, puts the session in the investigation and
-sends `joined`. The hook takes only a Bash call that starts by running the CLI with a Python
+`python3 scripts/ledger_investigation.py join --incident-key <key> --service <name>`, and the
+ledger hook, seeing that command print its result line for the same key and service, puts the
+session in the investigation and sends `joined`. `--service` is optional: the deployment or app
+the incident is about, such as `checkout`, as a DNS label. `joined` carries it, so the
+investigation names its service even when no tool call targets it. The hook takes only a Bash call that starts by running the CLI with a Python
 interpreter, with the key written out, so `join` and `close` are each run on their own as the
 whole call: one after a `cd ... &&`, or with a key passed through a shell variable such as
 `"$KEY"`, is not recognized. Claude then reads the
@@ -333,10 +335,10 @@ takes the session out of it. Both need ledger sending on.
 To start an agent inside an investigation, such as from an alert, use the launcher:
 
 ```bash
-python3 scripts/ledger_investigation.py launch --incident-key <key> -- <command...>
+python3 scripts/ledger_investigation.py launch --incident-key <key> [--service <name>] -- <command...>
 ```
 
-It sends `opened` with `opened_by: "alert"`, then runs the command with
+It sends `opened` with `opened_by: "alert"` and the service when given, then runs the command with
 `MEZMO_LEDGER_INCIDENT_KEY` and `MEZMO_LEDGER_INVESTIGATION_ID` set, so a `claude -p` it starts
 files every call under the investigation. Its exit code is the command's. Export
 `MEZMO_LEDGER_KEY` in the shell you run it from: the fallback to the governance key only exists

@@ -114,7 +114,7 @@ MAX_REFERENCES = 20
 MEMORY_BRIEF_TOOL_NAME = "mezmo_memory_brief"
 # For application.version. A file install has no manifest beside the script, so this is a
 # constant, and test_ledger.py checks it against .codex-plugin/plugin.json.
-LEDGER_VERSION = "0.5.0"
+LEDGER_VERSION = "0.5.1"
 # The socket timeout of each request this hook makes, and the deadline its main thread waits for
 # its ledger threads from when they start. A socket timeout alone bounds neither DNS nor the whole
 # request, hence the threads. Read at call time, so a test can patch it.
@@ -1039,15 +1039,15 @@ def ledger_event(
     )
 
 
-def _investigation_call(words: Sequence[str]) -> Optional[Tuple[str, str]]:
-    """(subcommand, incident_key) when the call starts by running the investigation CLI's join or
-    close, else None.
+def _investigation_call(words: Sequence[str]) -> Optional[Tuple[str, str, Optional[str]]]:
+    """(subcommand, incident_key, service) when the call starts by running the investigation CLI's
+    join or close, else None. `service` is None when the command gives none.
 
     Only the call's first simple command is read: its words up to the first shell punctuation word.
     They must be any `NAME=value` words, a Python interpreter, its flags that take no argument,
     INVESTIGATION_SCRIPT, `join` or `close`, and arguments that give the key as `--incident-key K`
-    or `--incident-key=K`. The last key given wins, as argparse takes it, and other arguments are
-    left to the CLI, which refuses them. What follows, such as `2>&1` or a pipe, is not read, so a
+    or `--incident-key=K`, and the service likewise as `--service S`. The last one given wins, as
+    argparse takes it, and other arguments are left to the CLI, which refuses them. What follows, such as `2>&1` or a pipe, is not read, so a
     later command, a here-doc's body or an echo or printf of the CLI's words is no call.
     """
     punctuation = tuple(SHELL_PUNCTUATION)
@@ -1065,24 +1065,27 @@ def _investigation_call(words: Sequence[str]) -> Optional[Tuple[str, str]]:
     subcommand = words[position + 1]
     if subcommand not in INVESTIGATION_ACTIONS:
         return None
-    key: Optional[str] = None
+    given: Dict[str, str] = {}
     for index in range(position + 2, end):
-        if words[index] == "--incident-key" and index + 1 < end:
-            key = words[index + 1]
-        elif words[index].startswith("--incident-key="):
-            key = words[index][len("--incident-key="):]
-    if key is None or not key.strip():
+        for name in ("--incident-key", "--service"):
+            if words[index] == name and index + 1 < end:
+                given[name] = words[index + 1]
+            elif words[index].startswith(f"{name}="):
+                given[name] = words[index][len(name) + 1:]
+    key = given.get("--incident-key", "").strip()
+    if not key:
         return None
-    return subcommand, key.strip()
+    service = given.get("--service")
+    return subcommand, key, None if service is None else service.strip()
 
 
-def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str, str]]:
-    """(action, incident_key) for a Bash call that joined or closed an investigation, else None.
+def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str, str, Optional[str]]]:
+    """(action, incident_key, service) for a Bash call that joined or closed an investigation, else None.
 
     `action` is "joined" or "closed". Both must hold: the command starts by running the CLI, as
     _investigation_call reads it, and the output has a line that is a JSON object stating the
-    matching action and the key the command gave. So a key the command passes through a shell
-    variable is not recognized. Codex gives a Bash call no exit code, so that line is the only sign
+    matching action and the key and service the command gave. So a key the command passes through a
+    shell variable is not recognized. Codex gives a Bash call no exit code, so that line is the only sign
     the command worked. Only for PostToolUse. Never raises.
     """
     try:
@@ -1095,7 +1098,7 @@ def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str
         call = _investigation_call(_command_words(command))
         if call is None:
             return None
-        action, incident_key = INVESTIGATION_ACTIONS[call[0]], call[1]
+        action, incident_key, service = INVESTIGATION_ACTIONS[call[0]], call[1], call[2]
         for line in _output_text(hook_input.get("tool_response")).splitlines():
             if not line.lstrip().startswith("{"):
                 continue
@@ -1104,28 +1107,37 @@ def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str
             except ValueError:
                 continue
             if isinstance(printed, dict) and printed.get("action") == action \
-                    and printed.get("incident_key") == incident_key:
-                return action, incident_key
+                    and printed.get("incident_key") == incident_key and printed.get("service") == service:
+                return action, incident_key, service
         return None
     except Exception:
         return None
 
 
 def investigation_event(
-    *, action: str, config: LedgerConfig, hook_input: Mapping[str, Any], incident_key: str, thread_id: str
+    *,
+    action: str,
+    config: LedgerConfig,
+    hook_input: Mapping[str, Any],
+    incident_key: str,
+    service: Optional[str] = None,
+    thread_id: str,
 ) -> Optional[Dict[str, Any]]:
     """The `joined` or `closed` event for this session and investigation. None without an identity."""
     try:
         session_id = call_identity(hook_input, normalize_tool_call(hook_input)).session_id
     except Exception:
         return None
+    extra = {"agent": AGENT, "incident_key": incident_key, "session_id": session_id, "thread_id": thread_id}
+    if service is not None:
+        extra["service"] = service
     return ledger_envelope(
         account=config.account,
         correlation_id=thread_id,
         entity_id=thread_id,
         entity_type="investigation",
         event=f"agent.investigation.{action}",
-        extra={"agent": AGENT, "incident_key": incident_key, "session_id": session_id, "thread_id": thread_id},
+        extra=extra,
         message=f"{AGENT} {action} investigation {incident_key}"[:MAX_LEDGER_MESSAGE_CHARACTERS],
         session_id=session_id,
     )
@@ -1642,7 +1654,13 @@ def _lock_timeout(*, deadline: float) -> float:
 
 
 def _change_investigation(
-    *, action: str, config: LedgerConfig, deadline: float, hook_input: Mapping[str, Any], incident_key: str
+    *,
+    action: str,
+    config: LedgerConfig,
+    deadline: float,
+    hook_input: Mapping[str, Any],
+    incident_key: str,
+    service: Optional[str],
 ) -> Optional[Dict[str, Any]]:
     """Join or leave the investigation in the session state, and return its event. Never raises.
 
@@ -1660,6 +1678,8 @@ def _change_investigation(
 
         def join(state: Dict[str, Any]) -> None:
             state["investigation"] = {"incident_key": incident_key, "joined_at": joined_at, "thread_id": thread_id}
+            if service is not None:
+                state["investigation"]["service"] = service
 
         def leave(state: Dict[str, Any]) -> None:
             current = state.get("investigation")
@@ -1675,7 +1695,12 @@ def _change_investigation(
                 )
                 return None
             return investigation_event(
-                action=action, config=config, hook_input=hook_input, incident_key=incident_key, thread_id=thread_id
+                action=action,
+                config=config,
+                hook_input=hook_input,
+                incident_key=incident_key,
+                service=service,
+                thread_id=thread_id,
             )
         closed = investigation_event(
             action=action, config=config, hook_input=hook_input, incident_key=incident_key, thread_id=thread_id
@@ -1751,16 +1776,26 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
         # events are built and the state written, so a slow git lookup or lock can't push the save
         # past main()'s timer.
         deadline = time.monotonic() + LEDGER_TIMEOUT_SECONDS
-        action, incident_key = investigation_action(hook_input=event) or ("", "")
+        action, incident_key, service = investigation_action(hook_input=event) or ("", "", None)
         investigation: Optional[Dict[str, Any]] = None
         if action == "joined":
             investigation = _change_investigation(
-                action=action, config=config, deadline=deadline, hook_input=event, incident_key=incident_key
+                action=action,
+                config=config,
+                deadline=deadline,
+                hook_input=event,
+                incident_key=incident_key,
+                service=service,
             )
         new_event = _new_event(config=config, hook_input=event)
         if action == "closed":
             investigation = _change_investigation(
-                action=action, config=config, deadline=deadline, hook_input=event, incident_key=incident_key
+                action=action,
+                config=config,
+                deadline=deadline,
+                hook_input=event,
+                incident_key=incident_key,
+                service=None,
             )
         sent: List[LedgerSendResult] = []
         sent_investigation: List[LedgerSendResult] = []
