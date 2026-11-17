@@ -654,6 +654,27 @@ class FieldTests(LedgerTestCase):
                     self.assert_valid(event)
                     self.assertEqual(event["extra"]["intent_source"], "none")
 
+    def test_investigation_join_and_close_are_named_for_what_they_record(self) -> None:
+        cli = "python3 ~/.codex/hooks/ledger_investigation.py"
+        echo = f"echo {cli} close --incident-key {INCIDENT_KEY}"
+        config = ledger.load_ledger_config()
+        for command, intent, source in (
+            (f"{cli} close --incident-key {INCIDENT_KEY}", "Investigation closed", "investigation"),
+            (f"{cli} join --incident-key {INCIDENT_KEY} --service checkout", "Investigation joined", "investigation"),
+            (echo, "codex.Bash: " + echo[:80], "none"),
+        ):
+            with self.subTest(command=command):
+                fields = {"tool_input": {"command": command}}
+                started = ledger.ledger_event(config=config, hook_input=hook_input("PreToolUse", **fields), kind="started")
+                ran = ledger.ledger_event(
+                    config=config, hook_input=hook_input("PostToolUse", tool_response="done", **fields), kind="ran"
+                )
+                self.assertEqual(started["message"], intent)
+                self.assertEqual(ran["message"], f"{intent}: ran - done")
+                for event in (started, ran):
+                    self.assert_valid(event)
+                    self.assertEqual(event["extra"]["intent_source"], source)
+
     def test_the_envelope_names_codex_as_an_agent(self) -> None:
         fake = self.fake()
         self.run_hook(hook_input(), fake)
