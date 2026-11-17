@@ -623,6 +623,18 @@ def _investigation_call(words: Sequence[str]) -> Optional[Tuple[str, str, Option
     return subcommand, key, None if service is None else service.strip()
 
 
+def _investigation_intent(tool: Any) -> Optional[str]:
+    """The title of a Bash call that runs the investigation CLI's join or close, "Investigation
+    joined" or "Investigation closed", else None. Those calls are records, not tasks, so the
+    agent's own wording, which reads as an instruction, is not their title.
+    """
+    command = tool.arguments.get("command")
+    if (tool.namespace, tool.name) != (AGENT, "Bash") or not isinstance(command, str):
+        return None
+    call = _investigation_call(_command_words(command))
+    return f"Investigation {INVESTIGATION_ACTIONS[call[0]]}" if call else None
+
+
 def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str, str, Optional[str]]]:
     """("joined" or "closed", incident_key, service) when this Bash call ran the investigation CLI's
     join or close and it succeeded, else None. Never raises.
@@ -943,7 +955,8 @@ def ledger_event(
     target, access = resolve_target(tool.namespace, tool.name, tool.arguments)
     description = tool.arguments.get("description") if (tool.namespace, tool.name) == (AGENT, "Bash") else None
     described = isinstance(description, str) and bool(description.strip())
-    intent = _one_line(description) if described else f"{tool.namespace}.{tool.name}"
+    investigation = _investigation_intent(tool)
+    intent = investigation or (_one_line(description) if described else f"{tool.namespace}.{tool.name}")
     context = ledger_context(account=config.account, hook_input=hook_input)
 
     extra: Dict[str, Any] = {"access": access, "agent": AGENT}
@@ -960,7 +973,7 @@ def ledger_event(
         extra["exit_status"] = exit_status
     if "incident_key" in context:
         extra["incident_key"] = context["incident_key"]
-    extra["intent_source"] = "tool_description" if described else "none"
+    extra["intent_source"] = "investigation" if investigation else "tool_description" if described else "none"
 
     line = ""
     if kind == "not_run":

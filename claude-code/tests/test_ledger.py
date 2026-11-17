@@ -547,6 +547,19 @@ class FieldTests(LedgerTestCase):
             (hook_input, {"tool_input": {"command": "ls", "description": 5}}, "claude_code.Bash", "none"),
             (mcp_input, {}, "kubernetes_demo.pods_delete", "none"),
             (mcp_input, {"tool_input": {"description": "Delete it"}}, "kubernetes_demo.pods_delete", "none"),
+            # The investigation CLI's join and close are records, whatever the agent called them.
+            (hook_input, {"tool_input": {
+                "command": f'python3 "/plugin/scripts/ledger_investigation.py" close --incident-key {INCIDENT_KEY}',
+                "description": "Close the ledger investigation",
+            }}, "Investigation closed", "investigation"),
+            (hook_input, {"tool_input": {
+                "command": f'python3 "/plugin/scripts/ledger_investigation.py" join --incident-key {INCIDENT_KEY}',
+                "description": "Join the ledger investigation for the incident",
+            }}, "Investigation joined", "investigation"),
+            (hook_input, {"tool_input": {
+                "command": f"echo python3 ledger_investigation.py close --incident-key {INCIDENT_KEY}",
+                "description": "Show the close command",
+            }}, "Show the close command", "tool_description"),
         ]
         for builder, fields, intent, source in cases:
             with self.subTest(fields=fields, builder=builder.__name__):

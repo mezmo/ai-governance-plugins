@@ -114,7 +114,7 @@ MAX_REFERENCES = 20
 MEMORY_BRIEF_TOOL_NAME = "mezmo_memory_brief"
 # For application.version. A file install has no manifest beside the script, so this is a
 # constant, and test_ledger.py checks it against .codex-plugin/plugin.json.
-LEDGER_VERSION = "0.5.1"
+LEDGER_VERSION = "0.5.2"
 # The socket timeout of each request this hook makes, and the deadline its main thread waits for
 # its ledger threads from when they start. A socket timeout alone bounds neither DNS nor the whole
 # request, hence the threads. Read at call time, so a test can patch it.
@@ -979,9 +979,10 @@ def ledger_event(
         return None
     target, access = resolve_target(tool.namespace, tool.name, tool.arguments)
     # Codex gives a call no description, so the intent is its name and the start of its command.
-    intent = f"{tool.namespace}.{tool.name}"
+    investigation = _investigation_intent(tool)
+    intent = investigation or f"{tool.namespace}.{tool.name}"
     command = tool.arguments.get("command")
-    if isinstance(command, str) and command.strip():
+    if not investigation and isinstance(command, str) and command.strip():
         intent += f": {_one_line(command)[:MAX_INTENT_COMMAND_CHARACTERS]}"
     context = ledger_context(account=config.account, hook_input=hook_input)
 
@@ -998,7 +999,7 @@ def ledger_event(
         extra["exit_status"] = exit_status
     if "incident_key" in context:
         extra["incident_key"] = context["incident_key"]
-    extra["intent_source"] = "none"
+    extra["intent_source"] = "investigation" if investigation else "none"
 
     line = ""
     if kind == "not_run":
@@ -1077,6 +1078,18 @@ def _investigation_call(words: Sequence[str]) -> Optional[Tuple[str, str, Option
         return None
     service = given.get("--service")
     return subcommand, key, None if service is None else service.strip()
+
+
+def _investigation_intent(tool: Any) -> Optional[str]:
+    """The title of a Bash call that runs the investigation CLI's join or close, "Investigation
+    joined" or "Investigation closed", else None. Those calls are records, not tasks, so the
+    agent's own wording, which reads as an instruction, is not their title.
+    """
+    command = tool.arguments.get("command")
+    if (tool.namespace, tool.name) != (AGENT, "Bash") or not isinstance(command, str):
+        return None
+    call = _investigation_call(_command_words(command))
+    return f"Investigation {INVESTIGATION_ACTIONS[call[0]]}" if call else None
 
 
 def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str, str, Optional[str]]]:
