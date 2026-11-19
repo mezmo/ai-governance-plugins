@@ -37,9 +37,11 @@ class MockGovernanceTests(unittest.TestCase):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         state = tempfile.TemporaryDirectory()
         self.addCleanup(state.cleanup)
-        # The real hook sends ledger events when these are set, so the developer's own stay out.
+        # The real hook sends ledger events when these are set, so the developer's own stay out. HOME
+        # too: the Codex hook reads the settings and key a developer's own setup saved there.
         self.env = {
             **{key: value for key, value in os.environ.items() if not key.startswith("MEZMO_LEDGER_")},
+            "HOME": state.name,
             "MEZMO_GOVERNANCE_URL": f"http://127.0.0.1:{self.server.server_port}{mock_governance.PATH}",
             "MEZMO_GOVERNANCE_TOKEN": "local-test",
             "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "2",
