@@ -5,6 +5,7 @@ command, so it runs as a script against an audit-service defined here, with the 
 session state in a temp folder and no setting of the developer's own.
 """
 
+import hashlib
 import json
 import os
 import pathlib
@@ -28,7 +29,7 @@ INCIDENT_KEY = "pagerduty:Q34FCCWSTU9OI2"
 # Prints the incident key launch sets, and the investigation id older releases set, as the command sees them.
 PRINT_ENV = (
     "import json, os; print(json.dumps({name: os.environ.get(name) for name in "
-    "('MEZMO_LEDGER_INCIDENT_KEY', 'MEZMO_LEDGER_INVESTIGATION_ID')}))"
+    "('MEZMO_LEDGER_INCIDENT_KEY', 'MEZMO_LEDGER_INVESTIGATION_ID', 'MEZMO_LEDGER_LAUNCHED')}))"
 )
 # Creates the file named by its argument, so a test can tell whether the command ran.
 TOUCH = "import pathlib, sys; pathlib.Path(sys.argv[1]).touch()"
@@ -164,11 +165,16 @@ class LaunchTests(unittest.TestCase):
     def events(self) -> List[Dict[str, Any]]:
         return [event for request in self.recorder.requests for event in request["body"]]
 
-    def test_launch_sends_opened_and_sets_only_the_incident_key_for_the_command(self) -> None:
+    def test_launch_sends_opened_and_sets_the_incident_key_and_its_marker_for_the_command(self) -> None:
         result = self.launch("launch", "--incident-key", INCIDENT_KEY, "--", sys.executable, "-c", PRINT_ENV)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            json.loads(result.stdout), {"MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY, "MEZMO_LEDGER_INVESTIGATION_ID": None}
+            json.loads(result.stdout),
+            {
+                "MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY,
+                "MEZMO_LEDGER_INVESTIGATION_ID": None,
+                "MEZMO_LEDGER_LAUNCHED": hashlib.sha256(INCIDENT_KEY.encode()).hexdigest()[:16],
+            },
         )
         (opened,) = self.events()
         # No account and no correlation_id: the ledger service sets them from the key and the incident key.
@@ -181,6 +187,39 @@ class LaunchTests(unittest.TestCase):
         # Whole, with no session_id and, since git reports no email here, no person_email.
         self.assertEqual(opened["extra"], {"agent": "claude_code", "incident_key": INCIDENT_KEY, "opened_by": "alert"})
         self.assertFalse(self.spool.exists())
+
+    def run_ledger_hook(self, *argv: str) -> subprocess.CompletedProcess:
+        """ledger_hook.py on a Bash call's PreToolUse, under `launch` when `argv` holds its arguments."""
+        hook = [sys.executable, str(SCRIPTS / "ledger_hook.py")]
+        command = [sys.executable, str(SCRIPTS / "ledger_investigation.py"), *argv, "--", *hook] if argv else hook
+        event = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-1",
+            "tool_input": {"command": "ls", "description": "List files"},
+            "tool_name": "Bash",
+            "tool_use_id": "tool-use-1",
+        }
+        return subprocess.run(
+            command, capture_output=True, check=False, cwd=self.dir, env=self.env, input=json.dumps(event),
+            text=True, timeout=30,
+        )
+
+    def started(self) -> Dict[str, Any]:
+        (started,) = [event for event in self.events() if event["event"] == "agent.tool_call.started"]
+        return started
+
+    def test_a_call_under_launch_is_filed_under_its_incident_key(self) -> None:
+        result = self.run_ledger_hook("launch", "--incident-key", INCIDENT_KEY)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.started()["extra"]["incident_key"], INCIDENT_KEY)
+        self.assertNotIn("ignores", result.stderr)
+
+    def test_an_incident_key_set_without_launch_is_not_sent_and_warns(self) -> None:
+        self.env["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
+        result = self.run_ledger_hook()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("incident_key", self.started()["extra"])
+        self.assertIn(f"Mezmo ledger ignores MEZMO_LEDGER_INCIDENT_KEY={INCIDENT_KEY}", result.stderr)
 
     def test_launch_sends_the_service_on_opened(self) -> None:
         result = self.launch("launch", "--incident-key", INCIDENT_KEY, "--service", "checkout", *self.touch())

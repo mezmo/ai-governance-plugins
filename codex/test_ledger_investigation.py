@@ -8,6 +8,7 @@ defined here, with no setting of the developer's own.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -87,7 +88,8 @@ class LedgerInvestigationTests(unittest.TestCase):
                 sys.executable, str(hooks / "ledger_investigation.py"), "launch", "--incident-key", INCIDENT_KEY,
                 "--service", "checkout", "--",
                 sys.executable, "-c",
-                "import os; print(os.environ['MEZMO_LEDGER_INCIDENT_KEY'], os.environ.get('MEZMO_LEDGER_INVESTIGATION_ID'))",
+                "import os; print(os.environ['MEZMO_LEDGER_INCIDENT_KEY'], os.environ.get('MEZMO_LEDGER_INVESTIGATION_ID'),"
+                " os.environ.get('MEZMO_LEDGER_LAUNCHED'))",
             ],
             capture_output=True,
             check=False,
@@ -98,7 +100,8 @@ class LedgerInvestigationTests(unittest.TestCase):
             timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, f"{INCIDENT_KEY} None\n")
+        marker = hashlib.sha256(INCIDENT_KEY.encode()).hexdigest()[:16]
+        self.assertEqual(result.stdout, f"{INCIDENT_KEY} None {marker}\n")
         ((opened,),) = requests
         # No account, correlation_id or entity_id: the ledger service sets them from the key and the incident key.
         self.assertEqual(opened["actor"], {"pk": "codex:launcher", "type": "agent"})
@@ -117,6 +120,67 @@ class LedgerInvestigationTests(unittest.TestCase):
             },
         )
         self.assertFalse((folder / "spool").exists())
+
+    def run_ledger_hook(self, *argv: str, incident_key: str | None = None) -> tuple[subprocess.CompletedProcess[str], list[Any]]:
+        """mezmo_ledger_hook.py on a Bash call's PreToolUse, under `launch` when `argv` holds its arguments.
+
+        Returns the run and the events the ledger was sent.
+        """
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        folder = Path(scratch.name)
+        hooks = folder / "hooks"
+        hooks.mkdir()
+        for name in SCRIPTS:
+            shutil.copy(ADAPTER_DIR / name, hooks / name)
+        requests: list[Any] = []
+        git_config = folder / "gitconfig"
+        git_config.touch()
+        env = {
+            "GIT_CONFIG_GLOBAL": str(git_config),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_DIR": str(folder / "no-git"),
+            "HOME": str(folder),
+            "MEZMO_GOVERNANCE_AUDIT_LOG": str(folder / "audit.jsonl"),
+            "MEZMO_GOVERNANCE_STATE_DIR": str(folder / "codex-sessions"),
+            "MEZMO_LEDGER_KEY": "ledger-test",
+            "MEZMO_LEDGER_SPOOL": str(folder / "spool" / "ledger-spool.jsonl"),
+            "MEZMO_LEDGER_URL": serve(requests, self),
+            "NO_PROXY": "*",
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        }
+        if incident_key is not None:
+            env["MEZMO_LEDGER_INCIDENT_KEY"] = incident_key
+        hook = [sys.executable, str(hooks / "mezmo_ledger_hook.py")]
+        command = [sys.executable, str(hooks / "ledger_investigation.py"), *argv, "--", *hook] if argv else hook
+        event = {
+            "cwd": str(folder),
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-1",
+            "tool_input": {"command": "ls"},
+            "tool_name": "Bash",
+            "tool_use_id": "tool-use-1",
+            "turn_id": "turn-1",
+        }
+        result = subprocess.run(
+            command, capture_output=True, check=False, cwd=folder, env=env, input=json.dumps(event), text=True,
+            timeout=30,
+        )
+        return result, [event for request in requests for event in request]
+
+    def test_a_call_under_launch_is_filed_under_its_incident_key(self) -> None:
+        result, events = self.run_ledger_hook("launch", "--incident-key", INCIDENT_KEY)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (started,) = [event for event in events if event["event"] == "agent.tool_call.started"]
+        self.assertEqual(started["extra"]["incident_key"], INCIDENT_KEY)
+        self.assertNotIn("ignores", result.stderr)
+
+    def test_an_incident_key_set_without_launch_is_not_sent_and_warns(self) -> None:
+        result, events = self.run_ledger_hook(incident_key=INCIDENT_KEY)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (started,) = [event for event in events if event["event"] == "agent.tool_call.started"]
+        self.assertNotIn("incident_key", started["extra"])
+        self.assertIn(f"Mezmo ledger ignores MEZMO_LEDGER_INCIDENT_KEY={INCIDENT_KEY}", result.stderr)
 
 
 if __name__ == "__main__":

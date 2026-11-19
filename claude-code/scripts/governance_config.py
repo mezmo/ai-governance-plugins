@@ -30,6 +30,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import claude_code_otel as cco
+import ledger as mezmo_ledger
 import mcp_config
 import mezmo_common as mc
 
@@ -56,6 +57,8 @@ REQUIRED_ENV = "MEZMO_GOVERNANCE_REQUIRED"
 LEDGER_URL_ENV = "MEZMO_LEDGER_URL"
 LEDGER_KEY_ENV = "MEZMO_LEDGER_KEY"
 LEDGER_SPOOL_ENV = "MEZMO_LEDGER_SPOOL"
+# Read by releases before 0.6.0 only.
+LEDGER_ACCOUNT_ENV = "MEZMO_LEDGER_ACCOUNT"
 SETTINGS_KEYS = (URL_ENV,) + KEY_ENVS + (REQUIRED_ENV, LEDGER_URL_ENV, LEDGER_KEY_ENV)
 FALSE_VALUES = ("0", "false", "no", "off")
 # Written by governance_hook.py, one file per Claude Code session.
@@ -324,6 +327,45 @@ def ledger_report(
     return report
 
 
+def ledger_leftovers(
+    settings: Mapping[str, Any], environ: Mapping[str, str], managed_files: Sequence[pathlib.Path]
+) -> List[str]:
+    """Warnings for ledger variables the hooks would see but ignore, highest source first.
+
+    The hooks take MEZMO_LEDGER_INCIDENT_KEY only beside the marker ledger_investigation.py launch
+    sets, and no release since 0.6.0 reads MEZMO_LEDGER_ACCOUNT.
+    """
+    names = (mezmo_ledger.LEDGER_INCIDENT_KEY_ENV, mezmo_ledger.LEDGER_LAUNCHED_ENV, LEDGER_ACCOUNT_ENV)
+    sources: List[Tuple[str, Mapping[str, Any]]] = []
+    for path in managed_files:
+        try:
+            env = json.loads(path.read_text(encoding="utf-8")).get("env", {})
+        except (OSError, ValueError, AttributeError):
+            continue
+        sources.append((f"managed settings ({path})", env if isinstance(env, dict) else {}))
+    env = settings.get("env")
+    sources.append(("user settings", env if isinstance(env, dict) else {}))
+    sources.append(("environment", dict(environ)))
+    found = [
+        (source, {name: values[name].strip() for name in names if isinstance(values.get(name), str) and values[name].strip()})
+        for source, values in sources
+    ]
+    warnings = []
+    incident = _first(found, (mezmo_ledger.LEDGER_INCIDENT_KEY_ENV,))
+    if incident is not None:
+        marker = _first(found, (mezmo_ledger.LEDGER_LAUNCHED_ENV,))
+        if marker is None or marker[1] != mezmo_ledger.launch_marker(incident[1]):
+            warnings.append(
+                f"{mezmo_ledger.LEDGER_INCIDENT_KEY_ENV}={incident[1]} is set (from {incident[0]}), but not by ledger_investigation.py "
+                "launch, so the ledger hooks ignore it: tool calls outside an investigation are not filed under it. "
+                "Remove it."
+            )
+    account = _first(found, (LEDGER_ACCOUNT_ENV,))
+    if account is not None:
+        warnings.append(f"{LEDGER_ACCOUNT_ENV} is set (from {account[0]}), but unused since 0.6.0. Remove it.")
+    return warnings
+
+
 def _saved_options(settings: Mapping[str, Any], plugin_id: str) -> Optional[Dict[str, Any]]:
     """The plugin's non-sensitive options in the settings file's pluginConfigs, or None."""
     configs = settings.get("pluginConfigs")
@@ -555,12 +597,16 @@ def main(
                   "Set the plugin's ledger_enabled option to false to turn it off.")
             if ledger_result is not None and not ledger_result.ok:
                 print("Warning: the ledger check failed, so records wait in the retry file until the ledger takes them.")
+            connected = False
             if mcp_url:
-                if mcp_config.connect(mcp_config.clean_key(key), mcp_url, claude, send,
-                                      force=True, check=not args.skip_check) != 0:
+                connected = mcp_config.connect(mcp_config.clean_key(key), mcp_url, claude, send,
+                                               force=True, check=not args.skip_check, restart=False) == 0
+                if not connected:
                     print("Warning: Mezmo MCP isn't connected, so Claude can't read the ledger. Governance and the "
                           "ledger are set up. Run /mezmo:setup mcp to connect it.")
-            print("Start a new Claude Code session to apply it.")
+            # The session that ran setup has neither the new settings nor the MCP server's tools.
+            print("Restart Claude Code (`claude --continue` keeps this conversation) to apply it and to use the Mezmo MCP."
+                  if connected else "Start a new Claude Code session to apply it.")
             return 0
 
         if args.command == "saved-key":
@@ -632,6 +678,7 @@ def main(
             ledger["last_send"] = latest_ledger_send(pathlib.Path(state_dir).expanduser())
             ledger["last_send_ok"], last_send_line = describe_last_send(ledger["last_send"])
             report["ledger"] = ledger
+            report["warnings"] = ledger_leftovers(settings, environ, managed_files)
             if args.json:
                 print(json.dumps(report, indent=2))
                 return 0
@@ -676,6 +723,8 @@ def main(
                 failed = "FAIL: " if ledger["last_send_ok"] is False else ""
                 print(f"  {failed}Ledger: {last_send_line}")
             print(f"  Waiting in the retry file ({ledger['retry_file']}): {ledger['waiting']}")
+            for warning in report["warnings"]:
+                print(f"Warning: {warning}")
             return 0
 
         if args.command == "check":

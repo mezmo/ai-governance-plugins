@@ -118,6 +118,15 @@ class CliTest(unittest.TestCase):
         self.assertNotIn(KEY, out + err)
         self.assertIn("sts_…cdef", out)
 
+    def test_add_ends_by_telling_the_user_to_restart_claude_code(self):
+        code, out, err, _ = run("add", "--key", KEY)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(
+            out.splitlines()[-1], "Restart Claude Code (`claude --continue` keeps this conversation) to use the Mezmo MCP."
+        )
+        code, out, _, _ = run("add", "--key", KEY, http=FakeHttp(401, "{}"))
+        self.assertNotIn("Restart Claude Code", out)
+
     def test_add_reads_the_key_from_the_environment(self):
         code, _, err, claude = run("add", environ={"MEZMO_SERVICE_KEY": KEY})
         self.assertEqual(code, 0, err)

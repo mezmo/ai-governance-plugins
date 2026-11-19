@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -451,6 +452,27 @@ class CliTest(CliCase):
         self.assertEqual(report["url"], PROD_URL)
         self.assertNotIn(KEY, out)
 
+    def test_status_warns_of_ledger_variables_the_hooks_ignore(self):
+        marker = hashlib.sha256(b"pagerduty:TEST-1").hexdigest()[:16]
+        code, out, _ = self.run_cli("status", "--json")
+        self.assertEqual((code, json.loads(out)["warnings"]), (0, []))
+        environ = {"MEZMO_LEDGER_INCIDENT_KEY": "pagerduty:TEST-1", "MEZMO_LEDGER_ACCOUNT": "leftover"}
+        code, out, _ = self.run_cli("status", environ=environ)
+        self.assertEqual(code, 0)
+        self.assertIn("Warning: MEZMO_LEDGER_INCIDENT_KEY=pagerduty:TEST-1 is set (from environment), but not by "
+                      "ledger_investigation.py launch, so the ledger hooks ignore it", out)
+        self.assertIn("Warning: MEZMO_LEDGER_ACCOUNT is set (from environment), but unused since 0.6.0. Remove it.", out)
+        # Set by launch: nothing to warn of.
+        code, out, _ = self.run_cli("status", "--json", environ={**environ, "MEZMO_LEDGER_LAUNCHED": marker})
+        self.assertEqual(json.loads(out)["warnings"], [
+            "MEZMO_LEDGER_ACCOUNT is set (from environment), but unused since 0.6.0. Remove it.",
+        ])
+        # Another key in user settings wins, and the launch marker does not vouch for it.
+        self.settings.write_text(json.dumps({"env": {"MEZMO_LEDGER_INCIDENT_KEY": "jira:LOG-1"}}))
+        code, out, _ = self.run_cli("status", "--json", environ={"MEZMO_LEDGER_LAUNCHED": marker})
+        (warning,) = json.loads(out)["warnings"]
+        self.assertIn("MEZMO_LEDGER_INCIDENT_KEY=jira:LOG-1 is set (from user settings)", warning)
+
     def test_status_shows_the_ledger_and_its_retry_file(self):
         spool = self.dir / "ledger-spool.jsonl"
         spool.write_text('{"event":{},"url":"x"}\n{"event":{},"url":"x"}\n')
@@ -562,6 +584,21 @@ class SetupConnectsMcpTest(CliCase):
         self.assertEqual(check["headers"]["Authorization"], f"Bearer {KEY}")
         self.assertIn(f"Added the mezmo MCP server ({PROD_MCP_URL})", out)
         self.assertNotIn(KEY, out + err)
+
+    def test_connecting_the_mcp_server_ends_by_telling_the_user_to_restart_claude_code(self):
+        code, out, err = self.run_cli("configure", "--key", KEY)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.count("Restart Claude Code"), 1, out)
+        self.assertEqual(
+            out.splitlines()[-1],
+            "Restart Claude Code (`claude --continue` keeps this conversation) to apply it and to use the Mezmo MCP.",
+        )
+        for args, http in ((("--no-mcp",), FakeHttp()), ((), FakeHttp(mcp=(401, "{}")))):
+            with self.subTest(args=args):
+                code, out, err = self.run_cli("configure", "--key", KEY, *args, http=http)
+                self.assertEqual(code, 0, err)
+                self.assertNotIn("Restart Claude Code", out)
+                self.assertEqual(out.splitlines()[-1], "Start a new Claude Code session to apply it.")
 
     def test_another_api_url_needs_its_mcp_url_before_anything_is_checked_or_saved(self):
         claude, http = FakeClaude(), FakeHttp()

@@ -62,6 +62,8 @@ Arguments: $ARGUMENTS
 | `rejected the service account token (HTTP 401)` | Rerun `/mezmo:setup governance` with a current token. Records wait in the retry file and are resent once the token works. |
 | `Unexpected answer` or `HTTP 404` | The API URL has no ledger. Check the API URL in `/plugin configure mezmo@mezmo`. |
 | Records waiting in the retry file | The ledger was unreachable or refused them. Later tool calls resend them, up to 10 at a time; the file keeps at most 200. |
+| `Warning: MEZMO_LEDGER_INCIDENT_KEY=... is set ..., but not by ledger_investigation.py launch` | Say this loudly. The ledger hooks ignore an incident key in the environment unless `ledger_investigation.py launch` set it, so calls outside an investigation are not filed under it. A key left over from testing would otherwise file every call under that incident. Tell the user to remove it from where status says it's set, then restart Claude Code. To work on an incident, use `/mezmo:investigate`. |
+| `Warning: MEZMO_LEDGER_ACCOUNT is set ...` | It's unused since 0.6.0: the ledger takes the account from the key. Tell the user to remove it. |
 
 ## Telemetry
 
@@ -116,6 +118,8 @@ Arguments: $ARGUMENTS
    | `✔ Connected` | Claude Code connects. New sessions have tools named `mcp__mezmo__<tool>`. |
    | Failed to connect, `401` | Mezmo rejected the service key. Run `/mezmo:setup mcp` with a current key and replace the server. |
    | A server called `mezmo` with another URL | Something else uses the name `mezmo`. `/mezmo:setup mcp` can replace it if it's in user scope. |
+
+3. If the server is set up, check whether this session has its tools: whether a tool named `mcp__mezmo__get_ledger_investigation` is among your tools, loaded or deferred. Don't call it. Claude Code loads MCP servers when a session starts, so a server added or changed during this session has no tools here. If it isn't available, tell the user: "Restart Claude Code (`claude --continue` keeps this conversation) to use the Mezmo MCP."
 
 ## Verify arrival and an actual governed call
 

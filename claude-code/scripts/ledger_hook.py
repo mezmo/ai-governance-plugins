@@ -247,6 +247,10 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
         # events are built and the state written, so a slow git lookup or lock can't push the save
         # past it.
         deadline = time.monotonic() + ledger.LEDGER_TIMEOUT_SECONDS
+        ledger.warn_ignored_incident_key(
+            hook_input=event,
+            update=lambda change: update_session_state(event, change, lock_timeout=_lock_timeout(deadline=deadline)),
+        )
         investigation = ledger.investigation_action(hook_input=event)
         investigation_event: Optional[Dict[str, Any]] = None
         if investigation is not None and investigation[0] == "joined":

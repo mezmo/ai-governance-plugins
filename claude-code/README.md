@@ -31,7 +31,8 @@ working.
    same token, so Claude can read the ledger. One token and one URL turn on all three. For an API
    URL other than production, it asks once for the MCP URL. On a Mac where the Codex plugin's
    setup already saved a Mezmo key, it offers to use that key instead of asking for one.
-3. **Check it**: start a new session and run `/mezmo:test`. It shows the ledger's last send,
+3. **Check it**: restart Claude Code (`claude --continue` keeps the conversation), since a session
+   loads MCP servers only when it starts, and run `/mezmo:test`. It shows the ledger's last send,
    such as `Ledger: last send 16:14:40 UTC to api.mezmo.com, HTTP 202, 2 events`.
 4. **Investigate**: ask Claude to investigate an incident. It joins the incident's
    [investigation](#investigations) and reads the ledger first, so it sees what other agents and
@@ -333,7 +334,7 @@ Environment variables win over the plugin options, which win over the defaults:
 | --- | --- |
 | `MEZMO_LEDGER_URL` | Ledger events URL. Defaults to the API URL plus `/v1/audit/events`. When set, the ledger is on even with `ledger_enabled` off, as from managed settings |
 | `MEZMO_LEDGER_KEY` | Mezmo service key. Defaults to the governance key: `MEZMO_GOVERNANCE_ACCESS_KEY`, `MEZMO_GOVERNANCE_TOKEN`, then the plugin option |
-| `MEZMO_LEDGER_INCIDENT_KEY` | Incident the session is working on, such as `pagerduty:<incident id>` |
+| `MEZMO_LEDGER_INCIDENT_KEY` | Incident the session is working on, such as `pagerduty:<incident id>`. Honored only when the [launcher](#investigations) set it |
 | `MEZMO_LEDGER_SPOOL` | Retry file. Defaults to `~/.mezmo/ledger-spool.jsonl` |
 
 The key is sent as `Authorization: Token <key>`, or as given when it starts with `Token ` or
@@ -388,7 +389,11 @@ python3 scripts/ledger_investigation.py launch --incident-key <key> [--service <
 
 It sends `opened` with `opened_by: "alert"` and the service when given, then runs the command with
 `MEZMO_LEDGER_INCIDENT_KEY` set, so a `claude -p` it starts files every call under the
-investigation. Its exit code is the command's. Plugin options reach only Claude Code's hooks, so
+investigation. It also sets `MEZMO_LEDGER_LAUNCHED` to a marker tied to that key. The ledger hook
+takes the incident key from the environment only with that marker, so a `MEZMO_LEDGER_INCIDENT_KEY`
+set any other way, such as one left from testing, is ignored instead of filing every call outside an
+investigation under it. The hook says so once per session, and `/mezmo:test` warns of it. A
+session's own investigation, from `join`, wins over the environment either way. Its exit code is the command's. Plugin options reach only Claude Code's hooks, so
 export `MEZMO_LEDGER_KEY` (or `MEZMO_GOVERNANCE_ACCESS_KEY`) in the shell you run it from, and
 `MEZMO_LEDGER_URL` for an API other than production. Without a key it runs nothing.
 
@@ -481,6 +486,9 @@ would read it from stdin, but Claude Code refuses that inside a Claude Code sess
 runs.
 
 The server is available in every project, in new sessions, with tools named `mcp__mezmo__<tool>`.
+Claude Code loads MCP servers when a session starts, so the session that ran setup doesn't have
+them: restart Claude Code (`claude --continue` keeps the conversation) to use them. `/mezmo:test`
+says so when the server is set up but this session has no `mezmo` tools.
 Claude Code keeps the key as plain text in `~/.claude.json`, as with any server added this way.
 Some tools change pipelines: they create, update, delete, pause and publish them. Claude Code asks
 before each MCP tool call unless you allow it. With governance on, these calls also go through
@@ -540,6 +548,9 @@ Governance also needs the plugin installed on each machine. Add `extraKnownMarke
 | Telemetry checks pass, but nothing shows up in Mezmo | Start a new session, make sure a pipeline has an OpenTelemetry source, and give metrics a minute |
 | Telemetry setup reports conflicting settings | Your settings already send OpenTelemetry somewhere else. Claude Code only exports to one endpoint |
 | `/mezmo:test` shows the ledger's last send failed with `HTTP 401` | The ledger rejected the token: a wrong key, or one for another account. Run `/mezmo:setup governance` with the right service account token |
+| `get_ledger_investigation` isn't available right after setup | The session started before setup connected the MCP server. Restart Claude Code; `claude --continue` keeps the conversation |
+| `/mezmo:test` warns that `MEZMO_LEDGER_INCIDENT_KEY` is ignored | It is set, but not by the [launcher](#investigations), so calls outside an investigation aren't filed under it. Remove it where status says it's set |
+| `/mezmo:test` warns that `MEZMO_LEDGER_ACCOUNT` is set | No release since 0.6.0 reads it. Remove it |
 | The `mezmo` MCP server fails to connect with `401` | Mezmo rejected the service key. Run `/mezmo:setup mcp` with a current key and replace the server |
 
 To see Claude Code's own telemetry export log:
