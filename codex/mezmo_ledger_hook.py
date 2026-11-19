@@ -8,8 +8,9 @@ Codex runs it alongside mezmo_governance_hook.py for every tool call.
 - Codex does not report a failed Bash command, so those are sent as `ran`.
 - A call governance refuses is sent as `not_run`. The governance hook reports it through
   `end_governance_refusal`, because Codex says nothing more about a denied call.
-- Off unless MEZMO_LEDGER_URL is set. The ledger service takes the account from the key and the
-  investigation from `extra.incident_key`.
+- On whenever there is a key and a ledger URL: the environment, else what mezmo_setup.py saved, else
+  the production API (mezmo_settings.py). ledger_enabled false in ~/.mezmo/codex.json turns it off.
+  The ledger service takes the account from the key and the investigation from `extra.incident_key`.
 - It always exits 0 and prints no hook output, so it can never block or change a tool call.
 - A Bash call that runs ledger_investigation.py join or close, and printed its result line, also
   joins or leaves the investigation in the session state and sends `joined` or `closed`.
@@ -57,6 +58,7 @@ from mezmo_governance_hook import (  # noqa: E402
     normalize_tool_call,
     refuse_exposed_token,
 )
+import mezmo_settings  # noqa: E402
 
 GOVERNANCE_TOKEN_ENV = "MEZMO_GOVERNANCE_TOKEN"
 GOVERNANCE_URL_ENV = "MEZMO_GOVERNANCE_URL"
@@ -277,31 +279,28 @@ def _locked(path: Path, timeout: Optional[float] = None) -> Iterator[None]:
 
 def governance_configured() -> bool:
     """Whether the governance hook has both of its settings, so this call has a decision there."""
-    return _setting(GOVERNANCE_TOKEN_ENV) is not None and _setting(GOVERNANCE_URL_ENV) is not None
+    return mezmo_settings.governance_key().value is not None and mezmo_settings.governance_url().value is not None
 
 
 def ledger_configured() -> bool:
-    """Whether Mezmo ledger sending is on: MEZMO_LEDGER_URL is set. Prints nothing."""
-    return _setting(LEDGER_URL_ENV) is not None
+    """Whether Mezmo ledger sending is on: there is a key and a ledger URL (see mezmo_settings.py)."""
+    return mezmo_settings.ledger_url().value is not None and mezmo_settings.ledger_key().value is not None
 
 
 def load_ledger_config() -> Optional[LedgerConfig]:
     """The ledger settings, or None when sending is off or the settings aren't safe to use."""
-    url = _setting(LEDGER_URL_ENV)
-    if url is None:
+    url = mezmo_settings.ledger_url().value
+    # MEZMO_LEDGER_KEY, else the governance key (environment, then key store). No key, no ledger.
+    key, key_setting = mezmo_settings.ledger_key()
+    if url is None or key is None:
         return None
-    # MEZMO_LEDGER_KEY, else the governance token, else no header.
-    key = _setting(LEDGER_KEY_ENV)
-    key_setting = LEDGER_KEY_ENV
-    if key is None:
-        key = _setting(GOVERNANCE_TOKEN_ENV)
-        key_setting = GOVERNANCE_TOKEN_ENV
     # The messages name the setting, never its value.
     try:
         refuse_exposed_token(url, "")
     except (HookContractError, ValueError):
         print(
-            f"Mezmo ledger sending is off: {LEDGER_URL_ENV} must use https://, or http:// to this machine, "
+            f"Mezmo ledger sending is off: the ledger URL ({mezmo_settings.ledger_url().source}) must use https://, "
+            "or http:// to this machine, "
             "with no user name or password",
             file=sys.stderr,
         )

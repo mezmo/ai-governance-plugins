@@ -288,6 +288,7 @@ class InstallTests(CliTestCase):
         copied = {
             "codex": (
                 "codex/hooks/mezmo_governance_hook.py", "codex/hooks/mezmo_ledger_hook.py", "codex/hooks/ledger_investigation.py",
+                "codex/hooks/mezmo_settings.py", "codex/hooks/mezmo_setup.py",
             ),
             "cursor": ("home/.cursor/hooks/mezmo_governance_hook.py",),
             "copilot": ("copilot/hooks/mezmo_governance_hook.py", "copilot/hooks/mezmo-governance.json"),
@@ -703,8 +704,8 @@ class InstallTests(CliTestCase):
             self.assertEqual(len(group["hooks"]), 2, event)
             ledger = {"command": f'python3 "{self.tmp}/codex/hooks/mezmo_ledger_hook.py" || true', "timeout": timeout, "type": "command"}
             self.assertEqual(group["hooks"][1], ledger)
-        # Beside it, the investigation CLI, which no handler runs.
-        for name in ("mezmo_ledger_hook.py", "ledger_investigation.py"):
+        # Beside it, the investigation CLI, which no handler runs, the settings loader and the setup command.
+        for name in ("mezmo_ledger_hook.py", "ledger_investigation.py", "mezmo_settings.py", "mezmo_setup.py"):
             self.assertEqual((self.tmp / "codex/hooks" / name).read_bytes(), (REPO / "codex" / name).read_bytes())
         self.assertIn("next: Start codex, run /hooks, and trust the four Mezmo hook entries", result.stdout)
         # No other agent has a ledger script.
@@ -823,7 +824,7 @@ class InstallTests(CliTestCase):
                                 ("antigravity", "home/.gemini/config")):
             (self.tmp / folder / "hooks").mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO / adapter / "mezmo_governance_hook.py", self.tmp / folder / "hooks")
-        for name in ("mezmo_ledger_hook.py", "ledger_investigation.py"):
+        for name in ("mezmo_ledger_hook.py", "ledger_investigation.py", "mezmo_settings.py", "mezmo_setup.py"):
             shutil.copy2(REPO / "codex" / name, self.tmp / "codex/hooks")
         before = self.files()
         result = self.cli("install", "gemini-cli", "codex", "pi", "droid", "windsurf", "antigravity")
@@ -1089,6 +1090,26 @@ class CommandTests(CliTestCase):
         self.assertIn("Codex hook", result.stdout)
         self.assertNotIn("Claude Code", result.stdout)
         self.assertIn("ok    Codex smoke", result.stdout)
+
+    def test_setup_is_for_codex_and_runs_its_setup_script(self) -> None:
+        for args in (("setup",), ("setup", "cursor"), ("setup", "codex", "cursor"), ("setup", "codex", "--force")):
+            with self.subTest(args=args):
+                result = self.cli(*args)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn("Usage: ./mezmo-governance", result.stderr)
+        # --remove with nothing saved touches only the temp HOME: no codex.json names a key store.
+        mezmo = self.tmp / "home/.mezmo"
+        mezmo.mkdir(mode=0o700)
+        (mezmo / "codex-key").write_text("x\n")
+        result = self.cli("setup", "codex", "--remove")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("deleted the key from", result.stdout)
+        self.assertFalse((mezmo / "codex-key").exists())
+        # A check that fails saves nothing; the key comes from getpass, which reads stdin without a terminal.
+        result = self.cli("setup", "codex", stdin="http://api.example.test\n" + CANARY + "\n")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Nothing was saved", result.stderr)
+        self.assertEqual(sorted(path.name for path in mezmo.iterdir()), [])
 
     def test_mock_prints_the_export_lines(self) -> None:
         process = subprocess.Popen(

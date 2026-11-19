@@ -151,6 +151,9 @@ class DoctorTestCase(unittest.TestCase):
         path = self.home / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(REPO / adapter / name, path)
+        if adapter == "codex":
+            # The Codex scripts import the settings loader beside them.
+            shutil.copy(REPO / "codex" / "mezmo_settings.py", path.parent)
         return path
 
     def doctor(self, *args: str, **env: str | None) -> subprocess.CompletedProcess[str]:
@@ -210,7 +213,7 @@ class DoctorTestCase(unittest.TestCase):
 
 class SettingsTests(DoctorTestCase):
     def test_missing_settings_fail_and_skip_the_mezmo_check(self) -> None:
-        result = self.doctor(MEZMO_GOVERNANCE_URL=None, MEZMO_GOVERNANCE_TOKEN=None)
+        result = self.doctor(MEZMO_GOVERNANCE_URL=None, MEZMO_GOVERNANCE_TOKEN=None, MEZMO_LEDGER_URL=None)
 
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertStatus(result, "MEZMO_GOVERNANCE_URL", "FAIL")
@@ -700,6 +703,42 @@ class CodexTests(DoctorTestCase):
         self.assertStatus(result, "Codex smoke", "ok")
         self.assertEqual(len(self.lines(result, "Codex hook")), 2, result.stdout)
         self.assertNotIn("mezmo_ledger_hook.py", result.stdout)
+        self.assertIn("preToolUse (untrusted)", self.assertStatus(result, "Codex ledger trust", "warn"))
+
+    def test_settings_saved_by_setup_pass_with_no_variables(self) -> None:
+        # What setup codex saves: the API URL in codex.json, the key in a 0600 file (the store with no OS service).
+        self.install()
+        base = self.stub.url.rsplit("/governance/", 1)[0]
+        self.write(".mezmo/codex.json", {"api_url": base, "ledger_enabled": True, "key_store": "file"})
+        key = self.write(".mezmo/codex-key", CANARY + "\n")
+        key.chmod(0o600)
+        (self.home / ".mezmo").chmod(0o700)
+
+        def ledger(request: dict) -> tuple:
+            if request["path"] == "/v1/audit/events":
+                return 202, {"accepted": 0}
+            return 200, {"approved": True}
+
+        self.stub.answers[("POST", True)] = ledger
+
+        result = self.doctor(MEZMO_GOVERNANCE_URL=None, MEZMO_GOVERNANCE_TOKEN=None, MEZMO_LEDGER_URL=None)
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("codex.json, which only the Codex hooks read", self.assertStatus(result, "MEZMO_GOVERNANCE_URL", "ok"))
+        self.assertIn("codex-key", self.assertStatus(result, "MEZMO_GOVERNANCE_TOKEN", "ok"))
+        self.assertStatus(result, "Mezmo token", "ok")
+        self.assertIn("from ~/.mezmo/codex.json", self.line(result, "Codex ledger URL"))
+        self.assertIn("found (from ~/.mezmo/codex-key)", self.line(result, "Codex governance key"))
+        self.assertStatus(result, "Codex ledger", "ok")
+        batch = [request for request in self.stub.requests if request["path"] == "/v1/audit/events"]
+        self.assertEqual([(request["body"], request["auth"]) for request in batch], [([], f"Token {CANARY}")])
+
+        # ledger_enabled false: no batch is sent.
+        self.write(".mezmo/codex.json", {"api_url": base, "ledger_enabled": False, "key_store": "file"})
+        self.stub.requests.clear()
+        result = self.doctor(MEZMO_GOVERNANCE_URL=None, MEZMO_GOVERNANCE_TOKEN=None, MEZMO_LEDGER_URL=None)
+        self.assertIn("off: ledger_enabled is false", self.assertStatus(result, "Codex ledger", "info"))
+        self.assertEqual([request for request in self.stub.requests if request["path"] == "/v1/audit/events"], [])
 
     def test_the_file_hook_trust_is_what_codex_lists(self) -> None:
         # config.toml keeps a trusted_hash after the hook changes; only Codex can say it no longer matches.
@@ -1390,6 +1429,7 @@ class ConfigFolderTests(DoctorTestCase):
                 hook = folder / "mezmo_governance_hook.py"
                 hook.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(REPO / "codex" / "mezmo_governance_hook.py", hook)
+                shutil.copy(REPO / "codex" / "mezmo_settings.py", folder)
                 (folder / relative).parent.mkdir(parents=True, exist_ok=True)
                 (folder / relative).write_text(json.dumps(config(hook)))
                 self.agent(binary, version)

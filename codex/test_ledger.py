@@ -34,16 +34,20 @@ from unittest.mock import patch
 
 import mezmo_governance_hook as hook
 import mezmo_ledger_hook as ledger
+import mezmo_settings
 from test_hook import top_level_definitions
 
 ADAPTER_DIR = Path(__file__).resolve().parent
 HOOK_PATH = ADAPTER_DIR / "mezmo_governance_hook.py"
 LEDGER_PATH = ADAPTER_DIR / "mezmo_ledger_hook.py"
+SETTINGS_PATH = ADAPTER_DIR / "mezmo_settings.py"
 CLAUDE_CODE_SCRIPTS = ADAPTER_DIR.parent / "claude-code" / "scripts"
 
 # Never reached: the in-process tests pass a fake, and the guard in LedgerTestCase.setUp stops a
 # real request to it. `.invalid` never resolves, so this names no real host or port.
 LEDGER_URL = "https://audit.ledger.invalid/v1/events"
+# The ledger sends only with a key; tests about the key itself set or clear it.
+LEDGER_KEY = "ledger-test"
 REAL_POST_LEDGER = ledger.post_ledger_events
 # LedgerTestCase stands in for it, so no test picks up the developer's own git email.
 REAL_PERSON_EMAIL = ledger.person_email
@@ -66,6 +70,14 @@ DENY_STDOUT = (
 ).encode()
 INCIDENT_KEY = "pagerduty:Q34FCCWSTU9OI2"
 DROP = object()
+
+
+def turned_off(name: str) -> Any:
+    """What keeps the ledger off with `name` unset. Without MEZMO_LEDGER_URL the ledger sends beside the
+    governance URL, so only codex.json's ledger_enabled false turns it off."""
+    if name != "MEZMO_LEDGER_URL":
+        return contextlib.nullcontext()
+    return patch.object(mezmo_settings, "read_config", return_value={"ledger_enabled": False})
 PATCH = "*** Begin Patch\n*** Add File: notes.txt\n+hello\n*** End Patch"
 PATCH_RESPONSE = "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess. Updated the following files:\nA notes.txt\n"
 MCP_RESPONSE = {"content": [{"text": "pod deleted", "type": "text"}], "isError": False, "structuredContent": None}
@@ -338,6 +350,7 @@ class LedgerTestCase(unittest.TestCase):
             "HOME": str(self.dir),
             "MEZMO_GOVERNANCE_AUDIT_LOG": str(self.audit_log),
             "MEZMO_GOVERNANCE_STATE_DIR": str(self.state_dir),
+            "MEZMO_LEDGER_KEY": LEDGER_KEY,
             "MEZMO_LEDGER_SPOOL": str(self.spool),
             "MEZMO_LEDGER_URL": LEDGER_URL,
             "NO_PROXY": "*",
@@ -796,19 +809,16 @@ class FieldTests(LedgerTestCase):
         self.assertFalse(lost.exists())
         self.assertTrue(running.exists())
 
-    def test_decision_id_only_when_governance_has_both_settings(self) -> None:
+    def test_decision_id_only_when_governance_has_a_key(self) -> None:
         fake = self.fake()
         self.run_hook(hook_input("PostToolUse"), fake)
-        os.environ["MEZMO_GOVERNANCE_TOKEN"] = "sts_test"
-        self.run_hook(hook_input("PostToolUse"), fake)
+        # A blank URL is the production default, so the key alone makes governance configured.
         os.environ["MEZMO_GOVERNANCE_URL"] = "  "
-        self.run_hook(hook_input("PostToolUse"), fake)
-        os.environ["MEZMO_GOVERNANCE_URL"] = AUTHORIZE_URL
+        os.environ["MEZMO_GOVERNANCE_TOKEN"] = "sts_test"
         self.assertTrue(ledger.governance_configured())
         self.run_hook(hook_input("PostToolUse"), fake)
-        *off, on = fake.events()
-        for event in off:
-            self.assertNotIn("decision_id", event["extra"])
+        off, on = fake.events()
+        self.assertNotIn("decision_id", off["extra"])
         self.assertEqual(on["extra"]["decision_id"], on["extra"]["call_id"])
 
 
@@ -820,7 +830,8 @@ class StartTimeTests(LedgerTestCase):
             return hook.handle_event(hook_input(), http=GovernanceHttp((200, {"approved": True})))
 
     def test_an_approved_call_saves_its_start_time_only_while_the_ledger_is_on(self) -> None:
-        self.assertIsNone(self.approve({"MEZMO_LEDGER_URL": ""}))
+        with turned_off("MEZMO_LEDGER_URL"):
+            self.assertIsNone(self.approve({"MEZMO_LEDGER_URL": ""}))
         self.assertFalse(self.state_dir.exists())
 
         before = time.time()
@@ -1275,7 +1286,7 @@ class SettingsTests(LedgerTestCase):
     def test_sending_is_off_without_a_url(self) -> None:
         for missing in (("MEZMO_LEDGER_URL",),):
             for blank in (True, False):
-                with self.subTest(missing=missing, blank=blank), patch.dict(os.environ):
+                with self.subTest(missing=missing, blank=blank), patch.dict(os.environ), turned_off(missing[0]):
                     for name in missing:
                         if blank:
                             os.environ[name] = "  "
@@ -1311,15 +1322,18 @@ class SettingsTests(LedgerTestCase):
                 self.assertEqual(recorder.requests[-1]["body"], [{"a": 1}])
 
     def sent_authorization(self, name: str = "PostToolUse") -> str | None:
-        """The Authorization header ledger.handle sends to a server defined here."""
+        """The Authorization header ledger.handle sends to a server defined here, or None when it sends nothing."""
         recorder = Recorder()
         os.environ["MEZMO_LEDGER_URL"] = serve(recorder, self)
         with patch.object(sys, "stderr", StringIO()):
             ledger.handle(hook_input(name))
+        if not recorder.requests:
+            return None
         (request,) = recorder.requests
         return request["headers"].get("Authorization")
 
-    def test_the_key_is_the_ledger_key_else_the_governance_token_else_none(self) -> None:
+    def test_the_key_is_the_ledger_key_else_the_governance_token_else_the_ledger_is_off(self) -> None:
+        del os.environ["MEZMO_LEDGER_KEY"]
         cases = [
             ({}, None),
             ({"MEZMO_GOVERNANCE_URL": AUTHORIZE_URL}, None),
@@ -1350,6 +1364,8 @@ class SettingsTests(LedgerTestCase):
         ]
         for values, setting, secret in cases:
             with self.subTest(values=values), patch.dict(os.environ, values):
+                if "MEZMO_LEDGER_KEY" not in values and "MEZMO_GOVERNANCE_TOKEN" in values:
+                    del os.environ["MEZMO_LEDGER_KEY"]
                 fake = self.fake()
                 self.run_hook(hook_input("PostToolUse"), fake)
                 self.assertIsNone(ledger.load_ledger_config())
@@ -1365,7 +1381,7 @@ class SettingsTests(LedgerTestCase):
     def test_https_and_loopback_http_are_allowed(self) -> None:
         for url in ("https://audit.example.test/v1/events", "http://localhost:65530/v1/events", "http://[::1]:65530/v1/events"):
             with self.subTest(url=url), patch.dict(os.environ, {"MEZMO_LEDGER_URL": url}):
-                self.assertEqual(ledger.load_ledger_config(), ledger.LedgerConfig(None, url))
+                self.assertEqual(ledger.load_ledger_config(), ledger.LedgerConfig(LEDGER_KEY, url))
 
     def test_post_ledger_events_refuses_an_unsafe_url_before_any_request(self) -> None:
         with patch.object(ledger, "build_opener") as opener:
@@ -1846,8 +1862,8 @@ class RefusedTests(LedgerTestCase):
                 self.assertIn(f"HTTP {status}", self.stderr)
 
     def test_refused_is_a_no_op_when_unconfigured(self) -> None:
-        for missing in ("MEZMO_LEDGER_URL",):
-            with self.subTest(missing=missing), patch.dict(os.environ, {missing: " "}):
+        for missing in ("MEZMO_LEDGER_URL", "MEZMO_LEDGER_KEY"):
+            with self.subTest(missing=missing), patch.dict(os.environ, {missing: " "}), turned_off(missing):
                 fake = self.fake()
                 self.assertFalse(self.refuse(fake))
                 self.assertEqual(fake.calls, [])
@@ -2039,7 +2055,7 @@ class EndGovernanceRefusalTests(LedgerTestCase):
     def test_the_ledger_is_left_alone_while_either_setting_is_unset(self) -> None:
         for name in ("MEZMO_LEDGER_URL",):
             for value in (None, "  "):
-                with self.subTest(name=name, value=value), patch.dict(os.environ):
+                with self.subTest(name=name, value=value), patch.dict(os.environ), turned_off(name):
                     if value is None:
                         del os.environ[name]
                     else:
@@ -2066,6 +2082,8 @@ class GovernanceMainTests(LedgerTestCase):
 
     def test_a_deny_reaches_the_ledger_as_not_run_and_stdout_is_only_the_deny(self) -> None:
         os.environ.update({**GOVERNANCE, "MEZMO_GOVERNANCE_URL": serve_governance_deny(self)})
+        # With no MEZMO_LEDGER_KEY, the governance token is the ledger's key.
+        del os.environ["MEZMO_LEDGER_KEY"]
         for answer in ((202, b"{}"), (400, b"{}"), OSError("refused"), RuntimeError("boom")):
             with self.subTest(answer=answer):
                 fake = self.fake(answer)
@@ -2219,7 +2237,7 @@ class ScriptTestCase(unittest.TestCase):
         self.dir = Path(scratch.name)
         self.hooks = self.dir / "hooks"
         self.hooks.mkdir()
-        for path in (HOOK_PATH, LEDGER_PATH):
+        for path in (HOOK_PATH, LEDGER_PATH, SETTINGS_PATH):
             shutil.copy(path, self.hooks / path.name)
         self.spool = self.dir / "spool" / "ledger-spool.jsonl"
         self.recorder = Recorder()
@@ -2231,6 +2249,7 @@ class ScriptTestCase(unittest.TestCase):
             "HOME": str(self.dir),
             "MEZMO_GOVERNANCE_AUDIT_LOG": str(self.dir / "audit.jsonl"),
             "MEZMO_GOVERNANCE_STATE_DIR": str(self.dir / "codex-sessions"),
+            "MEZMO_LEDGER_KEY": LEDGER_KEY,
             "MEZMO_LEDGER_SPOOL": str(self.spool),
             "MEZMO_LEDGER_URL": serve(self.recorder, self),
             "NO_PROXY": "*",
@@ -2250,6 +2269,15 @@ class ScriptTestCase(unittest.TestCase):
         )
         self.elapsed = time.monotonic() - began
         return result
+
+    def ledger_off(self) -> None:
+        """Turn the ledger off as setup --no-ledger does. The governance token would otherwise be its key,
+        and the governance URL's host its URL."""
+        for name in ("MEZMO_LEDGER_SPOOL", "MEZMO_LEDGER_URL"):
+            del self.env[name]
+        folder = self.dir / ".mezmo"
+        folder.mkdir(mode=0o700, exist_ok=True)
+        (folder / "codex.json").write_text(json.dumps({"ledger_enabled": False}), encoding="utf-8")
 
     def govern(self, *, delay: float = 0.0) -> None:
         """Point the governance hook at a stand-in that denies every call."""
@@ -2273,7 +2301,7 @@ class EndToEndTests(ScriptTestCase):
         for request in self.recorder.requests:
             self.assertIsInstance(request["body"], list)
             self.assertEqual(request["path"], "/v1/events")
-            self.assertNotIn("Authorization", request["headers"])
+            self.assertEqual(request["headers"].get("Authorization"), f"Token {LEDGER_KEY}")
         events = self.events()
         self.assertEqual([event["event"].rsplit(".", 1)[1] for event in events], ["started", "ran"] * 3)
         self.assertEqual([event["extra"].get("exit_status") for event in events], [None, None, None, 0, None, 0])
@@ -2314,7 +2342,8 @@ class EndToEndTests(ScriptTestCase):
         self.assertEqual(self.recorder.requests, [])
 
     def test_unset_settings_exit_at_once_without_a_request(self) -> None:
-        for name in ("MEZMO_LEDGER_SPOOL", "MEZMO_LEDGER_URL"):
+        # No key: the ledger is off, even though its URL now defaults to the production API.
+        for name in ("MEZMO_LEDGER_KEY", "MEZMO_LEDGER_SPOOL", "MEZMO_LEDGER_URL"):
             del self.env[name]
         for name in ("PreToolUse", "PostToolUse"):
             with self.subTest(name=name):
@@ -2326,6 +2355,7 @@ class EndToEndTests(ScriptTestCase):
 
     def test_a_governance_deny_reaches_the_ledger_as_not_run(self) -> None:
         self.govern()
+        del self.env["MEZMO_LEDGER_KEY"]
         result = self.run_script(hook_input("PreToolUse"), script="mezmo_governance_hook.py")
         self.assertEqual((result.returncode, result.stdout), (0, DENY_STDOUT), result.stderr)
         (not_run,) = self.events()
@@ -2365,13 +2395,12 @@ class EndToEndTests(ScriptTestCase):
     def test_the_deny_is_byte_for_byte_the_same_with_the_ledger_on_or_off(self) -> None:
         self.govern()
         on = self.run_script(hook_input("PreToolUse"), script="mezmo_governance_hook.py")
-        for name in ("MEZMO_LEDGER_SPOOL", "MEZMO_LEDGER_URL"):
-            del self.env[name]
+        self.ledger_off()
         off = self.run_script(hook_input("PreToolUse"), script="mezmo_governance_hook.py")
         self.assertEqual((on.returncode, on.stdout, on.stderr), (0, DENY_STDOUT, b""))
         self.assertEqual((off.returncode, off.stdout, off.stderr), (0, DENY_STDOUT, b""))
         self.assertEqual(len(self.recorder.requests), 1)
-        self.assertFalse((self.dir / ".mezmo").exists())
+        self.assertFalse((self.dir / ".mezmo" / "ledger-spool.jsonl").exists())
 
 
 class StreamFailureTests(ScriptTestCase):
@@ -2419,8 +2448,7 @@ class StreamFailureTests(ScriptTestCase):
         self.govern()
 
         on = self.deny_with(closed_stdout=True)
-        for name in ("MEZMO_LEDGER_SPOOL", "MEZMO_LEDGER_URL"):
-            del self.env[name]
+        self.ledger_off()
         off = self.deny_with(closed_stdout=True)
 
         self.assertEqual(on, (0, None))
