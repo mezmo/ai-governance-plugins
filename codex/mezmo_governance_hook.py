@@ -1009,9 +1009,10 @@ GOVERNANCE_REQUIRED = (
 )
 
 
-def notice_path() -> Path:
-    # Holds the id of the last session told that governance is off.
-    return mezmo_settings.settings_dir() / "codex-governance-off"
+def notice_path(session: str) -> Path:
+    # One marker per session told that governance is off, so sessions don't overwrite each other's.
+    name = hashlib.sha256(session.encode("utf-8")).hexdigest()[:16]
+    return mezmo_settings.settings_dir() / "codex-governance-off" / name
 
 
 def unconfigured_output(event: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1023,12 +1024,14 @@ def unconfigured_output(event: Mapping[str, Any]) -> dict[str, Any] | None:
     session = event.get("session_id")
     session = session.strip() if isinstance(session, str) else ""
     try:
-        path = notice_path()
-        if session and path.is_file() and path.read_text(encoding="utf-8").strip() == session:
+        path = notice_path(session) if session else None
+        if path is not None and path.is_file():
             return None
         if not mezmo_settings.launcher_path().is_file():
             mezmo_settings.install_launcher()
-        path.write_text(session + "\n", encoding="utf-8")
+        if path is not None:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            path.touch()
     except OSError:
         pass
     # Codex shows a hook's systemMessage as a warning and runs the tool.

@@ -1290,7 +1290,10 @@ class EndToEndTests(unittest.TestCase):
             again = self.run_hook(hook_event(PRE_EVENT), stub.url, unset)
             post = self.run_hook(hook_event(POST_EVENT), stub.url, unset)
             other = self.run_hook({**hook_event(PRE_EVENT), "session_id": "session-2"}, stub.url, unset)
+            # Back in the first session: still told only once, whatever the other session did.
+            back = self.run_hook(hook_event(PRE_EVENT), stub.url, unset)
             self.assertEqual(stub.requests, [])
+        self.assertEqual(back.stdout, "")
 
         for result in (first, again, post, other):
             self.assertEqual(result.returncode, 0, result.stderr)
