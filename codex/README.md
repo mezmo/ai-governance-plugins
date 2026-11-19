@@ -3,8 +3,8 @@
 A Codex CLI command hook that asks Mezmo Governance before each tool runs. If
 Mezmo denies the call, or the hook cannot get an answer, the hook denies and
 Codex skips the tool. After an approved tool finishes, the same script appends
-a local JSONL record. A second hook script can send a record of each tool
-call to the Mezmo ledger service; it is off until you set it up
+a local JSONL record. A second hook script sends a record of each tool
+call to the Mezmo ledger service, with the same API URL and key
 (see [Ledger](#ledger)).
 The audit log keeps up to 2000 characters of each tool result, which can hold
 secrets; the hook creates it readable by you alone (file 0600, folder 0700).
@@ -12,6 +12,72 @@ secrets; the hook creates it readable by you alone (file 0600, folder 0700).
 Official docs: https://developers.openai.com/codex/hooks
 
 The script needs Python 3.9 or later and uses only the standard library.
+
+## Getting started
+
+1. Install, as a [Codex plugin](#as-a-codex-plugin) or with the
+   [file install](#install): `./mezmo-governance install codex`.
+2. Set up the Mezmo API URL and key, in your own terminal:
+   `./mezmo-governance setup codex` from a clone, or
+   `python3 <plugin root>/mezmo_setup.py` for the plugin. See [Setup](#setup).
+3. Start Codex, run `/hooks`, and trust all four Mezmo hooks.
+4. Check it: `./mezmo-governance doctor codex`.
+5. Investigate: see [Incident investigations](#incident-investigations).
+
+## Setup
+
+`mezmo_setup.py` asks for two things: the Mezmo API URL (default
+`https://api.mezmo.com`) and the key, a Mezmo service key read with
+`getpass`, so it never shows on screen, in shell history, in a command line or
+in an agent transcript. Run it in your own terminal, not through Codex.
+
+It checks both before saving anything: governance with a status lookup that
+records no decision, and the [ledger](#ledger) with an empty batch, which must
+answer `202 {"accepted": 0}`. If either check fails, nothing is saved.
+`--no-ledger` skips the ledger check and saves the ledger as off.
+
+The key goes to the first store this machine has, and setup says which:
+
+| Where | Store |
+| --- | --- |
+| macOS | the Keychain, service `mezmo-ai-governance`, account `codex`, written through `security -i` so the key is never in a command line |
+| Linux with `secret-tool` and an unlocked keyring | the desktop keyring (libsecret) |
+| Otherwise, and on Windows for now | `~/.mezmo/codex-key`, mode `0600`, in a `0700` folder |
+
+The hooks refuse a key file that is a symlink or that anyone but you can
+read or write. `~/.mezmo/codex.json` (mode `0600`) holds the API URL,
+`ledger_enabled` and which store has the key, never the key. The hooks read
+the key from the store on each call (about 20 to 25 ms for the Keychain) and
+keep it in memory for that hook process only. A store they cannot read gives
+a warning and counts as no key, so governance denies the call.
+
+`setup codex --remove` deletes the key from its store and removes
+`codex.json`.
+
+From the API URL the hooks derive the governance URL,
+`<api_url>/governance/workflow/authorize`, and the ledger URL,
+`<api_url>/v1/audit/events`.
+
+### Overrides
+
+Environment variables win over what setup saved, value by value, for CI,
+`codex exec` and development. They are plain text in your shell and in every
+process it starts, the agent's tool calls included, so prefer setup.
+
+| Variable | Overrides |
+| --- | --- |
+| `MEZMO_GOVERNANCE_URL` | The governance URL. The ledger URL then follows its host, unless `MEZMO_LEDGER_URL` is set |
+| `MEZMO_GOVERNANCE_TOKEN` | The key |
+| `MEZMO_LEDGER_URL` | The ledger URL, even with `ledger_enabled` false |
+| `MEZMO_LEDGER_KEY` | The ledger's key, which is otherwise the governance key |
+
+```bash
+export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
+export MEZMO_GOVERNANCE_TOKEN="<service account token>"
+```
+
+With neither variable nor setup, the URL is `https://api.mezmo.com` and there
+is no key, so the hook denies every call.
 
 Tested version: Codex CLI 0.162.1, run live against `tools/mock_governance.py`:
 `Bash` was denied, and with the guard a hook crash blocked the call. The
@@ -61,12 +127,14 @@ config change.
 Run them from the repository root. With `CODEX_HOME` set, use `$CODEX_HOME`
 for `~/.codex`.
 
-1. Copy both hook scripts, the governance hook and the ledger hook, and the
-   [investigation](#investigations) CLI:
+1. Copy both hook scripts, the governance hook and the ledger hook, the
+   [investigation](#investigations) CLI, the settings loader both hooks
+   import, and the setup command:
 
 ```bash
 mkdir -p ~/.codex/hooks
-cp codex/mezmo_governance_hook.py codex/mezmo_ledger_hook.py codex/ledger_investigation.py ~/.codex/hooks/
+cp codex/mezmo_governance_hook.py codex/mezmo_ledger_hook.py codex/ledger_investigation.py \
+  codex/mezmo_settings.py codex/mezmo_setup.py ~/.codex/hooks/
 ```
 
 2. Merge [hooks.example.json](hooks.example.json) into `~/.codex/hooks.json`, or
@@ -82,14 +150,10 @@ cp codex/mezmo_governance_hook.py codex/mezmo_ledger_hook.py codex/ledger_invest
    override. If you set `MEZMO_GOVERNANCE_HOOK`, move both files to that
    folder and edit the path in the two ledger commands by hand.
 
-3. Export the URL and the service account token. The token is a standard
-   Mezmo service key, not a key of the agent; see
-   [Connect to Mezmo](../README.md#connect-to-mezmo):
-
-```bash
-export MEZMO_GOVERNANCE_URL="https://api.mezmo.com/governance/workflow/authorize"
-export MEZMO_GOVERNANCE_TOKEN="<service account token>"
-```
+3. Run `python3 ~/.codex/hooks/mezmo_setup.py` ([Setup](#setup)). The key
+   is a standard Mezmo service key, not a key of the agent; see
+   [Connect to Mezmo](../README.md#connect-to-mezmo). Or export the
+   [overrides](#overrides).
 
 4. Start Codex, run `/hooks`, and trust all four Mezmo hook entries: the
    governance hook and the ledger hook, each for `PreToolUse` and for
@@ -97,12 +161,15 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
    ungoverned. Do not wait for a warning: Codex 0.163.0 gave none for the
    native plugin. Trust them again after each edit to the entries. Then run
    `./mezmo-governance doctor codex`: it fails while the governance
-   PreToolUse hook is untrusted. It does not check the ledger entries.
+   PreToolUse hook is untrusted. It also shows where each setting comes from
+   (environment, `codex.json`, key store or default), sends the ledger an
+   empty batch, and warns when Codex skips a ledger entry.
 
 Hooks are on by default. `hooks = false` under `[features]` in
 `~/.codex/config.toml` turns them all off.
 
-Codex inherits the environment of the shell that launches it.
+Codex inherits the environment of the shell that launches it, so
+[overrides](#overrides) must be exported there.
 
 Headless `codex exec` skips hooks that are not trusted yet, so the tool runs
 ungoverned. Trust the hooks once in an interactive session first. For CI,
@@ -122,7 +189,11 @@ codex plugin marketplace add mezmo/ai-governance-plugins
 codex plugin add mezmo-governance@mezmo
 ```
 
-Then trust all four hooks in `/hooks`. Until you do, Codex skips them without a
+Then run `python3 <plugin root>/mezmo_setup.py` in your terminal, or
+`./mezmo-governance setup codex` from a clone; both save the same settings.
+The plugin root is the folder of the installed plugin's `mezmo_setup.py`
+(`find ~/.codex -name mezmo_setup.py`). Then trust all four hooks in
+`/hooks`. Until you do, Codex skips them without a
 warning and every tool runs ungoverned (0.163.0). Use the plugin or the file
 install, not both: both run the hook twice. `doctor` checks the plugin's
 trust; `smoke` checks only the file install. For a headless setup, see
@@ -150,7 +221,7 @@ source.
 
 ## Verify
 
-From the repository root, with the two variables exported:
+From the repository root, after setup (or with the two variables exported):
 
 ```bash
 ./mezmo-governance doctor codex
@@ -187,7 +258,7 @@ It exits 0 and prints a deny. The text after `unavailable:` varies by platform:
 ```
 
 With the [ledger](#ledger) on, a deny in this section also sends a `not_run`
-record for the made-up call. Unset `MEZMO_LEDGER_URL` first to avoid that.
+record for the made-up call. Run setup with `--no-ledger` first to avoid that.
 
 Then check your key with the variables from step 3 set. This asks Mezmo about
 one `echo hi` call:
@@ -287,8 +358,9 @@ Codex treats exit 2 as a block.
 
 ## Ledger
 
-The ledger keeps a record of the tool calls Codex makes. It is off by default.
-When it is on, Mezmo gets one record when each tool call is requested and one
+The ledger keeps a record of the tool calls Codex makes. It is on whenever
+the hooks have a key and a ledger URL, which [Setup](#setup) gives them, and
+off when setup saved `ledger_enabled` false (`--no-ledger`). When it is on, Mezmo gets one record when each tool call is requested and one
 when it ends. It records every tool Codex runs a hook for (matcher `.*`):
 `apply_patch`, `Bash`, MCP tools, `update_plan` and the other local tools.
 
@@ -319,18 +391,19 @@ Each record also names the service and environment the call touched, such as
 worked out from the kubectl commands in a Bash call or from an MCP tool's name
 and arguments, with `prod` when no namespace or environment is given.
 
-Turn it on by setting `MEZMO_LEDGER_URL`. The ledger service takes the
-account from the key, so there is no account to set:
+The ledger URL is `<api_url>/v1/audit/events` and the key is the governance
+key. The ledger service takes the account from the key, so there is no
+account to set. These variables override that, as in [Overrides](#overrides):
 
 | Variable | Purpose |
 | --- | --- |
 | `MEZMO_LEDGER_INCIDENT_KEY` | Incident the session is working on, such as `pagerduty:<incident id>`. Optional |
-| `MEZMO_LEDGER_KEY` | Mezmo service key. Optional, defaults to `MEZMO_GOVERNANCE_TOKEN` |
+| `MEZMO_LEDGER_KEY` | Mezmo service key. Optional, defaults to the governance key |
 | `MEZMO_LEDGER_SPOOL` | Retry file. Optional, defaults to `~/.mezmo/ledger-spool.jsonl` |
-| `MEZMO_LEDGER_URL` | Ledger events URL. Required |
+| `MEZMO_LEDGER_URL` | Ledger events URL. Optional, defaults as above |
 
-Without `MEZMO_LEDGER_KEY`, the governance token is sent to
-`MEZMO_LEDGER_URL`, whatever host that is. The key is sent as
+Without a key the ledger is off. Without `MEZMO_LEDGER_KEY`, the governance
+key is sent to the ledger URL, whatever host that is. The key is sent as
 `Authorization: Token <key>`, or as given when it starts with `Token ` or
 `Bearer `. The URL must use `https`, or `http` to this machine only, and hold
 no user name or password. For Mezmo, use
@@ -352,7 +425,7 @@ oldest past that. It holds the full records, including arguments and output,
 and is readable only by you. Delete it to discard what is waiting.
 
 Claude Code and Codex share the default retry file, and each run discards
-records saved for a different `MEZMO_LEDGER_URL`. If the two send to
+records saved for a different ledger URL. If the two send to
 different URLs, give one its own `MEZMO_LEDGER_SPOOL`.
 
 ### Governance refusals
@@ -453,9 +526,9 @@ the path of `ledger_investigation.py`.
 `python3 ~/.codex/hooks/ledger_investigation.py launch --incident-key <key> -- codex exec "<prompt>"`.
 It sends `opened` with `opened_by: "alert"`, then runs the command in its
 place with `MEZMO_LEDGER_INCIDENT_KEY` set, so `launch` exits with the
-command's exit code. It needs `MEZMO_LEDGER_URL`, and `MEZMO_LEDGER_KEY` (or `MEZMO_GOVERNANCE_TOKEN`)
-exported in the shell it runs from. Without a key the ledger refuses `opened`
-with a 401, and it waits in the retry file, so it may arrive after `joined`.
+command's exit code. It uses the same settings as the hooks: what setup
+saved, or the [overrides](#overrides) exported in the shell it runs from.
+With the ledger off (no key, or `ledger_enabled` false) it runs nothing.
 An `opened` that can't be sent is saved for retry and the command still runs.
 
 Codex may run hooks in a background process whose environment was fixed when
@@ -557,9 +630,9 @@ error and its fix. The top cause for Codex: a hook not trusted in `/hooks`.
 ## Tests
 
 ```bash
-python3 -m unittest test_hook.py test_ledger.py test_ledger_investigation.py -v
+python3 -m unittest test_hook.py test_ledger.py test_ledger_investigation.py test_setup.py -v
 ```
 
-`test_hook.py` covers the governance hook, `test_ledger.py` the ledger hook
-and `test_ledger_investigation.py` the investigation CLI. From the repo root,
-`make test-codex` runs all three.
+`test_hook.py` covers the governance hook, `test_ledger.py` the ledger hook,
+`test_ledger_investigation.py` the investigation CLI and `test_setup.py` setup
+and the settings loader. From the repo root, `make test-codex` runs all four.

@@ -22,6 +22,12 @@ from typing import Any
 from unittest.mock import patch
 
 import mezmo_governance_hook as hook
+import mezmo_settings
+
+# Nor do the developer's own ~/.mezmo/codex.json and stored key. A test that runs a hook without a
+# key of its own sets HOME for it.
+_SETTINGS_HOME = tempfile.TemporaryDirectory()
+mezmo_settings.settings_dir = lambda: Path(_SETTINGS_HOME.name) / ".mezmo"
 
 # With the ledger settings set, a denying hook reports a `not_run` to the Mezmo ledger. The
 # developer's own settings stay out of this process and of every hook the tests start.
@@ -613,7 +619,7 @@ class HookConfigTests(unittest.TestCase):
             # Python exits 2 on a script it cannot find, which would block the call.
             for installed in (False, True):
                 if installed:
-                    for path in (HOOK_PATH, LEDGER_PATH):
+                    for path in (HOOK_PATH, LEDGER_PATH, SETTINGS_PATH):
                         shutil.copy(path, hooks / path.name)
                 for stdin in (None, "not json"):
                     with self.subTest(installed=installed, stdin=stdin):
@@ -693,16 +699,18 @@ class HookConfigTests(unittest.TestCase):
 
     def test_the_crash_guard_keeps_the_hook_deny_output(self) -> None:
         pre, _ = self.pre_and_post_commands()
-        result = self.run_command(pre, HOOK_PATH)
+        with tempfile.TemporaryDirectory() as home:
+            result = self.run_command(pre, HOOK_PATH, home=home)
 
         self.assertEqual(result.returncode, 0, result.stderr)
         output = json.loads(result.stdout)
         self.assertEqual(set(output), set(deny_schema("x")))
-        self.assertIn("MEZMO_GOVERNANCE_URL", result.stdout)
+        self.assertIn("no Mezmo key", result.stdout)
 
 
 HOOK_PATH = Path(__file__).resolve().with_name("mezmo_governance_hook.py")
 LEDGER_PATH = HOOK_PATH.with_name("mezmo_ledger_hook.py")
+SETTINGS_PATH = HOOK_PATH.with_name("mezmo_settings.py")
 PYTHON_FLOOR = (3, 9)
 
 
@@ -909,14 +917,14 @@ SHARED_DEFINITIONS = (
     "poll_decision",
     "deadline_watchdog",
     "authorize",
-    "authorize_url",
-    "authorization_header",
     "result_preview",
     "result_has_known_error",
     "append_audit",
     *BASH_PARTS_DEFINITIONS,
     "shell_command_field",
 )
+# Codex reads these two through mezmo_settings.py; the other adapters still share one copy.
+SIBLING_ONLY_DEFINITIONS = ("authorize_url", "authorization_header")
 SIBLING_ADAPTERS = ("cursor", "gemini-cli", "copilot", "goose", "droid", "windsurf", "antigravity")
 # The Claude Code hook is its own port (typing spellings, its own config and status file),
 # so only these shared parts must match it word for word.
@@ -977,6 +985,12 @@ class SharedCoreDriftTests(unittest.TestCase):
                     self.assertEqual(sibling.get(name), reference[name])
             with self.subTest(adapter=path.parent.name, definition="call_identity"):
                 self.assertIn("bounded_request_id", sibling["call_identity"])
+        first = top_level_definitions(present[0])
+        for path in present[1:]:
+            sibling = top_level_definitions(path)
+            for name in SIBLING_ONLY_DEFINITIONS:
+                with self.subTest(adapter=path.parent.name, definition=name):
+                    self.assertEqual(sibling.get(name), first[name])
 
     def test_shared_core_matches_the_claude_code_hook(self) -> None:
         self.assertTrue(set(CLAUDE_CODE_SHARED_DEFINITIONS) <= set(SHARED_DEFINITIONS))
@@ -1255,13 +1269,15 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(stub.requests[1]["method"], "GET")
         self.assertIn(f"decision_id={decision_id}", stub.requests[1]["path"])
 
-    def test_missing_url_denies(self) -> None:
-        result = self.run_hook(hook_event(PRE_EVENT), None)
+    def test_missing_key_denies_before_any_request(self) -> None:
+        # No URL either: the production default applies, and no key means nothing is sent there.
+        result = self.run_hook(hook_event(PRE_EVENT), None, {"MEZMO_GOVERNANCE_TOKEN": "", "HOME": self.tmp.name})
 
         self.assertEqual(result.returncode, 0, result.stderr)
         output = stdout_json(result)
         self.assertEqual(set(output), set(deny_schema("x")))
-        self.assertIn("MEZMO_GOVERNANCE_URL", json.dumps(output))
+        self.assertIn("no Mezmo key", json.dumps(output))
+        self.assertIn("setup codex", json.dumps(output))
 
     def test_a_reply_it_cannot_read_denies(self) -> None:
         cases = [
@@ -1603,11 +1619,9 @@ class RefusalHandOffTests(unittest.TestCase):
 class RefusalMainTests(unittest.TestCase):
     """main() tells the ledger of a refusal once the deny is printed. The ledger is a stand-in."""
 
-    # With no MEZMO_GOVERNANCE_URL the hook denies before any request.
-    REASON = (
-        "Mezmo Governance could not authorize this exact tool call, so Codex blocked it: "
-        "MEZMO_GOVERNANCE_URL must be a non-empty string"
-    )
+    # With no key the hook denies before any request.
+    NO_KEY = "no Mezmo key: run mezmo_setup.py (./mezmo-governance setup codex), or set MEZMO_GOVERNANCE_TOKEN"
+    REASON = f"Mezmo Governance could not authorize this exact tool call, so Codex blocked it: {NO_KEY}"
 
     def run_main(self, *, env: Mapping[str, str] | None = None, stdin: str | None = None) -> tuple[int, str]:
         """main() on a PreToolUse call: its exit code and stdout. Each call to the ledger is kept in self.calls."""
@@ -1628,13 +1642,13 @@ class RefusalMainTests(unittest.TestCase):
         return code, out.getvalue()
 
     def test_the_ledger_is_told_once_the_deny_is_printed(self) -> None:
-        code, stdout = self.run_main()
+        code, stdout = self.run_main(env={"MEZMO_GOVERNANCE_TOKEN": ""})
 
         self.assertEqual((code, stdout), (0, deny_line(self.REASON)))
         (call,) = self.calls
         self.assertEqual(call["name"], "end_governance_refusal")
         self.assertEqual(call["hook_input"], hook_event(PRE_EVENT))
-        self.assertEqual((call["outcome"], call["reason"]), ("error", "MEZMO_GOVERNANCE_URL must be a non-empty string"))
+        self.assertEqual((call["outcome"], call["reason"]), ("error", self.NO_KEY))
         self.assertEqual(call["printed"], deny_line(self.REASON))
 
     def test_a_policy_deny_is_told_to_the_ledger_as_denied(self) -> None:
@@ -1748,6 +1762,7 @@ class LedgerBesideTheHookTests(unittest.TestCase):
         self.hooks = self.dir / "hooks"
         self.hooks.mkdir()
         shutil.copy(HOOK_PATH, self.hooks / HOOK_PATH.name)
+        shutil.copy(SETTINGS_PATH, self.hooks / SETTINGS_PATH.name)
         self.marker = self.dir / "marker.jsonl"
 
     def run_hook(self, ledger: str | None, *, url: str | None = None) -> subprocess.CompletedProcess[bytes]:
@@ -1814,7 +1829,7 @@ class LedgerBesideTheHookTests(unittest.TestCase):
 
         self.assert_deny_unchanged(result)
         self.assertEqual(result.stderr, b"")
-        self.assertEqual([path.name for path in self.hooks.iterdir()], [HOOK_PATH.name])
+        self.assertEqual(sorted(path.name for path in self.hooks.iterdir()), [HOOK_PATH.name, SETTINGS_PATH.name])
 
     def test_a_ledger_that_raises_or_exits_cannot_change_the_exit_code(self) -> None:
         for body in ('raise RuntimeError("boom")', "raise KeyboardInterrupt()", "raise SystemExit(7)", "sys.exit(7)"):

@@ -23,6 +23,11 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+# mezmo_settings.py sits beside this file, a folder PYTHONSAFEPATH keeps off sys.path.
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import mezmo_settings  # noqa: E402
+
 AGENT = "codex"
 DEFAULT_TIMEOUT_SECONDS = 590.0
 MAX_TIMEOUT_SECONDS = 590.0
@@ -86,7 +91,7 @@ def parse_object(raw: bytes) -> dict[str, Any]:
 
 def authorize_url() -> str:
     return required_string(
-        os.environ.get("MEZMO_GOVERNANCE_URL"),
+        mezmo_settings.governance_url().value,
         "MEZMO_GOVERNANCE_URL",
     )
 
@@ -99,10 +104,11 @@ def status_url(decision_id: str, base: str | None = None) -> str:
 
 
 def authorization_header() -> str:
-    key = required_string(
-        os.environ.get("MEZMO_GOVERNANCE_TOKEN"),
-        "MEZMO_GOVERNANCE_TOKEN",
-    )
+    key = mezmo_settings.governance_key().value
+    if not key:
+        raise HookContractError(
+            "no Mezmo key: run mezmo_setup.py (./mezmo-governance setup codex), or set MEZMO_GOVERNANCE_TOKEN"
+        )
     if key.lower().startswith("token ") or key.lower().startswith("bearer "):
         return key
     return f"Token {key}"

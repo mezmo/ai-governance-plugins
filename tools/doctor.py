@@ -58,14 +58,41 @@ def load_hook() -> Any:
 
 
 hook = load_hook()
+# The Codex settings loader and setup command, which the hook just put on sys.path.
+codex_settings = hook.mezmo_settings
+import mezmo_setup  # noqa: E402
+
+CODEX_LEDGER_FILE = "mezmo_ledger_hook.py"
+CODEX_SETUP = "./mezmo-governance setup codex"
 
 
 def configured(name: str) -> str:
     """A setting from the shell that runs the check, as the hooks read it."""
+    return setting(name)[0]
+
+
+def codex_source(source: str) -> str:
+    """Where a Codex setting came from, in words."""
+    if source == "codex.json":
+        return shown(codex_settings.config_path())
+    if source in codex_settings.KEY_STORES:
+        return mezmo_setup.store_name(source) if source != codex_settings.KEY_FILE else shown(codex_settings.key_path())
+    return source or "nowhere"
+
+
+def setting(name: str) -> tuple:
+    """(value, " (from ...)") for MEZMO_GOVERNANCE_URL or _TOKEN: the shell's, else what setup codex saved.
+
+    Only the Codex hooks read the saved settings, so they count only once setup codex has run.
+    """
     value = (os.environ.get(name) or "").strip()
-    if not value:
-        raise hook.HookContractError(f"set {name}")
-    return value
+    if value:
+        return value, ""
+    if codex_settings.config_path().is_file():
+        found = codex_settings.governance_url() if name == "MEZMO_GOVERNANCE_URL" else codex_settings.governance_key()
+        if found.value:
+            return found.value, f" (from {codex_source(found.source)}, which only the Codex hooks read)"
+    raise hook.HookContractError(f"set {name}")
 
 
 class Unknown(Exception):
@@ -335,14 +362,14 @@ def check_settings(report: Report) -> bool:
         ),
     ):
         try:
-            value = configured(name)
+            value, where = setting(name)
         except hook.HookContractError:
             report.line(
                 "FAIL",
                 name,
                 "not set",
-                f"{fix}. The Claude Code plugin and OpenCode 2.x keep their own copy;"
-                " the other agents and this check read the variable.",
+                f"{fix}. The Claude Code plugin and OpenCode 2.x keep their own copy, and Codex can use"
+                f" {CODEX_SETUP}; the other agents and this check read the variable.",
             )
             ready = False
             continue
@@ -353,9 +380,9 @@ def check_settings(report: Report) -> bool:
                 ready = False
             else:
                 local = " (local mock)" if local_url(value) else ""
-                report.line("ok", name, f"{shown_url(value)}{local}")
+                report.line("ok", name, f"{shown_url(value)}{local}{where}")
         else:
-            report.line("ok", name, "set (not shown)")
+            report.line("ok", name, f"set (not shown){where}")
     for name, read in (
         ("MEZMO_GOVERNANCE_TIMEOUT_SECONDS", hook.timeout_seconds),
         ("MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS", hook.poll_interval_seconds),
@@ -879,7 +906,56 @@ def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
         smokes.append(Smoke("Codex", hook_path(command), CLAUDE_EVENT))
     if plugins:
         smokes += check_codex_plugin(report, plugins, hooks, why)
+    check_codex_ledger(report, hooks)
     return smokes
+
+
+def check_codex_ledger(report: Report, hooks: Optional[list]) -> None:
+    """Where each Codex setting comes from, whether the ledger takes an empty batch, and whether Codex trusts its hooks.
+
+    The ledger hook can never block a call, so its problems are warnings.
+    """
+    for name, value, source in codex_settings.describe():
+        shown_value = shown_url(value) if name.endswith("URL") and value != "off" else value
+        report.line("info", f"Codex {name}", f"{shown_value} (from {codex_source(source)})")
+    ledger_url = codex_settings.ledger_url()
+    url, key = ledger_url.value, codex_settings.ledger_key().value
+    if url is None:
+        report.line("info", "Codex ledger", f"off: ledger_enabled is false in {shown(codex_settings.config_path())}", f"run {CODEX_SETUP} to turn it on")
+    elif key is None:
+        report.line("warn", "Codex ledger", "off: no key", f"run {CODEX_SETUP}")
+    elif ledger_url.source == "default":
+        # Only the key is set: the URL check above already failed, and the key may not be for production.
+        report.line("skip", "Codex ledger", "not checked: no URL is set", f"run {CODEX_SETUP}")
+    elif url_problem(url):
+        report.line("warn", "Codex ledger", f"{shown_url(url)} {url_problem(url)}, so the ledger hook sends nothing", "use https")
+    else:
+        try:
+            mezmo_setup.check_ledger(url, key)
+        except mezmo_setup.SetupError as error:
+            report.line("warn", "Codex ledger", f"{error}, so calls are governed but not recorded", f"check the URL and key, or run {CODEX_SETUP}")
+        else:
+            report.line("ok", "Codex ledger", f"{shown_url(url)} took an empty batch (HTTP 202, accepted 0)")
+    if hooks is None:
+        return
+    fix = "start codex, run /hooks, and trust all four Mezmo hooks"
+    listed = [
+        item for item in hooks
+        if item.get("eventName") in ("preToolUse", "postToolUse")
+        and mezmo_handlers([{"command": item.get("command")}], script=CODEX_LEDGER_FILE)
+    ]
+    if not listed:
+        report.line("warn", "Codex ledger trust", "Codex lists no ledger hook, so nothing is recorded", "run ./mezmo-governance install codex")
+        return
+    skipped = [
+        f"{item.get('eventName')} ({'off' if item.get('enabled') is False else item.get('trustStatus') or 'untrusted'})"
+        for item in listed
+        if item.get("enabled") is False or item.get("trustStatus") not in ("trusted", "managed")
+    ]
+    if skipped:
+        report.line("warn", "Codex ledger trust", f"Codex skips the ledger hook for {', '.join(skipped)}, so those calls are not recorded", fix)
+    else:
+        report.line("ok", "Codex ledger trust", f"{len(listed)} ledger hooks are trusted")
 
 
 def same_file(text: Any, path: Path) -> bool:
@@ -1545,6 +1621,9 @@ def check_smokes(report: Report, smokes: list) -> None:
             "MEZMO_GOVERNANCE_STATE_DIR": os.devnull + "/mezmo-governance",
             # The Claude Code plugin's ledger is on wherever governance has a key; a smoke call is not one to record.
             "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED": "false",
+            # The Codex ledger follows MEZMO_GOVERNANCE_URL to the closed port, so its not_run fails to send;
+            # the retry file it would then write cannot exist under /dev/null either.
+            "MEZMO_LEDGER_SPOOL": os.devnull + "/mezmo-ledger-spool.jsonl",
         }
     )
     # Each agent's own pair: MEZMO_GOVERNANCE_HOOK can give every agent the same script, which the smoke runs once.

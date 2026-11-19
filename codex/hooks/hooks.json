@@ -1,5 +1,5 @@
 {
-  "description": "Mezmo Governance: authorize each tool call, then log the result locally. Mezmo ledger: record each call, off until its settings are set",
+  "description": "Mezmo Governance: authorize each tool call, then log the result locally. Mezmo ledger: record each call, with the same API URL and key (mezmo_setup.py)",
   "hooks": {
     "PreToolUse": [
       {

@@ -23,7 +23,7 @@ from typing import Any
 ADAPTER_DIR = Path(__file__).resolve().parent
 CLI_PATH = ADAPTER_DIR / "ledger_investigation.py"
 CLAUDE_CODE_CLI_PATH = ADAPTER_DIR.parent / "claude-code" / "scripts" / "ledger_investigation.py"
-SCRIPTS = ("ledger_investigation.py", "mezmo_governance_hook.py", "mezmo_ledger_hook.py")
+SCRIPTS = ("ledger_investigation.py", "mezmo_governance_hook.py", "mezmo_ledger_hook.py", "mezmo_settings.py")
 
 INCIDENT_KEY = "pagerduty:Q34FCCWSTU9OI2"
 
@@ -76,6 +76,7 @@ class LedgerInvestigationTests(unittest.TestCase):
             "HOME": str(folder),
             "MEZMO_GOVERNANCE_AUDIT_LOG": str(folder / "audit.jsonl"),
             "MEZMO_GOVERNANCE_STATE_DIR": str(folder / "codex-sessions"),
+            "MEZMO_LEDGER_KEY": "ledger-test",
             "MEZMO_LEDGER_SPOOL": str(folder / "spool" / "ledger-spool.jsonl"),
             "MEZMO_LEDGER_URL": serve(requests, self),
             "NO_PROXY": "*",

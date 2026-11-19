@@ -42,6 +42,8 @@ LEDGER_FILE = "mezmo_ledger_hook.py"
 # Codex's investigation CLI: the agent runs it by hand, so it is copied beside LEDGER_FILE, which it imports, and
 # never registered as a handler.
 INVESTIGATION_FILE = "ledger_investigation.py"
+# Codex's setup command and the settings loader both hooks and setup import, copied beside the hooks.
+SETUP_FILES = ("mezmo_settings.py", "mezmo_setup.py")
 # The mock denies each agent's shell tool and approves the rest.
 SHELL_TOOLS = list(dict.fromkeys(agent.shell for agent in doctor.AGENTS))
 SMOKE_KEY = "smoke-test"
@@ -64,6 +66,9 @@ Commands:
   install <agent...>|--all add the Mezmo hook to each agent's user config; --dry-run shows the changes only
   uninstall <agent...>|--all
                            remove only what install added; --dry-run shows the changes only
+  setup codex              ask for the Mezmo API URL and key, check both, and save them for the Codex
+                           hooks (key in the OS key store); --remove deletes them; --no-ledger saves
+                           the ledger as off
   doctor [agent...]        check the settings, Mezmo and each agent; --probe sends Mezmo one test call
   mock [--deny PATTERN...] start a local stand-in for Mezmo and print the two export lines
   smoke [agent...] [--live]
@@ -83,6 +88,7 @@ Agents: {', '.join(agent.readme for agent in doctor.AGENTS)}
 Examples:
   ./mezmo-governance install claude-code --dry-run
   ./mezmo-governance install claude-code codex
+  ./mezmo-governance setup codex
   ./mezmo-governance doctor --probe
   ./mezmo-governance smoke
   ./mezmo-governance smoke --live codex
@@ -91,6 +97,8 @@ Examples:
 
 Settings:
   MEZMO_GOVERNANCE_URL and MEZMO_GOVERNANCE_TOKEN come from the shell that starts the agent.
+  Codex can instead use what setup codex saves (~/.mezmo/codex.json plus the key store); the
+  variables still win.
   The Claude Code plugin can keep its own copy (/mezmo:setup); OpenCode 2.x reads plugin
   options in opencode.json, with the key in a file. Install never writes the key.
   Config folders follow each agent's override: CLAUDE_CONFIG_DIR, CODEX_HOME, GEMINI_CLI_HOME,
@@ -420,7 +428,7 @@ def file_hook_agent(
     """
     events = gates or (event,)
     scripts = (HOOK_FILE, LEDGER_FILE) if ledger else (HOOK_FILE,)
-    copied = scripts + (INVESTIGATION_FILE,) if ledger else scripts
+    copied = scripts + (INVESTIGATION_FILE,) + SETUP_FILES if ledger else scripts
 
     def home_folder() -> Path:
         return doctor.home() / (default or f".{adapter}")
@@ -909,7 +917,7 @@ INSTALLERS = {
     "codex": file_hook_agent(
         "codex", doctor.codex_dir, "PreToolUse",
         "Start codex, run /hooks, and trust the four Mezmo hook entries, two for governance and two for the ledger:"
-        " Codex skips a hook until you trust it.",
+        " Codex skips a hook until you trust it. Run ./mezmo-governance setup codex first, unless you export the variables.",
         trust_by_position=True, ledger=True,
     ),
     # Cursor's own hooks.json may hold only its version, so uninstall keeps what is left: it cannot tell who wrote the file.
@@ -1597,6 +1605,7 @@ FLAGS = {
     "install": {"--all", "--dry-run"},
     "uninstall": {"--all", "--dry-run"},
     "doctor": {"--probe"},
+    "setup": {"--remove", "--no-ledger"},
     "smoke": {"--live"},
 }
 
@@ -1619,6 +1628,8 @@ def main(argv: Optional[list] = None) -> int:
             names = [arg for arg in args if not arg.startswith("-")]
             if set(flags) - FLAGS[verb]:
                 raise Usage(f"{verb}: unknown option {' '.join(sorted(set(flags) - FLAGS[verb]))}")
+            if verb == "setup" and names != ["codex"]:
+                raise Usage("setup: only codex has a setup command: ./mezmo-governance setup codex")
             if verb in ("install", "uninstall") and not names and "--all" not in flags:
                 raise Usage(f"{verb}: name at least one agent, or pass --all")
             chosen = pick(names, "--all" in flags, verb)
@@ -1630,6 +1641,9 @@ def main(argv: Optional[list] = None) -> int:
         return policy(*parsed)
     if verb in ("agents", "status"):
         return agents(chosen)
+    if verb == "setup":
+        # In the user's terminal: the key is typed into getpass, never passed as an argument.
+        return subprocess.call([sys.executable, str(REPO / "codex" / "mezmo_setup.py"), *flags])
     if verb == "doctor":
         return doctor.run(tuple(AGENTS[name] for name in chosen), "--probe" in flags)
     if verb == "smoke":
