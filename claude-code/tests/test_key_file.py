@@ -133,7 +133,9 @@ class KeyFileTests(unittest.TestCase):
             self.assertEqual(code, expected, err)
             self.assertFalse(self.path.exists())
             self.assertTrue(http.calls)
-            self.assertFalse(any(KEY in " ".join(c["args"]) for c in claude.calls))
+            # Only `claude mcp add` carries the key in its arguments, as mcp_config.py documents.
+            self.assertEqual([c["args"][:2] for c in claude.calls if KEY in " ".join(c["args"])],
+                             [["mcp", "add"]] if expected == 0 else [])
 
     def test_old_runtime_cleans_file_without_reading_or_sending_token(self):
         http = FakeHttp()

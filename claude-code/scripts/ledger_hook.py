@@ -39,6 +39,9 @@ LEDGER_EVENTS = frozenset({"PermissionDenied", "PostToolUse", "PostToolUseFailur
 # change is not made.
 INVESTIGATION_STATE_TIMEOUT_SECONDS = 1.0
 
+# The longest the last send's record waits for the session state's lock. Past it, it isn't kept.
+LAST_SEND_STATE_TIMEOUT_SECONDS = 0.25
+
 # Every ledger thread this process started, so main() knows whether one is still running.
 LEDGER_THREADS: List[threading.Thread] = []
 
@@ -189,10 +192,29 @@ def _send(
     config: ledger.LedgerConfig,
     event: Mapping[str, Any],
     ledger_http: ledger.LedgerHttp,
+    outcome: Dict[str, Any],
     sent: List[ledger.LedgerSendResult],
 ) -> None:
-    """Send `event` in a request of its own and keep the result in `sent`."""
-    sent.append(ledger.send_ledger_events(config=config, events=[event], ledger_http=ledger_http))
+    """Send `event` in a request of its own, keep the result in `sent` and the HTTP status or error in `outcome`."""
+    recording = ledger.recording_http(ledger_http=ledger_http, outcome=outcome)
+    sent.append(ledger.send_ledger_events(config=config, events=[event], ledger_http=recording))
+
+
+def _record_last_send(
+    *, config: ledger.LedgerConfig, hook_input: Mapping[str, Any], sends: List[Tuple[int, Dict[str, Any]]]
+) -> None:
+    """Keep this run's sends as the session's last send, for /mezmo:test and doctor. Never raises."""
+    try:
+        if not sends:
+            return
+        entry = ledger.last_send(config=config, sends=sends)
+        update_session_state(
+            hook_input,
+            lambda state: state.__setitem__(ledger.LAST_SEND_FIELD, entry),
+            lock_timeout=LAST_SEND_STATE_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        pass
 
 
 def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp] = None) -> None:
@@ -240,16 +262,18 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
             investigation_event = _close(
                 config=config, deadline=deadline, hook_input=event, incident_key=investigation[1]
             )
-        sends: List[Tuple[Dict[str, Any], List[ledger.LedgerSendResult]]] = [
-            (new, []) for new in (new_event, investigation_event) if new is not None
+        sends: List[Tuple[Dict[str, Any], List[ledger.LedgerSendResult], Dict[str, Any]]] = [
+            (new, [], {}) for new in (new_event, investigation_event) if new is not None
         ]
         threads: List[threading.Thread] = []
         try:
             # Requests that never share a body, so a bad saved event can't cost a new one.
-            for new, sent in sends:
+            for new, sent, outcome in sends:
                 threads.append(
                     start_ledger_thread(
-                        work=partial(_send, config=config, event=new, ledger_http=ledger_http, sent=sent)
+                        work=partial(
+                            _send, config=config, event=new, ledger_http=ledger_http, outcome=outcome, sent=sent
+                        )
                     )
                 )
             threads.append(
@@ -264,9 +288,11 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
             _record_references(deadline=deadline, hook_input=event)
         for thread in threads:
             thread.join(max(0.0, deadline - time.monotonic()))
-        for new, sent in sends:
+        for new, sent, _ in sends:
             result = sent[0] if sent else ledger.LedgerSendResult(answered=False, save=[new])
             ledger.save_ledger_events(config=config, events=result.save)
+        # A copy of each outcome, so a thread still running can't change it while it is read.
+        _record_last_send(config=config, hook_input=event, sends=[(1, dict(outcome)) for _, _, outcome in sends])
         ledger.print_ledger_messages()
     except Exception as error:
         ledger.ledger_warn(message=f"Mezmo ledger failed: {str(error) or type(error).__name__}")

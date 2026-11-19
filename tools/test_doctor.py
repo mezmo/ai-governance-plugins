@@ -447,6 +447,40 @@ class ClaudeCodeTests(DoctorTestCase):
                     self.assertIn('"MEZMO_GOVERNANCE_REQUIRED": "1"', line)
                     self.assertIn("Dock", line)
 
+    def test_the_plugins_ledger_hook_reports_its_last_send(self) -> None:
+        sessions = self.home / ".mezmo" / "governance" / "sessions"
+        # (last send kept by the hook, status, words)
+        cases = [
+            (None, "info", "no send recorded yet"),
+            ({"status": 202, "error": None}, "ok", "to api.example.test, HTTP 202, 2 events"),
+            ({"status": 401, "error": None}, "FAIL", "HTTP 401, 2 events: the ledger rejected the key"),
+            ({"status": None, "error": "timed out"}, "FAIL", "failed, 2 events: timed out"),
+        ]
+        for last, status, words in cases:
+            with self.subTest(last=last):
+                shutil.rmtree(self.home / ".claude", ignore_errors=True)
+                shutil.rmtree(sessions, ignore_errors=True)
+                sessions.mkdir(parents=True)
+                if last is not None:
+                    entry = {"ts": "2026-11-18T16:14:40.000000+00:00", "host": "api.example.test", "events": 2, **last}
+                    (sessions / "s-1.json").write_text(json.dumps({"session_id": "s-1", "ledger_last_send": entry}))
+                self.fake_claude()
+                self.install_plugin()
+
+                result = self.doctor(MEZMO_GOVERNANCE_TOKEN=None)
+
+                line = self.assertStatus(result, "Claude Code ledger last send", status)
+                self.assertIn(words, line)
+                if last is None:
+                    self.assertIn("printf 'mezmo-onboarding-test\\n'", line)
+                if status == "FAIL" and last["status"] == 401:
+                    self.assertIn("/mezmo:setup governance", line)
+        # With the ledger off, no last send is reported.
+        shutil.rmtree(self.home / ".claude", ignore_errors=True)
+        self.fake_claude(ledger_enabled=False)
+        self.install_plugin()
+        self.assertEqual(self.lines(self.doctor(MEZMO_LEDGER_URL=None), "Claude Code ledger last send"), [])
+
     def test_the_plugins_ledger_gets_an_empty_batch(self) -> None:
         # (plugin options, environment, ledger answer, status, words)
         cases = [
@@ -732,6 +766,20 @@ class CodexTests(DoctorTestCase):
         self.assertStatus(result, "Codex ledger", "ok")
         batch = [request for request in self.stub.requests if request["path"] == "/v1/audit/events"]
         self.assertEqual([(request["body"], request["auth"]) for request in batch], [([], f"Token {CANARY}")])
+        self.assertIn("no send recorded yet", self.assertStatus(result, "Codex ledger last send", "info"))
+
+        # The hooks' last send, kept in the Codex session state.
+        sessions = self.home / ".mezmo" / "governance" / "codex-sessions"
+        sessions.mkdir(parents=True)
+        entry = {"ts": "2026-11-18T16:14:40.000000+00:00", "host": "api.example.test", "events": 1, "error": None}
+        (sessions / "s-1.json").write_text(json.dumps({"ledger_last_send": {**entry, "status": 202}}))
+        result = self.doctor(MEZMO_GOVERNANCE_URL=None, MEZMO_GOVERNANCE_TOKEN=None, MEZMO_LEDGER_URL=None)
+        self.assertIn("HTTP 202, 1 event", self.assertStatus(result, "Codex ledger last send", "ok"))
+        (sessions / "s-1.json").write_text(json.dumps({"ledger_last_send": {**entry, "status": 401}}))
+        result = self.doctor(MEZMO_GOVERNANCE_URL=None, MEZMO_GOVERNANCE_TOKEN=None, MEZMO_LEDGER_URL=None)
+        line = self.assertStatus(result, "Codex ledger last send", "FAIL")
+        self.assertIn("HTTP 401", line)
+        self.assertIn("with a current key", line)
 
         # ledger_enabled false: no batch is sent.
         self.write(".mezmo/codex.json", {"api_url": base, "ledger_enabled": False, "key_store": "file"})

@@ -347,7 +347,9 @@ in your local audit log.
 ```
 
 Then run `/mezmo:setup governance`, which keeps the key in the system
-credential store. Until it has a key, from setup or `MEZMO_GOVERNANCE_TOKEN`,
+credential store and connects Mezmo MCP with it, so you can ask Claude to
+investigate and it reads the ledger first. `/mezmo:test` shows the ledger's
+last send. Until it has a key, from setup or `MEZMO_GOVERNANCE_TOKEN`,
 the plugin lets every call run; `MEZMO_GOVERNANCE_REQUIRED=1` makes it deny
 instead. Details: [claude-code/](claude-code/).
 

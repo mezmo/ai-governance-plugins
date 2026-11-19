@@ -36,6 +36,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
 from urllib.error import HTTPError
+from urllib.parse import urlparse
 from urllib.request import Request, build_opener
 
 from governance_hook import (
@@ -1189,6 +1190,50 @@ def send_ledger_events(
     except Exception as error:
         LEDGER_MESSAGES.append(f"Mezmo ledger dropped {len(events)} event(s): {str(error) or type(error).__name__}")
         return LedgerSendResult(answered=False, save=[])
+
+
+# Where ledger_hook keeps its last send in the session state, for /mezmo:test and doctor.
+LAST_SEND_FIELD = "ledger_last_send"
+
+
+def recording_http(*, ledger_http: LedgerHttp, outcome: Dict[str, Any]) -> LedgerHttp:
+    """`ledger_http`, keeping in `outcome` the HTTP status it got, or the error that kept it from one."""
+
+    def send(**request: Any) -> Tuple[int, bytes]:
+        try:
+            status, body = ledger_http(**request)
+        except Exception as error:
+            outcome["error"] = str(error) or type(error).__name__
+            raise
+        outcome["status"] = status
+        return status, body
+
+    return send
+
+
+def last_send(*, config: LedgerConfig, sends: Sequence[Tuple[int, Mapping[str, Any]]]) -> Dict[str, Any]:
+    """What the session state keeps of one run's sends, each (event count, its recording_http outcome).
+
+    The time, the URL's host, the HTTP status or the error, and the event count: never the key or
+    an event. A send that wasn't answered 202 outranks one that was, so a failure is never hidden.
+    """
+    outcomes = [outcome for _, outcome in sends]
+    worst = next((outcome for outcome in outcomes if outcome.get("status") != 202), outcomes[0] if outcomes else {})
+    status = worst.get("status")
+    error = worst.get("error")
+    if status is None and error is None:
+        error = f"no answer within {LEDGER_TIMEOUT_SECONDS:g} seconds"
+    if error is not None:
+        if config.key:
+            error = error.replace(config.key, "<key>")
+        error = _one_line(error)[:MAX_LEDGER_MESSAGE_CHARACTERS]
+    return {
+        "error": error,
+        "events": sum(count for count, _ in sends),
+        "host": urlparse(config.url).hostname,
+        "status": status,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def _read_lines(path: Path) -> List[str]:

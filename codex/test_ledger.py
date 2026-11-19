@@ -878,16 +878,19 @@ class InvestigationTests(LedgerTestCase):
         del os.environ["MEZMO_GOVERNANCE_STATE_DIR"]
         self.assertEqual(ledger.session_state_path("session-1"), self.default_state_dir / "session-1.json")
 
-    def test_the_state_file_is_only_read(self) -> None:
-        self.run_hook(hook_input("PreToolUse"))
-        self.run_hook(hook_input("PostToolUse"))
+    def test_the_hook_writes_only_its_last_send_to_the_state(self) -> None:
+        path = ledger.session_state_path("session-1")
         self.assertFalse(ledger.record_governance_refusal(hook_input=hook_input(), ledger_http=self.fake(), outcome="denied", reason="No."))
         self.assertFalse(self.state_dir.exists())
-        self.write_state({"investigation": {"incident_key": "jira:LOG-1"}})
-        before = ledger.session_state_path("session-1").read_bytes()
+        self.run_hook(hook_input("PreToolUse"))
         self.run_hook(hook_input("PostToolUse"))
-        self.assertEqual(ledger.session_state_path("session-1").read_bytes(), before)
-        self.assertEqual([path.name for path in self.state_dir.iterdir()], ["session-1.json"])
+        state = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(state), ["ledger_last_send", "session_id", "updated", "version"])
+        self.write_state({"investigation": {"incident_key": "jira:LOG-1"}})
+        self.run_hook(hook_input("PostToolUse"))
+        state = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(state["investigation"], {"incident_key": "jira:LOG-1"})
+        self.assertEqual(sorted(state), ["investigation", "ledger_last_send", "session_id", "updated", "version"])
 
     def test_session_state_wins_over_the_environment(self) -> None:
         os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
@@ -1024,11 +1027,13 @@ class InvestigationChangeTests(LedgerTestCase):
         self.assertEqual(ran["extra"]["incident_key"], INCIDENT_KEY)
         self.assertEqual(self.spool_lines(), [])
         self.assertEqual(self.stderr, "")
-        # A session that never joined still sends `closed`, and gets no state file from it.
+        # A session that never joined still sends `closed`, and its state gets no investigation from it.
         never_joined = self.fake()
         self.run_hook({**self.cli_input("close", "closed"), "session_id": "session-2"}, never_joined)
         self.assertIn("agent.investigation.closed", [event["event"] for event in never_joined.events()])
-        self.assertFalse(ledger.session_state_path("session-2").exists())
+        other = json.loads(ledger.session_state_path("session-2").read_text(encoding="utf-8"))
+        self.assertNotIn("investigation", other)
+        self.assertEqual(other["ledger_last_send"]["events"], 2)
 
     def test_a_join_the_state_did_not_take_warns_and_sends_only_the_calls_event(self) -> None:
         # The environment names the same investigation, so only a check of the state itself fails here.
@@ -1138,8 +1143,10 @@ class ReferenceTests(LedgerTestCase):
             with self.subTest(case=case):
                 shutil.rmtree(self.state_dir, ignore_errors=True)
                 self.run_hook(event)
-                # No folder means no state file, and no lock file either.
-                self.assertFalse(self.state_dir.exists())
+                # The state may hold the hook's last send, never references.
+                path = ledger.session_state_path("session-1")
+                state = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+                self.assertNotIn("references", state)
 
     def test_only_valid_state_references_are_sent(self) -> None:
         bad = {"record": "claim_bad", "type": "memory", "version": -1}
@@ -1466,6 +1473,45 @@ class SettingsTests(LedgerTestCase):
             ] * 4,
         )
         self.assertEqual(self.spool_lines(), [])
+
+
+class LastSendTests(LedgerTestCase):
+    """The hook keeps its last send in the session state, for doctor: never a secret."""
+
+    def last(self) -> dict[str, Any]:
+        return json.loads(ledger.session_state_path("session-1").read_text(encoding="utf-8"))["ledger_last_send"]
+
+    def test_a_202_is_kept_with_its_host_and_event_count(self) -> None:
+        self.run_hook(hook_input("PreToolUse"), self.fake((202, b"{}")))
+        last = self.last()
+        self.assertEqual(sorted(last), ["error", "events", "host", "status", "ts"])
+        self.assertEqual((last["status"], last["error"], last["events"], last["host"]), (202, None, 1, "audit.ledger.invalid"))
+        datetime.fromisoformat(last["ts"])
+
+    def test_a_401_is_kept(self) -> None:
+        self.run_hook(hook_input("PreToolUse"), self.fake((401, b"{}")))
+        self.assertEqual((self.last()["status"], self.last()["error"]), (401, None))
+
+    def test_a_network_error_is_kept_without_the_key(self) -> None:
+        self.run_hook(hook_input("PreToolUse"), self.fake(OSError(f"refused for {LEDGER_KEY}")))
+        self.assertEqual((self.last()["status"], self.last()["error"]), (None, "refused for <key>"))
+
+    def test_the_state_holds_neither_the_key_nor_the_call(self) -> None:
+        self.run_hook(hook_input("PostToolUse", tool_input={"command": "echo private-argument"}), self.fake((202, b"{}")))
+        text = ledger.session_state_path("session-1").read_text(encoding="utf-8")
+        for secret in (LEDGER_KEY, "private-argument"):
+            self.assertNotIn(secret, text)
+        self.assertEqual(self.last()["status"], 202)
+
+    def test_old_session_states_are_removed(self) -> None:
+        self.run_hook(hook_input("PreToolUse"), self.fake((202, b"{}")))
+        old = ledger.session_state_path("session-old")
+        old.write_text("{}", encoding="utf-8")
+        week_ago = time.time() - ledger.STATE_RETENTION_SECONDS - 60
+        os.utime(old, (week_ago, week_ago))
+        self.run_hook(hook_input("PostToolUse"), self.fake((202, b"{}")))
+        self.assertFalse(old.exists())
+        self.assertTrue(ledger.session_state_path("session-1").exists())
 
 
 class RetryFileTests(LedgerTestCase):
@@ -2332,8 +2378,13 @@ class EndToEndTests(ScriptTestCase):
         for started, ran in zip(events[::2], events[1::2]):
             self.assertEqual(started["extra"]["call_id"], ran["extra"]["call_id"])
         self.assertFalse(self.spool.exists())
-        # The state file is only read.
-        self.assertFalse((self.dir / "codex-sessions").exists())
+        # The state file gets only the last send: HTTP 202 for one event, and nothing secret.
+        states = list((self.dir / "codex-sessions").glob("*.json"))
+        self.assertEqual(len(states), 1)
+        text = states[0].read_text(encoding="utf-8")
+        self.assertNotIn(LEDGER_KEY, text)
+        last = json.loads(text)["ledger_last_send"]
+        self.assertEqual((last["status"], last["events"], last["error"], last["host"]), (202, 1, None, "127.0.0.1"))
 
     def test_events_saved_on_a_503_are_delivered_by_a_later_run(self) -> None:
         self.recorder.status = 503
@@ -2720,6 +2771,7 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "LEDGER_URL_ENV",
     "LedgerConfig",
     "LedgerHttp",
+    "LAST_SEND_FIELD",
     "LedgerSendResult",
     "MAX_LEDGER_JSON_CHARACTERS",
     "MAX_LEDGER_MESSAGE_CHARACTERS",
@@ -2749,13 +2801,16 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "_spool_ledger_events",
     "_spool_locked",
     "drain_ledger_spool",
+    "_one_line",
     "key_fingerprint",
+    "last_send",
     "ledger_context",
     "ledger_json",
     "ledger_spool_path",
     "merge_references",
     "person_email",
     "post_ledger_events",
+    "recording_http",
     "save_ledger_events",
     "send_ledger_events",
     "tool_references",

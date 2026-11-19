@@ -23,6 +23,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
 from urllib.error import HTTPError
@@ -584,8 +585,8 @@ def claude_options(plugin: str) -> Optional[dict]:
     }
 
 
-def claude_ledger(report: Report, plugin: str, settings: dict) -> None:
-    """Check the plugin's ledger as ledger.py finds it: POST an empty batch, which records nothing.
+def claude_ledger(report: Report, plugin: str, settings: dict) -> bool:
+    """Check the plugin's ledger as ledger.py finds it: POST an empty batch, which records nothing. Returns whether it is on.
 
     The URL is MEZMO_LEDGER_URL, else the plugin's api_url option plus LEDGER_PATH, else production. The key is
     MEZMO_LEDGER_KEY, else a governance key, from the env of settings.json, then this shell. A key kept as a
@@ -604,7 +605,7 @@ def claude_ledger(report: Report, plugin: str, settings: dict) -> None:
     url = value("MEZMO_LEDGER_URL")
     if not url and options is not None and not options["ledger_enabled"]:
         report.line("ok", "Claude Code ledger", "off: the plugin's ledger_enabled option is off")
-        return
+        return False
     url = url or ((options or {}).get("api_url") or DEFAULT_API_URL).rstrip("/") + LEDGER_PATH
     key = value("MEZMO_LEDGER_KEY") or value(*CLAUDE_KEYS)
     if not key:
@@ -613,13 +614,13 @@ def claude_ledger(report: Report, plugin: str, settings: dict) -> None:
                 "skip", "Claude Code ledger", f"on, sending to {shown_url(url)}; its key is a sensitive plugin option the doctor cannot read",
                 "run /mezmo:test in Claude Code to check it",
             )
-        else:
-            report.line("skip", "Claude Code ledger", "off: no key reaches it")
-        return
+            return True
+        report.line("skip", "Claude Code ledger", "off: no key reaches it")
+        return False
     problem = url_problem(url)
     if problem:
         report.line("FAIL", "Claude Code ledger", f"{shown_url(url)} {problem}", f"set MEZMO_LEDGER_URL to {DEFAULT_API_URL}{LEDGER_PATH}")
-        return
+        return True
     authorization = key if key.lower().startswith(("token ", "bearer ")) else f"Token {key}"
     headers = {"Accept": "application/json", "Authorization": authorization, "Content-Type": "application/json"}
     request = Request(url, data=b"[]", headers=headers, method="POST")
@@ -631,7 +632,7 @@ def claude_ledger(report: Report, plugin: str, settings: dict) -> None:
     except Exception as error:  # noqa: BLE001 - any failure means "not reached"
         report.line("FAIL", "Claude Code ledger", f"{shown_url(url)} not reached: {hook.error_detail(str(error))}",
                     "check the API URL and your network")
-        return
+        return True
     try:
         accepted = json.loads(body).get("accepted")
     except (ValueError, AttributeError):
@@ -644,6 +645,60 @@ def claude_ledger(report: Report, plugin: str, settings: dict) -> None:
     else:
         report.line("FAIL", "Claude Code ledger", f"{shown_url(url)} answered an empty batch with HTTP {status}, not 202 with accepted 0",
                     f"check the API URL; production is {DEFAULT_API_URL}")
+    return True
+
+
+# Where each plugin's ledger hook keeps its last send: a field of its session state files.
+LAST_SEND_FIELD = "ledger_last_send"
+CLAUDE_STATE_DIR = Path(".mezmo") / "governance" / "sessions"
+CODEX_STATE_DIR = Path(".mezmo") / "governance" / "codex-sessions"
+# A harmless call that makes the hooks check and record something.
+TEST_COMMAND = "printf 'mezmo-onboarding-test\\n'"
+
+
+def ledger_last_send(report: Report, subject: str, folder: Path, agent: str, fix: str) -> None:
+    """Report the newest last send a ledger hook kept in its session state: proof the hooks themselves send.
+
+    It never holds the key or an event: the time, the URL's host, the HTTP status or error, and the event count.
+    """
+    last = None
+    try:
+        files = sorted(folder.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    except OSError:
+        files = []
+    for path in files:
+        found = as_dict(read_json(path)).get(LAST_SEND_FIELD)
+        if isinstance(found, dict):
+            last = found
+            break
+    if last is None:
+        report.line("info", subject, "no send recorded yet", f"in a new {agent} session, ask it to run `{TEST_COMMAND}`, then run doctor again")
+        return
+    try:
+        when = datetime.fromisoformat(str(last.get("ts"))).astimezone(timezone.utc)
+        today = datetime.now(timezone.utc).date()
+        stamp = when.strftime("%H:%M:%S UTC" if when.date() == today else "%Y-%m-%d %H:%M:%S UTC")
+    except ValueError:
+        stamp = "at an unknown time"
+    count = last.get("events")
+    events = f"{count} event{'' if count == 1 else 's'}" if isinstance(count, int) else "unknown events"
+    host = f" to {last['host']}" if last.get("host") else ""
+    status = last.get("status")
+    if status == 202:
+        report.line("ok", subject, f"{stamp}{host}, HTTP 202, {events}")
+    elif status in (401, 403):
+        report.line("FAIL", subject, f"{stamp}{host}, HTTP {status}, {events}: the ledger rejected the key, a wrong key or one for another account", fix)
+    elif status is None:
+        report.line("FAIL", subject, f"{stamp}{host} failed, {events}: {hook.error_detail(str(last.get('error') or 'no answer'))}",
+                    "check the API URL and your network")
+    else:
+        report.line("FAIL", subject, f"{stamp}{host}, HTTP {status}, {events}, not 202", f"check the API URL; production is {DEFAULT_API_URL}")
+
+
+def state_folder(default: Path) -> Path:
+    """Where a ledger hook keeps its session state: MEZMO_GOVERNANCE_STATE_DIR, else `default` under HOME."""
+    configured = (os.environ.get("MEZMO_GOVERNANCE_STATE_DIR") or "").strip()
+    return Path(configured).expanduser() if configured else home() / default
 
 
 def claude_key(report: Report, plugin: str, settings: dict, path: Path) -> bool:
@@ -759,8 +814,9 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
             )
     if not plugins and not found:
         return None
-    if enabled_plugins:
-        claude_ledger(report, enabled_plugins[0], settings)
+    if enabled_plugins and claude_ledger(report, enabled_plugins[0], settings):
+        ledger_last_send(report, "Claude Code ledger last send", state_folder(CLAUDE_STATE_DIR), "Claude Code",
+                         "run /mezmo:setup governance with a current service account token")
     for source in sources:
         if source.data.get("disableAllHooks") is not True:
             continue
@@ -936,6 +992,8 @@ def check_codex_ledger(report: Report, hooks: Optional[list]) -> None:
             report.line("warn", "Codex ledger", f"{error}, so calls are governed but not recorded", f"check the URL and key, or run {CODEX_SETUP}")
         else:
             report.line("ok", "Codex ledger", f"{shown_url(url)} took an empty batch (HTTP 202, accepted 0)")
+    if url is not None and key is not None:
+        ledger_last_send(report, "Codex ledger last send", state_folder(CODEX_STATE_DIR), "Codex", f"run {CODEX_SETUP} with a current key")
     if hooks is None:
         return
     fix = "start codex, run /hooks, and trust all four Mezmo hooks"

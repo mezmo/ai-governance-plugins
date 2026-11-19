@@ -3,7 +3,13 @@
 
 It runs the command Mezmo documents, `claude mcp add`, for a user-scope server named mezmo.
 The service key ends up in Claude Code's user config (~/.claude.json), as with any server
-added that way.
+added that way. The key is in that child command's arguments while it runs: `claude mcp
+add-json -` reads the server from stdin instead, but Claude Code refuses that inside a
+Claude Code session, which is where setup runs.
+
+The server is named exactly mezmo, since the investigate skill allows its
+mcp__mezmo__get_ledger_investigation tool. The URL is Mezmo's production MCP server unless
+--url names another; governance_config.py configure connects it too, from the same key.
 
   add     check the service key, then add the server
   remove  remove the server
@@ -19,11 +25,14 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 import mezmo_common as mc
 
 MCP_URL = "https://mcp.mezmo.com/mcp"
+# The API URL whose MCP server is MCP_URL. Any other API URL needs its MCP URL given.
+PRODUCTION_API_URL = "https://api.mezmo.com"
 SERVER = "mezmo"
 KEY_ENV = "MEZMO_SERVICE_KEY"
 
@@ -41,13 +50,28 @@ class CheckResult:
 
 
 def clean_key(key: Optional[str]) -> str:
-    """The key without whitespace or a pasted "Bearer " prefix."""
+    """The key without whitespace or a pasted "Bearer " or "Token " prefix."""
     key = (key or "").strip()
-    if key.lower().startswith("bearer "):
-        key = key[len("bearer "):].strip()
+    for prefix in ("bearer ", "token "):
+        if key.lower().startswith(prefix):
+            key = key[len(prefix):].strip()
     if not key or any(c.isspace() for c in key):
         raise ValueError("The Mezmo service key is empty or has spaces in it.")
     return key
+
+
+def mcp_url(value: str) -> str:
+    """`value` as an MCP URL: https://, or http:// to this machine, with no user name or password."""
+    parsed = urllib.parse.urlparse((value or "").strip())
+    secure = parsed.scheme == "https" or (parsed.scheme == "http" and mc.is_loopback(parsed.hostname))
+    if not secure or not parsed.hostname or parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"the Mezmo MCP URL must be an https:// URL with no user name or password, such as {MCP_URL}")
+    return value.strip().rstrip("/")
+
+
+def url_for_api(api_url: str) -> Optional[str]:
+    """MCP_URL for the production API URL; None for any other, whose MCP URL must be given."""
+    return MCP_URL if api_url.strip().rstrip("/").lower() == PRODUCTION_API_URL else None
 
 
 def check_key(key: str, send: Transport = mc.http_request, url: str = MCP_URL) -> CheckResult:
@@ -97,21 +121,69 @@ def server_info(claude: ClaudeRunner) -> Optional[Dict[str, Any]]:
     return parse_get(output) if code == 0 else None
 
 
-def _is_mezmo(info: Mapping[str, Any]) -> bool:
-    return (info.get("url") or "").rstrip("/").lower() == MCP_URL
+def _is_mezmo(info: Mapping[str, Any], url: str = MCP_URL) -> bool:
+    return (info.get("url") or "").rstrip("/").lower() in (MCP_URL, url.rstrip("/").lower())
+
+
+def connect(
+    key: str, url: str, claude: ClaudeRunner, send: Transport = mc.http_request, *, force: bool, check: bool = True
+) -> int:
+    """Check the key against `url`, then add it as the user-scope server mezmo. Prints what it did.
+
+    With `force`, a user-scope server called mezmo is replaced. One from a project or local config
+    never is. Returns 0, EXIT_REJECTED, EXIT_EXISTS or EXIT_ERROR. Never prints the key.
+    """
+    if check:
+        result = check_key(key, send, url)
+        if not result.ok:
+            print(f"Not added. {result.detail}", file=sys.stderr)
+            return EXIT_REJECTED
+        print(result.detail)
+    existing = server_info(claude)
+    if existing is not None:
+        if not force or existing["scope"] != "user":
+            hint = (
+                "Run again with --force to replace it."
+                if existing["scope"] == "user"
+                else "It comes from a project's .mcp.json or a local setting, so remove it there first."
+            )
+            print(f"Claude Code already has an MCP server called {SERVER} ({_describe(existing)}). {hint}",
+                  file=sys.stderr)
+            return EXIT_EXISTS
+        claude(["mcp", "remove", SERVER, "-s", "user"], None)
+        print(f"Replaced the user-scope MCP server called {SERVER} ({existing.get('url')}).")
+    code, output = claude(
+        ["mcp", "add", "--scope", "user", "--transport", "http", SERVER, url,
+         "--header", f"Authorization: Bearer {key}"],
+        None,
+    )
+    if code != 0:
+        print(f"Error: claude mcp add failed: {output.replace(key, mc.mask(key)).strip()[:300]}", file=sys.stderr)
+        return EXIT_ERROR
+    info = server_info(claude) or {}
+    print(f"Added the {SERVER} MCP server ({url}) with service key {mc.mask(key)} for all your projects.")
+    print(f"Claude Code says: {info.get('status') or 'status unknown'}.")
+    print("It's available in new Claude Code sessions. Its tools appear as mcp__mezmo__<tool>.")
+    return 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mcp_config.py", description="Add Mezmo's MCP server to Claude Code.")
     sub = parser.add_subparsers(dest="command", required=True)
+    url_help = f"Mezmo MCP URL (default: {MCP_URL})"
     add = sub.add_parser("add", help="Check the service key, then add the server")
     mc.add_key_arguments(add, f"Mezmo service key (default: ${KEY_ENV})")
+    mc.add_saved_key_argument(add)
+    add.add_argument("--url", default=MCP_URL, help=url_help)
     add.add_argument("--force", action="store_true", help="Replace a user-scope server that's already called mezmo")
     sub.add_parser("remove", help="Remove the server")
     status = sub.add_parser("status", help="Whether the server is set up and connects")
     status.add_argument("--json", action="store_true")
+    status.add_argument("--url", default=MCP_URL, help=f"The Mezmo MCP URL to expect (default: {MCP_URL})")
     check = sub.add_parser("check", help="Check a service key; adds nothing")
     mc.add_key_arguments(check, f"Mezmo service key (default: ${KEY_ENV})")
+    mc.add_saved_key_argument(check)
+    check.add_argument("--url", default=MCP_URL, help=url_help)
     return parser
 
 
@@ -137,44 +209,16 @@ def main(
     args = _build_parser().parse_args(argv)
     try:
         if args.command == "check":
+            url = mcp_url(args.url)
             key = _key(mc.key_argument(args), environ)
-            result = check_key(key, send)
-            print(f"{'ok  ' if result.ok else 'FAIL'}  {MCP_URL}  key {mc.mask(key)}  {result.detail}")
+            result = check_key(key, send, url)
+            print(f"{'ok  ' if result.ok else 'FAIL'}  {url}  key {mc.mask(key)}  {result.detail}")
             return 0 if result.ok else EXIT_REJECTED
 
         if args.command == "add":
+            url = mcp_url(args.url)
             key = _key(mc.key_argument(args), environ)
-            result = check_key(key, send)
-            if not result.ok:
-                print(f"Not added. {result.detail}", file=sys.stderr)
-                return EXIT_REJECTED
-            print(result.detail)
-            existing = server_info(claude)
-            if existing is not None:
-                if not args.force or existing["scope"] != "user":
-                    hint = (
-                        "Run again with --force to replace it."
-                        if existing["scope"] == "user"
-                        else "It comes from a project's .mcp.json or a local setting, so remove it there first."
-                    )
-                    print(f"Claude Code already has an MCP server called {SERVER} ({_describe(existing)}). {hint}",
-                          file=sys.stderr)
-                    return EXIT_EXISTS
-                claude(["mcp", "remove", SERVER, "-s", "user"], None)
-            code, output = claude(
-                ["mcp", "add", "--scope", "user", "--transport", "http", SERVER, MCP_URL,
-                 "--header", f"Authorization: Bearer {key}"],
-                None,
-            )
-            if code != 0:
-                print(f"Error: claude mcp add failed: {output.replace(key, mc.mask(key)).strip()[:300]}",
-                      file=sys.stderr)
-                return EXIT_ERROR
-            info = server_info(claude) or {}
-            print(f"Added the {SERVER} MCP server ({MCP_URL}) with service key {mc.mask(key)} for all your projects.")
-            print(f"Claude Code says: {info.get('status') or 'status unknown'}.")
-            print("It's available in new Claude Code sessions. Its tools appear as mcp__mezmo__<tool>.")
-            return 0
+            return connect(key, url, claude, send, force=args.force)
 
         if args.command == "remove":
             existing = server_info(claude)
@@ -198,7 +242,7 @@ def main(
                 "configured": info is not None,
                 "scope": (info or {}).get("scope"),
                 "url": (info or {}).get("url"),
-                "is_mezmo": bool(info) and _is_mezmo(info),
+                "is_mezmo": bool(info) and _is_mezmo(info, args.url),
                 "connected": bool(info) and info["connected"],
                 "status": (info or {}).get("status"),
             }

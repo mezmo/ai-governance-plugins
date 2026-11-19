@@ -43,6 +43,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Tuple
 from urllib.error import HTTPError
+from urllib.parse import urlparse
 from urllib.request import Request, build_opener
 
 # Python puts a script's folder first on sys.path, except with PYTHONSAFEPATH set. The governance
@@ -114,7 +115,7 @@ MAX_REFERENCES = 20
 MEMORY_BRIEF_TOOL_NAME = "mezmo_memory_brief"
 # For application.version. A file install has no manifest beside the script, so this is a
 # constant, and test_ledger.py checks it against .codex-plugin/plugin.json.
-LEDGER_VERSION = "0.6.0"
+LEDGER_VERSION = "0.7.0"
 # The socket timeout of each request this hook makes, and the deadline its main thread waits for
 # its ledger threads from when they start. A socket timeout alone bounds neither DNS nor the whole
 # request, hence the threads. Read at call time, so a test can patch it.
@@ -126,6 +127,8 @@ LEDGER_EXIT_MARGIN_SECONDS = 1.0
 # The longest a join, a close or a reference write waits for the session state's lock. Past it the
 # change is not made.
 INVESTIGATION_STATE_TIMEOUT_SECONDS = 1.0
+# The longest the last send's record waits for the session state's lock. Past it, it isn't kept.
+LAST_SEND_STATE_TIMEOUT_SECONDS = 0.25
 # How long record_governance_refusal waits for its request, and that request's socket timeout.
 # Kept short because it runs inside the governance hook.
 REFUSED_TIMEOUT_SECONDS = 2.0
@@ -1282,6 +1285,50 @@ def send_ledger_events(
         return LedgerSendResult(answered=False, save=[])
 
 
+# Where ledger_hook keeps its last send in the session state, for /mezmo:test and doctor.
+LAST_SEND_FIELD = "ledger_last_send"
+
+
+def recording_http(*, ledger_http: LedgerHttp, outcome: Dict[str, Any]) -> LedgerHttp:
+    """`ledger_http`, keeping in `outcome` the HTTP status it got, or the error that kept it from one."""
+
+    def send(**request: Any) -> Tuple[int, bytes]:
+        try:
+            status, body = ledger_http(**request)
+        except Exception as error:
+            outcome["error"] = str(error) or type(error).__name__
+            raise
+        outcome["status"] = status
+        return status, body
+
+    return send
+
+
+def last_send(*, config: LedgerConfig, sends: Sequence[Tuple[int, Mapping[str, Any]]]) -> Dict[str, Any]:
+    """What the session state keeps of one run's sends, each (event count, its recording_http outcome).
+
+    The time, the URL's host, the HTTP status or the error, and the event count: never the key or
+    an event. A send that wasn't answered 202 outranks one that was, so a failure is never hidden.
+    """
+    outcomes = [outcome for _, outcome in sends]
+    worst = next((outcome for outcome in outcomes if outcome.get("status") != 202), outcomes[0] if outcomes else {})
+    status = worst.get("status")
+    error = worst.get("error")
+    if status is None and error is None:
+        error = f"no answer within {LEDGER_TIMEOUT_SECONDS:g} seconds"
+    if error is not None:
+        if config.key:
+            error = error.replace(config.key, "<key>")
+        error = _one_line(error)[:MAX_LEDGER_MESSAGE_CHARACTERS]
+    return {
+        "error": error,
+        "events": sum(count for count, _ in sends),
+        "host": urlparse(config.url).hostname,
+        "status": status,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _read_lines(path: Path) -> List[str]:
     # A bad byte must not stop every later drain: it reads as a lone surrogate, and its line is bad.
     lines = path.read_text(encoding="utf-8", errors="surrogateescape").split("\n")
@@ -1597,21 +1644,25 @@ def _call_duration_ms(*, hook_input: Mapping[str, Any]) -> Optional[int]:
 
 
 def _remove_old_start_times() -> None:
-    """Delete the start times of calls approved more than STATE_RETENTION_SECONDS ago. Never raises.
+    """Delete the start times of calls approved, and the session states last changed, more than
+    STATE_RETENTION_SECONDS ago. Never raises.
 
     A file another run deleted first is passed over, so two runs need no lock.
     """
-    try:
-        cutoff = time.time() - STATE_RETENTION_SECONDS
-        with os.scandir(call_state_dir()) as entries:
-            for entry in entries:
-                try:
-                    if entry.is_file(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime < cutoff:
-                        os.unlink(entry.path)
-                except OSError:
-                    pass
-    except Exception:
-        pass
+    cutoff = time.time() - STATE_RETENTION_SECONDS
+    for folder, suffixes in ((call_state_dir(), None), (state_dir(), (".json", ".lock"))):
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    try:
+                        if suffixes is not None and not entry.name.endswith(suffixes):
+                            continue
+                        if entry.is_file(follow_symlinks=False) and entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                            os.unlink(entry.path)
+                    except OSError:
+                        pass
+        except Exception:
+            pass
 
 
 def _new_event(*, config: LedgerConfig, hook_input: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1735,6 +1786,25 @@ def _record_references(*, deadline: float, hook_input: Mapping[str, Any]) -> Non
         pass
 
 
+def _record_last_send(
+    *, config: LedgerConfig, hook_input: Mapping[str, Any], sends: List[Tuple[int, Dict[str, Any]]]
+) -> None:
+    """Keep this run's sends as the session's last send, for doctor. Never raises."""
+    try:
+        session_id = hook_input.get("session_id")
+        session_id = session_id.strip() if isinstance(session_id, str) else ""
+        if not sends or not session_id:
+            return
+        entry = last_send(config=config, sends=sends)
+        update_session_state(
+            change=lambda state: state.__setitem__(LAST_SEND_FIELD, entry),
+            lock_timeout=LAST_SEND_STATE_TIMEOUT_SECONDS,
+            session_id=session_id,
+        )
+    except Exception:
+        pass
+
+
 def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None) -> None:
     """Send this call's event while resending saved ones, and wait up to one deadline. Never raises.
 
@@ -1792,6 +1862,8 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
             )
         sent: List[LedgerSendResult] = []
         sent_investigation: List[LedgerSendResult] = []
+        outcome: Dict[str, Any] = {}
+        outcome_investigation: Dict[str, Any] = {}
         threads: List[threading.Thread] = []
         try:
             # Requests that never share a body, so a bad saved event can't cost a new one, and one
@@ -1800,7 +1872,11 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
                 threads.append(
                     start_ledger_thread(
                         work=lambda: sent.append(
-                            send_ledger_events(config=config, events=[new_event], ledger_http=ledger_http)
+                            send_ledger_events(
+                                config=config,
+                                events=[new_event],
+                                ledger_http=recording_http(ledger_http=ledger_http, outcome=outcome),
+                            )
                         )
                     )
                 )
@@ -1808,7 +1884,11 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
                 threads.append(
                     start_ledger_thread(
                         work=lambda: sent_investigation.append(
-                            send_ledger_events(config=config, events=[investigation], ledger_http=ledger_http)
+                            send_ledger_events(
+                                config=config,
+                                events=[investigation],
+                                ledger_http=recording_http(ledger_http=ledger_http, outcome=outcome_investigation),
+                            )
                         )
                     )
                 )
@@ -1830,6 +1910,16 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
             if new is not None:
                 result = results[0] if results else LedgerSendResult(answered=False, save=[new])
                 save_ledger_events(config=config, events=result.save)
+        # A copy of each outcome, so a thread still running can't change it while it is read.
+        _record_last_send(
+            config=config,
+            hook_input=event,
+            sends=[
+                (1, dict(found))
+                for new, found in ((new_event, outcome), (investigation, outcome_investigation))
+                if new is not None
+            ],
+        )
         print_ledger_messages()
     except Exception as error:
         ledger_warn(message=f"Mezmo ledger failed: {str(error) or type(error).__name__}")

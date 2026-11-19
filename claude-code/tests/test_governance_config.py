@@ -24,14 +24,16 @@ class FakeHttp:
     """Governance answers a GET with `status`; the ledger answers a POST with `ledger`."""
 
     def __init__(self, status=404, body='{"status":404,"code":"ENOENT","message":"workflow not found"}', error=None,
-                 ledger=(202, '{"accepted":0}')):
+                 ledger=(202, '{"accepted":0}'), mcp=(200, "{}")):
         self.calls = []
-        self.status, self.body, self.error, self.ledger = status, body, error, ledger
+        self.status, self.body, self.error, self.ledger, self.mcp = status, body, error, ledger, mcp
 
     def __call__(self, method, url, headers, body=None, timeout=15.0):
         self.calls.append({"method": method, "url": url, "headers": dict(headers), "body": body})
         if self.error:
             raise self.error
+        if url.endswith("/mcp"):
+            return self.mcp
         return self.ledger if method == "POST" else (self.status, self.body)
 
 
@@ -47,11 +49,24 @@ class FakeClaude:
         self.enabled, self.ledger_enabled = enabled, ledger_enabled
         # A governance_url an older release saved, shown only while the CLI still lists it.
         self.legacy_url = legacy_url
+        # The MCP server called mezmo: {"scope", "url"}, or None.
+        self.mcp = None
 
     def __call__(self, args, stdin=None):
         self.calls.append({"args": list(args), "stdin": stdin})
         if args == ["--version"]:
             return 0, "2.1.301 (Claude Code)"
+        if args[:1] == ["mcp"]:
+            if args[1] == "get":
+                if self.mcp is None:
+                    return 1, 'No MCP server found with name: "mezmo".'
+                return 0, f"mezmo:\n  Scope: {self.mcp['scope']} config\n  Status: ✔ Connected\n  URL: {self.mcp['url']}\n"
+            if args[1] == "remove":
+                self.mcp = None
+                return 0, "Removed"
+            if args[1] == "add":
+                self.mcp = {"scope": "user", "url": args[args.index("mezmo") + 1]}
+                return 0, "Added"
         if not self.installed:
             return 1, f'No installed plugin has the id "{args[2]}".'
         if "--values-stdin" in args:
@@ -86,6 +101,11 @@ class FakeClaude:
             "unconfigured": [k for k in names if k not in configured],
             "inputs": inputs,
         })
+
+
+def saved(claude):
+    """What the last `claude plugin configure --values-stdin` was given."""
+    return [call for call in claude.calls if "--values-stdin" in call["args"]][-1]["stdin"]
 
 
 class CheckTest(unittest.TestCase):
@@ -148,7 +168,7 @@ class CheckTest(unittest.TestCase):
                 gc.api_base(url)
 
 
-class CliTest(unittest.TestCase):
+class CliCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.dir = pathlib.Path(self._tmp.name)
@@ -170,6 +190,8 @@ class CliTest(unittest.TestCase):
             )
         return code, out.getvalue(), err.getvalue()
 
+
+class CliTest(CliCase):
     def test_preflight_failures_do_not_touch_tokens_network_or_settings(self):
         cases = [
             ((0, "2.1.212 (Claude Code)"), (0, "{}"), 5),
@@ -270,11 +292,12 @@ class CliTest(unittest.TestCase):
     def test_configure_checks_both_endpoints_then_saves_to_the_plugin(self):
         claude = FakeClaude()
         http = FakeHttp()
-        code, out, err = self.run_cli("configure", "--key", KEY, "--api-url", OTHER_API + "/", claude=claude, http=http)
+        code, out, err = self.run_cli("configure", "--key", KEY, "--api-url", OTHER_API + "/", "--no-mcp",
+                                      claude=claude, http=http)
         self.assertEqual(code, 0, err)
         self.assertEqual([(call["method"], call["url"].split("?")[0]) for call in http.calls],
                          [("GET", OTHER_URL), ("POST", OTHER_LEDGER_URL)])
-        save = claude.calls[-1]
+        save = [call for call in claude.calls if "--values-stdin" in call["args"]][-1]
         self.assertEqual(save["args"][:4], ["plugin", "configure", "mezmo@mezmo", "--values-stdin"])
         self.assertEqual(json.loads(save["stdin"]), {
             "governance_access_key": KEY, "api_url": OTHER_API, "governance_enabled": "true", "ledger_enabled": "true",
@@ -300,9 +323,9 @@ class CliTest(unittest.TestCase):
         for claude in (FakeClaude(), FakeClaude(legacy_url=OTHER_URL)):
             with self.subTest(shown_by_the_cli=bool(claude.legacy_url)):
                 http = FakeHttp()
-                code, out, err = self.run_cli("configure", "--key", KEY, claude=claude, http=http)
+                code, out, err = self.run_cli("configure", "--key", KEY, "--no-mcp", claude=claude, http=http)
                 self.assertEqual(code, 0, err)
-                self.assertEqual(json.loads(claude.calls[-1]["stdin"])["api_url"], OTHER_API)
+                self.assertEqual(json.loads(saved(claude))["api_url"], OTHER_API)
                 self.assertTrue(http.calls[0]["url"].startswith(OTHER_URL))
                 self.assertIn(f"to api_url ({OTHER_API})", out)
                 self.assertEqual(json.loads(self.settings.read_text()),
@@ -313,7 +336,7 @@ class CliTest(unittest.TestCase):
         # An API URL given on the command line wins over the older option.
         claude = FakeClaude(legacy_url=OTHER_URL)
         self.run_cli("configure", "--key", KEY, "--api-url", "https://api.mezmo.com", claude=claude)
-        self.assertEqual(json.loads(claude.calls[-1]["stdin"])["api_url"], "")
+        self.assertEqual(json.loads(saved(claude))["api_url"], "")
 
     def test_configure_refuses_a_rejected_key(self):
         claude = FakeClaude()
@@ -325,7 +348,7 @@ class CliTest(unittest.TestCase):
     def test_configure_production_url_saves_an_empty_url(self):
         claude = FakeClaude()
         self.run_cli("configure", "--key", KEY, claude=claude)
-        self.assertEqual(json.loads(claude.calls[-1]["stdin"])["api_url"], "")
+        self.assertEqual(json.loads(saved(claude))["api_url"], "")
 
     def test_configure_when_the_plugin_isnt_installed(self):
         code, _, err = self.run_cli("configure", "--key", KEY, claude=FakeClaude(installed=False))
@@ -333,7 +356,7 @@ class CliTest(unittest.TestCase):
         self.assertIn("--store settings", err)
 
     def test_configure_into_the_settings_file(self):
-        code, out, err = self.run_cli("configure", "--key", KEY, "--api-url", OTHER_API, "--store", "settings")
+        code, out, err = self.run_cli("configure", "--key", KEY, "--api-url", OTHER_API, "--store", "settings", "--no-mcp")
         self.assertEqual(code, 0, err)
         env = json.loads(self.settings.read_text())["env"]
         self.assertEqual(env, {
@@ -345,7 +368,7 @@ class CliTest(unittest.TestCase):
         claude = FakeClaude()
         code, _, err = self.run_cli("configure", environ={"MEZMO_GOVERNANCE_TOKEN": KEY}, claude=claude)
         self.assertEqual(code, 0, err)
-        self.assertEqual(json.loads(claude.calls[-1]["stdin"])["governance_access_key"], KEY)
+        self.assertEqual(json.loads(saved(claude))["governance_access_key"], KEY)
 
     def test_remove_clears_plugin_options_and_settings(self):
         self.settings.write_text(json.dumps({"model": "opus", "env": {"MEZMO_GOVERNANCE_ACCESS_KEY": KEY, "FOO": "1"}}))
@@ -353,7 +376,7 @@ class CliTest(unittest.TestCase):
         code, out, err = self.run_cli("remove", claude=claude)
         self.assertEqual(code, 0, err)
         # An empty string can't clear a sensitive option, so the key is overwritten and the switch turned off.
-        self.assertEqual(json.loads(claude.calls[-1]["stdin"]), {
+        self.assertEqual(json.loads(saved(claude)), {
             "governance_access_key": "off", "api_url": "", "governance_enabled": "false", "ledger_enabled": "false",
         })
         self.assertEqual(json.loads(self.settings.read_text()), {"model": "opus", "env": {"FOO": "1"}})
@@ -366,11 +389,11 @@ class CliTest(unittest.TestCase):
         code, out, _ = self.run_cli("remove", claude=claude)
         self.assertEqual(code, 0)
         self.assertIn("saved key is overwritten", out)
-        self.assertEqual(json.loads(claude.calls[-1]["stdin"])["governance_access_key"], "off")
+        self.assertEqual(json.loads(saved(claude))["governance_access_key"], "off")
         # The CLI cannot distinguish a removed placeholder from a saved secret.
         code, out, err = self.run_cli("remove", claude=claude)
         self.assertEqual(code, 0, err)
-        self.assertEqual(json.loads(claude.calls[-1]["stdin"])["governance_access_key"], "off")
+        self.assertEqual(json.loads(saved(claude))["governance_access_key"], "off")
 
     def test_remove_reports_disabled_key_cleanup_failure_and_cleans_settings(self):
         self.settings.write_text(json.dumps({"env": {"MEZMO_GOVERNANCE_TOKEN": KEY}}))
@@ -503,6 +526,190 @@ class CliTest(unittest.TestCase):
         self.run_cli("managed", "--key", KEY, "--required", "--output", str(doc))
         self.run_cli("managed", "--key", KEY, "--output", str(doc))
         self.assertNotIn("MEZMO_GOVERNANCE_REQUIRED", json.loads(doc.read_text())["env"])
+
+
+PROD_MCP_URL = "https://mcp.mezmo.com/mcp"
+OTHER_MCP_URL = "https://mcp.example.test/mcp"
+
+
+class FakeSecurity:
+    """Stands in for macOS's `security`: `key` is the Keychain item's password, or None for no item."""
+
+    def __init__(self, key=None):
+        self.key, self.calls = key, []
+
+    def __call__(self, args):
+        self.calls.append(list(args))
+        if self.key is None:
+            return 44, ""
+        return 0, (self.key + "\n") if "-w" in args else 'keychain: "login.keychain-db"\n'
+
+
+class SetupConnectsMcpTest(CliCase):
+    """configure also adds Mezmo's MCP server, named mezmo, with the same key."""
+
+    def mcp_adds(self, claude):
+        return [call["args"] for call in claude.calls if call["args"][:2] == ["mcp", "add"]]
+
+    def test_production_connects_the_production_mcp_server_with_the_same_key(self):
+        claude, http = FakeClaude(), FakeHttp()
+        code, out, err = self.run_cli("configure", "--key", KEY, claude=claude, http=http)
+        self.assertEqual(code, 0, err)
+        (add,) = self.mcp_adds(claude)
+        self.assertEqual(add[:7], ["mcp", "add", "--scope", "user", "--transport", "http", "mezmo"])
+        self.assertEqual(add[7:], [PROD_MCP_URL, "--header", f"Authorization: Bearer {KEY}"])
+        (check,) = [call for call in http.calls if call["url"] == PROD_MCP_URL]
+        self.assertEqual(check["headers"]["Authorization"], f"Bearer {KEY}")
+        self.assertIn(f"Added the mezmo MCP server ({PROD_MCP_URL})", out)
+        self.assertNotIn(KEY, out + err)
+
+    def test_another_api_url_needs_its_mcp_url_before_anything_is_checked_or_saved(self):
+        claude, http = FakeClaude(), FakeHttp()
+        code, _, err = self.run_cli("configure", "--key", KEY, "--api-url", OTHER_API, claude=claude, http=http)
+        self.assertEqual(code, gc.EXIT_USAGE)
+        self.assertIn("--mcp-url", err)
+        self.assertEqual(http.calls, [])
+        self.assertFalse(any("--values-stdin" in call["args"] for call in claude.calls))
+
+    def test_another_api_url_connects_the_mcp_url_given(self):
+        claude = FakeClaude()
+        code, _, err = self.run_cli("configure", "--key", KEY, "--api-url", OTHER_API, "--mcp-url", OTHER_MCP_URL,
+                                    claude=claude)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.mcp_adds(claude)[0][7], OTHER_MCP_URL)
+        self.assertEqual(json.loads(saved(claude))["api_url"], OTHER_API)
+
+    def test_an_mcp_url_that_is_not_https_is_refused(self):
+        code, _, err = self.run_cli("configure", "--key", KEY, "--mcp-url", "http://mcp.example.test/mcp")
+        self.assertEqual(code, gc.EXIT_ERROR)
+        self.assertIn("https://", err)
+
+    def test_a_rejected_mcp_key_still_saves_governance_and_warns(self):
+        claude = FakeClaude()
+        code, out, err = self.run_cli("configure", "--key", KEY, claude=claude, http=FakeHttp(mcp=(401, "{}")))
+        self.assertEqual(code, 0, err)
+        self.assertTrue(claude.key_set)
+        self.assertEqual(self.mcp_adds(claude), [])
+        self.assertIn("Warning: Mezmo MCP isn't connected", out)
+
+    def test_a_user_scope_server_is_replaced_and_a_project_one_is_left(self):
+        claude = FakeClaude()
+        claude.mcp = {"scope": "user", "url": OTHER_MCP_URL}
+        code, out, err = self.run_cli("configure", "--key", KEY, claude=claude)
+        self.assertEqual((code, claude.mcp), (0, {"scope": "user", "url": PROD_MCP_URL}), err)
+        self.assertIn("Replaced", out)
+        claude = FakeClaude()
+        claude.mcp = {"scope": "project", "url": OTHER_MCP_URL}
+        code, out, err = self.run_cli("configure", "--key", KEY, claude=claude)
+        self.assertEqual((code, self.mcp_adds(claude)), (0, []), err)
+        self.assertIn(".mcp.json", err)
+        self.assertIn("Warning: Mezmo MCP isn't connected", out)
+
+    def test_no_mcp_leaves_it_out(self):
+        claude = FakeClaude()
+        self.assertEqual(self.run_cli("configure", "--key", KEY, "--no-mcp", claude=claude)[0], 0)
+        self.assertFalse(any(call["args"][:1] == ["mcp"] for call in claude.calls))
+
+
+class SavedKeyTest(CliCase):
+    """The key the Codex setup saved in the macOS Keychain, used only when asked and never printed."""
+
+    def keychain(self, key, macos=True):
+        security = FakeSecurity(key)
+        for started in (patch.object(gc.mc, "run_security", security), patch.object(gc.mc, "is_macos", lambda: macos)):
+            started.start()
+            self.addCleanup(started.stop)
+        return security
+
+    def test_saved_key_says_whether_there_is_one_without_reading_it(self):
+        security = self.keychain(KEY)
+        (self.dir / ".mezmo").mkdir()
+        (self.dir / ".mezmo" / "codex.json").write_text(json.dumps({"api_url": OTHER_API + "/"}))
+        code, out, err = self.run_cli("saved-key", environ={"HOME": str(self.dir)})
+        self.assertEqual(code, 0, err)
+        self.assertIn("A Mezmo key is saved on this machine", out)
+        self.assertIn(f"Mezmo API URL {OTHER_API}.", out)
+        self.assertEqual(security.calls, [["find-generic-password", "-s", "mezmo-ai-governance", "-a", "codex"]])
+        self.assertNotIn(KEY, out + err)
+
+    def test_saved_key_without_one_or_off_macos(self):
+        self.keychain(None)
+        code, out, _ = self.run_cli("saved-key", environ={"HOME": str(self.dir)})
+        self.assertEqual((code, out.strip()), (gc.EXIT_NO_SAVED_KEY, "No Mezmo key is saved on this machine."))
+        security = self.keychain(KEY, macos=False)
+        self.assertEqual(self.run_cli("saved-key")[0], gc.EXIT_NO_SAVED_KEY)
+        self.assertEqual(security.calls, [])
+
+    def test_configure_uses_the_saved_key_for_governance_the_ledger_and_mcp(self):
+        security = self.keychain(KEY)
+        claude, http = FakeClaude(), FakeHttp()
+        code, out, err = self.run_cli("configure", "--use-saved-key", claude=claude, http=http)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(security.calls, [["find-generic-password", "-s", "mezmo-ai-governance", "-a", "codex", "-w"]])
+        self.assertEqual(json.loads(saved(claude))["governance_access_key"], KEY)
+        self.assertEqual({call["headers"]["Authorization"] for call in http.calls}, {f"Token {KEY}", f"Bearer {KEY}"})
+        self.assertNotIn(KEY, out + err)
+
+    def test_configure_with_no_saved_key_saves_nothing(self):
+        self.keychain(None)
+        claude, http = FakeClaude(), FakeHttp()
+        code, _, err = self.run_cli("configure", "--use-saved-key", claude=claude, http=http)
+        self.assertEqual(code, gc.EXIT_ERROR)
+        self.assertIn("No usable Mezmo key", err)
+        self.assertEqual(http.calls, [])
+        self.assertFalse(claude.key_set)
+
+
+class LedgerLastSendTest(CliCase):
+    """status reports the ledger hook's last send from the session state."""
+
+    def session(self, name, last, age=0):
+        self.sessions.mkdir(exist_ok=True)
+        path = self.sessions / f"{name}.json"
+        path.write_text(json.dumps({"session_id": name, "counts": {}, "pending": {}, **({"ledger_last_send": last} if last else {})}))
+        if age:
+            os.utime(path, (path.stat().st_mtime - age,) * 2)
+
+    def status(self):
+        code, out, err = self.run_cli("status", "--state-dir", str(self.sessions), claude=FakeClaude(key_set=True),
+                                      environ={"MEZMO_LEDGER_SPOOL": str(self.dir / "spool.jsonl")})
+        self.assertEqual(code, 0, err)
+        return out
+
+    def last(self, status, error=None, events=2):
+        return {"ts": "2026-11-18T16:14:40.500000+00:00", "host": "api.mezmo.com", "status": status, "error": error,
+                "events": events}
+
+    def test_a_202_is_reported(self):
+        self.session("s-1", self.last(202), age=60)
+        # The newest session without a send doesn't hide an older one with it.
+        self.session("s-2", None)
+        self.assertIn("  Ledger: last send 2026-11-18 16:14:40 UTC to api.mezmo.com, HTTP 202, 2 events\n", self.status())
+        # Today's send shows only its time.
+        today = gc.datetime.datetime(2026, 11, 18, 18, 0, tzinfo=gc.datetime.timezone.utc)
+        self.assertEqual(gc.describe_last_send(self.last(202), now=today),
+                         (True, "last send 16:14:40 UTC to api.mezmo.com, HTTP 202, 2 events"))
+
+    def test_a_401_is_a_failure_with_the_fix(self):
+        self.session("s-1", self.last(401, events=1))
+        out = self.status()
+        self.assertIn("FAIL: Ledger: last send 2026-11-18 16:14:40 UTC to api.mezmo.com, HTTP 401, 1 event:", out)
+        self.assertIn("Rerun /mezmo:setup governance", out)
+        code, text, _ = self.run_cli("status", "--json", "--state-dir", str(self.sessions), claude=FakeClaude(key_set=True),
+                                     environ={"MEZMO_LEDGER_SPOOL": str(self.dir / "spool.jsonl")})
+        ledger = json.loads(text)["ledger"]
+        self.assertEqual((ledger["last_send"]["status"], ledger["last_send_ok"]), (401, False))
+
+    def test_a_network_error_and_another_status_are_failures(self):
+        self.session("s-1", self.last(None, error="timed out"))
+        self.assertIn("failed, 2 events: timed out", self.status())
+        self.session("s-1", self.last(404))
+        self.assertIn("HTTP 404, 2 events, not 202", self.status())
+
+    def test_no_send_yet_suggests_a_harmless_command(self):
+        out = self.status()
+        self.assertIn("Ledger: no send recorded yet", out)
+        self.assertIn("printf 'mezmo-onboarding-test\\n'", out)
 
 
 if __name__ == "__main__":
