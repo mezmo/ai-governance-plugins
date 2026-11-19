@@ -336,7 +336,9 @@ seconds and the call goes ahead. Records that can't be sent go to the retry file
 later tool calls. So do records the ledger rejects one by one, and records it refuses with a 401,
 which a fixed key will let through. Records it refuses outright, such as with a 400 or 403, are
 dropped. The retry file keeps at most 200 records and drops the oldest past that, and records
-saved for a different `MEZMO_LEDGER_URL` are discarded once you change it. The retry file holds
+saved for a different `MEZMO_LEDGER_URL` are discarded once you change it. A record is resent
+only with the key it was saved with: each record names that key by a short fingerprint, never the
+key itself, so another account's records wait for their own key. The retry file holds
 the full records, including arguments and output, and is readable only by you. Delete it to
 discard what's waiting.
 

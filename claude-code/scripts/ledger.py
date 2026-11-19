@@ -1106,6 +1106,11 @@ def _spool_locked(path: Path) -> Iterator[None]:
         yield
 
 
+def key_fingerprint(key: Optional[str]) -> str:
+    """A non-secret id of the key a record was queued with, so a retry never sends it with another account's key."""
+    return hashlib.sha256((key or "").encode("utf-8")).hexdigest()[:16]
+
+
 def _spool_ledger_events(*, config: LedgerConfig, events: Sequence[Mapping[str, Any]]) -> None:
     """Append `events` to the retry file. The file keeps arguments and output, so it's private.
 
@@ -1116,7 +1121,10 @@ def _spool_ledger_events(*, config: LedgerConfig, events: Sequence[Mapping[str, 
         return
     path = ledger_spool_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    text = "".join(json.dumps({"event": event, "url": config.url}, separators=(",", ":")) + "\n" for event in events)
+    key_id = key_fingerprint(config.key)
+    text = "".join(
+        json.dumps({"event": event, "key_id": key_id, "url": config.url}, separators=(",", ":")) + "\n" for event in events
+    )
     with _spool_locked(path):
         with _open_retry_file(mode="a", path=path) as handle:
             handle.write(text)
@@ -1213,8 +1221,8 @@ def drain_ledger_spool(*, config: LedgerConfig, ledger_http: LedgerHttp) -> None
     """Resend up to LEDGER_DRAIN_BATCH saved events for this URL in one request. Never raises.
 
     A resent event is never saved a second time: its line stays until the server takes it or
-    refuses it for good. A line saved for another URL is removed unsent, and past
-    LEDGER_SPOOL_MAX_LINES the oldest lines are removed.
+    refuses it for good. A line saved for another URL is removed unsent. A line saved with another
+    key stays, unsent, for that key. Past LEDGER_SPOOL_MAX_LINES the oldest lines are removed.
     """
     try:
         path = ledger_spool_path()
@@ -1228,6 +1236,7 @@ def drain_ledger_spool(*, config: LedgerConfig, ledger_http: LedgerHttp) -> None
             taken: List[Tuple[str, Dict[str, Any]]] = []
             finished: List[str] = []
             other_url = 0
+            key_id = key_fingerprint(config.key)
             for line in lines:
                 try:
                     line.encode("utf-8")  # a line with a bad byte is bad
@@ -1240,6 +1249,9 @@ def drain_ledger_spool(*, config: LedgerConfig, ledger_http: LedgerHttp) -> None
                 elif entry["url"] != config.url:
                     finished.append(line)  # MEZMO_LEDGER_URL has changed, so nothing would resend it
                     other_url += 1
+                elif entry.get("key_id") != key_id:
+                    # Queued with another key, or before records named their key: left for that key, never sent with this one.
+                    continue
                 elif len(taken) < LEDGER_DRAIN_BATCH:
                     taken.append((line, entry["event"]))
             if taken:
