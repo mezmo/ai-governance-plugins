@@ -128,14 +128,15 @@ the setup command exists, inside the sandbox:
 test -x ~/.mezmo/bin/mezmo-setup && echo ok
 ```
 
-If it prints `ok`, ask the user to run this in a terminal, outside Codex:
+If it prints `ok`, ask the user to run this in a terminal, outside Codex, adding `--no-ledger` if
+they chose to keep the ledger off:
 
 ```bash
 ~/.mezmo/bin/mezmo-setup
 ```
 
 If it doesn't exist yet, give them `python3 "<plugin root>/mezmo_setup.py"` with `<plugin root>`
-written out: the one time you show the path. Once it saves, `~/.mezmo/bin/mezmo-setup` exists for
+written out, plus `--no-ledger` if they chose the ledger off: the one time you show the path. Once it saves, `~/.mezmo/bin/mezmo-setup` exists for
 next time.
 
 It asks for the Mezmo API URL (Enter keeps production), the MCP URL for another API URL, and the

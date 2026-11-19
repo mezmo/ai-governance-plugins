@@ -504,6 +504,14 @@ class ClaudeCodeTests(DoctorTestCase):
         result = self.doctor(MEZMO_LEDGER_LAUNCHED=LAUNCH_MARKER)
         self.assertIn("jira:LOG-1 is set under env in ~/.claude/settings.json", self.assertStatus(result, "Claude Code incident key", "warn"))
 
+        # A project's settings outrank the user's, and are checked too.
+        project = self.project / ".claude"
+        project.mkdir(parents=True, exist_ok=True)
+        (project / "settings.json").write_text(json.dumps({"env": {"MEZMO_LEDGER_INCIDENT_KEY": "jira:LOG-2"}}))
+        line = self.assertStatus(self.doctor(), "Claude Code incident key", "warn")
+        self.assertIn("jira:LOG-2 is set under env in", line)
+        (project / "settings.json").unlink()
+
         del settings["env"]
         self.write(".claude/settings.json", settings)
         result = self.doctor(MEZMO_LEDGER_INCIDENT_KEY="pagerduty:TEST-1", MEZMO_LEDGER_LAUNCHED=LAUNCH_MARKER)

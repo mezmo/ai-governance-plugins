@@ -857,7 +857,8 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
     if enabled_plugins:
         ledger_leftovers(
             report, "Claude Code",
-            [(f"under env in {shown(root / 'settings.json')}", as_dict(settings.get("env"))), ("in this shell", os.environ)],
+            [(f"under env in {shown(source.path)}", as_dict(source.data.get("env"))) for source in sources]
+            + [("in this shell", os.environ)],
         )
     for source in sources:
         if source.data.get("disableAllHooks") is not True:

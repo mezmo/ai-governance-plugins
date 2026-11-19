@@ -155,6 +155,15 @@ class PrecedenceTests(SettingsCase):
         os.environ["MEZMO_LEDGER_URL"] = "https://ledger.example.test/v1/audit/events"
         self.assertEqual(mezmo_settings.ledger_url().value, "https://ledger.example.test/v1/audit/events")
 
+    def test_a_codex_json_that_cannot_be_read_still_counts_as_configured(self) -> None:
+        # Only a missing file means never set up; a broken one must keep governance failing closed.
+        self.assertFalse(mezmo_settings.governance_configured())
+        mezmo_settings.settings_dir().mkdir(parents=True, exist_ok=True)
+        for broken in ("{not json", "[]"):
+            with self.subTest(broken=broken):
+                mezmo_settings.config_path().write_text(broken, encoding="utf-8")
+                self.assertTrue(mezmo_settings.governance_configured())
+
     def test_no_key_anywhere_denies_with_the_setup_step(self) -> None:
         with self.assertRaises(hook.HookContractError) as raised:
             hook.authorization_header()
@@ -734,6 +743,9 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(mezmo_settings.launcher_path(), mezmo_settings.settings_dir() / "bin" / "mezmo-setup")
         self.assertNotIn("find ", text)
         self.assertNotIn("--disable hooks", text)
+        # A user who chose the ledger off keeps that choice on the terminal route too.
+        fallback = text[text.index("If it prints `ok`"):text.index("It asks for the Mezmo API URL")]
+        self.assertEqual(fallback.count("--no-ledger"), 2)
         self.assertIn("Start a new Codex session to use the Mezmo MCP", text)
         self.assertIn("Start a new Codex session to use the Mezmo MCP", (ADAPTER_DIR / "mezmo_setup.py").read_text(encoding="utf-8"))
 
