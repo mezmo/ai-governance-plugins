@@ -1334,6 +1334,36 @@ class RolloutTests(LedgerTestCase):
                     ["agent.tool_call.started"],
                 )
 
+    def test_an_ending_belongs_to_the_investigation_its_call_started_under(self) -> None:
+        self.write_state({"investigation": {"incident_key": INCIDENT_KEY}})
+        (started,) = self.sent(self.mcp())
+        self.assertEqual(started["extra"]["incident_key"], INCIDENT_KEY)
+        # The session moves to another investigation while the call is still open.
+        self.write_state({**json.loads(ledger.session_state_path("session-1").read_text()),
+                          "investigation": {"incident_key": "jira:OPS-2"}})
+        self.append(self.failed())
+        ended = [event for event in self.sent(self.mcp("Stop")) if event["event"] == "agent.tool_call.failed"]
+        self.assertEqual([event["extra"]["incident_key"] for event in ended], [INCIDENT_KEY])
+        # A call started outside any investigation ends outside one too.
+        state = json.loads(ledger.session_state_path("session-1").read_text())
+        self.write_state({key: value for key, value in state.items() if key != "investigation"})
+        self.sent(self.mcp(tool_use_id="exec-2"))
+        self.write_state({**json.loads(ledger.session_state_path("session-1").read_text()),
+                          "investigation": {"incident_key": "jira:OPS-2"}})
+        (no_result,) = [event for event in self.sent(self.mcp("Stop")) if event["event"] == "agent.tool_call.no_result"]
+        self.assertNotIn("incident_key", no_result["extra"])
+
+    def test_an_oversized_line_is_skipped_not_read_forever(self) -> None:
+        self.write_state({"investigation": {"incident_key": INCIDENT_KEY}})
+        with patch.object(ledger, "MAX_ROLLOUT_READ_BYTES", 300):
+            self.rollout.write_text(json.dumps({"payload": {"type": "item_completed", "item": self.said("x" * 2000)}}) + "\n")
+            self.append(self.said("After the long line."))
+            texts = []
+            for attempt in range(12):
+                texts += [event["message"] for event in self.sent(self.mcp(tool_use_id=f"exec-{attempt}"))
+                          if event["event"] == "agent.investigation.step"]
+        self.assertEqual(texts, ["After the long line."])
+
     def test_a_partial_last_line_waits_for_the_next_read(self) -> None:
         self.write_state({"investigation": {"incident_key": INCIDENT_KEY}})
         line = json.dumps({"payload": {"type": "item_completed", "item": self.said("Half way.")}})
