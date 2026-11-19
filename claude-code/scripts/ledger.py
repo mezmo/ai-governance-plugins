@@ -62,6 +62,10 @@ from governance_hook import (
 )
 
 LEDGER_INCIDENT_KEY_ENV = "MEZMO_LEDGER_INCIDENT_KEY"
+# Set by ledger_investigation.py launch beside MEZMO_LEDGER_INCIDENT_KEY, to launch_marker of it.
+LEDGER_LAUNCHED_ENV = "MEZMO_LEDGER_LAUNCHED"
+# Where the session state keeps the MEZMO_LEDGER_INCIDENT_KEY it warned is ignored, so it warns once.
+IGNORED_INCIDENT_KEY_FIELD = "ignored_incident_key"
 LEDGER_KEY_ENV = "MEZMO_LEDGER_KEY"
 LEDGER_SPOOL_ENV = "MEZMO_LEDGER_SPOOL"
 LEDGER_URL_ENV = "MEZMO_LEDGER_URL"
@@ -856,12 +860,31 @@ def tool_references(*, hook_input: Mapping[str, Any], read_at: str) -> List[Dict
         return []
 
 
-def ledger_context(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
-    """{incident_key, references} for this session, absent ones left out.
+def launch_marker(incident_key: str) -> str:
+    """What ledger_investigation.py launch sets MEZMO_LEDGER_LAUNCHED to beside `incident_key`.
 
-    The session state's investigation wins over MEZMO_LEDGER_INCIDENT_KEY. `references` are the
-    state's valid ones as merge_references keeps them, left out when none is.
+    Tied to the key, so a marker left from one launch never vouches for another key set later.
     """
+    return hashlib.sha256(incident_key.encode("utf-8")).hexdigest()[:16]
+
+
+def environment_incident_key() -> Tuple[Optional[str], Optional[str]]:
+    """(MEZMO_LEDGER_INCIDENT_KEY when `launch` set it, else None; the key when it is ignored, else None).
+
+    Only a key with MEZMO_LEDGER_LAUNCHED set to its launch_marker counts. Any other, such as one
+    left from testing or kept in a long-lived process's environment, would file every call made
+    outside an investigation under it.
+    """
+    incident_key = _setting(LEDGER_INCIDENT_KEY_ENV)
+    if incident_key is None:
+        return None, None
+    if _setting(LEDGER_LAUNCHED_ENV) == launch_marker(incident_key):
+        return incident_key, None
+    return None, incident_key
+
+
+def _session_state(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
+    """This session's state, or {} when there is none or it can't be read. Never raises."""
     state: Any = {}
     session_id = hook_input.get("session_id")
     if isinstance(session_id, str) and session_id.strip():
@@ -869,8 +892,48 @@ def ledger_context(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
             state = json.loads(session_state_path(session_id.strip()).read_text(encoding="utf-8"))
         except Exception:
             state = {}
-    if not isinstance(state, dict):
-        state = {}
+    return state if isinstance(state, dict) else {}
+
+
+def warn_ignored_incident_key(
+    *, hook_input: Mapping[str, Any], update: Callable[[Callable[[Dict[str, Any]], None]], None]
+) -> None:
+    """Warn once per session that MEZMO_LEDGER_INCIDENT_KEY is set but ignored. Never raises.
+
+    `update(change)` applies `change` to the session state under its lock. The state keeps the key
+    warned about, so a later call warns again only for another key, and a state that isn't written
+    means no warning.
+    """
+    try:
+        ignored = environment_incident_key()[1]
+        if ignored is None or _session_state(hook_input=hook_input).get(IGNORED_INCIDENT_KEY_FIELD) == ignored:
+            return
+        warned: List[str] = []
+
+        def note(state: Dict[str, Any]) -> None:
+            if state.get(IGNORED_INCIDENT_KEY_FIELD) != ignored:
+                state[IGNORED_INCIDENT_KEY_FIELD] = ignored
+                warned.append(ignored)
+
+        update(note)
+        if warned:
+            LEDGER_MESSAGES.append(
+                f"Mezmo ledger ignores {LEDGER_INCIDENT_KEY_ENV}={ignored}: only ledger_investigation.py launch"
+                " sets it, so calls outside an investigation are not filed under it. Unset it where it is set;"
+                " a long-running process keeps the environment it started with."
+            )
+    except Exception:
+        pass
+
+
+def ledger_context(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
+    """{incident_key, references} for this session, absent ones left out.
+
+    The session state's investigation wins over MEZMO_LEDGER_INCIDENT_KEY, which counts only when
+    `launch` set it (environment_incident_key). `references` are the state's valid ones as
+    merge_references keeps them, left out when none is.
+    """
+    state = _session_state(hook_input=hook_input)
     context: Dict[str, Any] = {}
     references = merge_references(existing=state.get("references"), new=[])
     if references:
@@ -880,7 +943,7 @@ def ledger_context(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
     if isinstance(incident_key, str) and incident_key.strip():
         context["incident_key"] = incident_key.strip()
         return context
-    incident_key = _setting(LEDGER_INCIDENT_KEY_ENV)
+    incident_key = environment_incident_key()[0]
     if incident_key is not None:
         context["incident_key"] = incident_key
     return context

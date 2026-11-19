@@ -8,7 +8,8 @@ events are sent with, so nothing here needs the account.
   service} as one line of JSON, `service` only when given, and do nothing else. The ledger hook
   sees that line in the Bash call's output and records the join or close itself.
 - `launch --incident-key K [--service S] -- <command...>` sends `agent.investigation.opened`, sets
-  MEZMO_LEDGER_INCIDENT_KEY, and execs the command, so its exit code is the command's. An `opened` it can't send is saved to the retry file and the command
+  MEZMO_LEDGER_INCIDENT_KEY and MEZMO_LEDGER_LAUNCHED, and execs the command, so its exit code is the command's. The ledger hooks take
+  the incident key from the environment only with that marker, which is tied to the key. An `opened` it can't send is saved to the retry file and the command
   still runs. A command that can't be found exits 127, and one that can't be run 126, with
   nothing sent.
 - A service is the deployment or app the incident is about, as a DNS label that isn't all digits.
@@ -170,6 +171,7 @@ def launch(*, command: Sequence[str], incident_key: str, service: Optional[str] 
     _send_opened(config=config, incident_key=incident_key, ledger=ledger, service=service)
     environment = dict(os.environ)
     environment[LEDGER_INCIDENT_KEY_ENV] = incident_key
+    environment[ledger.LEDGER_LAUNCHED_ENV] = ledger.launch_marker(incident_key)
     # exec replaces this process without flushing its buffers.
     sys.stdout.flush()
     sys.stderr.flush()

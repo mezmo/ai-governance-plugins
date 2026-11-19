@@ -463,7 +463,7 @@ account to set. These variables override that, as in [Overrides](#overrides):
 
 | Variable | Purpose |
 | --- | --- |
-| `MEZMO_LEDGER_INCIDENT_KEY` | Incident the session is working on, such as `pagerduty:<incident id>`. Optional |
+| `MEZMO_LEDGER_INCIDENT_KEY` | Incident the session is working on, such as `pagerduty:<incident id>`. Honored only when [`launch`](#investigations) set it |
 | `MEZMO_LEDGER_KEY` | Mezmo service key. Optional, defaults to the governance key |
 | `MEZMO_LEDGER_SPOOL` | Retry file. Optional, defaults to `~/.mezmo/ledger-spool.jsonl` |
 | `MEZMO_LEDGER_URL` | Ledger events URL. Optional, defaults as above |
@@ -594,17 +594,26 @@ the path of `ledger_investigation.py`.
 `launch` is for an alert that starts an agent, for example
 `python3 ~/.codex/hooks/ledger_investigation.py launch --incident-key <key> -- codex exec "<prompt>"`.
 It sends `opened` with `opened_by: "alert"`, then runs the command in its
-place with `MEZMO_LEDGER_INCIDENT_KEY` set, so `launch` exits with the
-command's exit code. It uses the same settings as the hooks: what setup
+place with `MEZMO_LEDGER_INCIDENT_KEY` set, and `MEZMO_LEDGER_LAUNCHED` set to
+a marker tied to that key, so `launch` exits with the command's exit code. It uses the same settings as the hooks: what setup
 saved, or the [overrides](#overrides) exported in the shell it runs from.
 With the ledger off (no key, or `ledger_enabled` false) it runs nothing.
 An `opened` that can't be sent is saved for retry and the command still runs.
 
-Codex may run hooks in a background process whose environment was fixed when
-it started, so the two variables `launch` sets may never reach the ledger
-hook. That is why a launched session still runs `join`: the session state
-wins over the environment. When the variables do reach the hook, every call
-of the session carries the investigation, even after `close`.
+The ledger hook takes the incident key from the environment only with that
+marker. A `MEZMO_LEDGER_INCIDENT_KEY` set any other way, such as one left from
+testing, is ignored, and the hook says so once per session on stderr.
+Otherwise it would file every call made outside an investigation under that
+incident. `doctor codex` warns of it too, and of a `MEZMO_LEDGER_ACCOUNT`,
+which no release since 0.6.0 reads.
+
+Codex runs hooks in its `app-server` process, which keeps the environment it
+started with, even for a new terminal. So the variables `launch` sets may
+never reach the ledger hook, and a variable you unset in your shell can still
+be set there: `pkill -f "codex app-server"` resets it. That is why a launched
+session still runs `join`: the session state wins over the environment. When
+the variables do reach the hook, every call of the session carries the
+investigation, even after `close`.
 
 ### References
 
@@ -672,7 +681,9 @@ The ledger hook reads a session's investigation and references from
 An investigation there wins over `MEZMO_LEDGER_INCIDENT_KEY`. The ledger
 hook writes the investigation there after an [investigation](#investigations)
 `join` and clears it after a `close`, and adds the [references](#references)
-of each Memory or Insights read, keeping whatever else the file holds. A call
+of each Memory or Insights read, keeping whatever else the file holds. It
+also notes an ignored `MEZMO_LEDGER_INCIDENT_KEY` there, so it warns of it
+once per session. A call
 that reads neither writes nothing there. The file is readable only by you
 (file 0600, folder 0700). Nothing else in this plugin writes these files, and
 nothing in this plugin removes them, so any session that joined an

@@ -47,6 +47,12 @@ GOVERNANCE = {
 }
 DENY_REASON = "mock policy: Bash is denied"
 INCIDENT_KEY = "pagerduty:Q34FCCWSTU9OI2"
+
+
+def launched(incident_key: str) -> Dict[str, str]:
+    """The environment ledger_investigation.py launch gives its command for `incident_key`."""
+    return {"MEZMO_LEDGER_INCIDENT_KEY": incident_key, "MEZMO_LEDGER_LAUNCHED": ledger.launch_marker(incident_key)}
+
 DROP = object()
 # Whole PostToolUse hook inputs, written from mcp-service's source until real captures replace them.
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
@@ -744,12 +750,42 @@ class InvestigationTests(LedgerTestCase):
             self.assertEqual(event["extra"]["references"], [MEMORY_REFERENCE])
 
     def test_session_state_wins_over_the_environment(self) -> None:
-        os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
+        os.environ.update(launched(INCIDENT_KEY))
         self.write_state({"investigation": {"incident_key": " jira:LOG-1 "}})
         self.assertEqual(self.sent()["extra"]["incident_key"], "jira:LOG-1")
 
-    def test_the_environment_is_used_without_a_state_investigation(self) -> None:
+    def test_an_environment_key_launch_did_not_set_is_not_sent(self) -> None:
+        for environment in (
+            {"MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY},
+            {**launched(INCIDENT_KEY), "MEZMO_LEDGER_LAUNCHED": "yes"},
+            {**launched("jira:LOG-1"), "MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY},
+        ):
+            with self.subTest(environment=environment), patch.dict(os.environ, environment):
+                self.assertNotIn("incident_key", self.sent()["extra"])
+
+    def test_an_ignored_environment_key_warns_once_per_session_and_key(self) -> None:
         os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
+        warning = f"Mezmo ledger ignores MEZMO_LEDGER_INCIDENT_KEY={INCIDENT_KEY}"
+        self.sent()
+        self.assertIn(warning, self.stderr)
+        self.assertIn("ledger_investigation.py launch", self.stderr)
+        self.sent("PostToolUse")
+        self.assertNotIn(warning, self.stderr)
+        self.run_hook(hook_input(session_id="session-2"), self.fake())
+        self.assertIn(warning, self.stderr)
+        os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = "jira:LOG-2"
+        self.sent()
+        self.assertIn("MEZMO_LEDGER_INCIDENT_KEY=jira:LOG-2", self.stderr)
+
+    def test_a_launched_environment_key_and_none_at_all_never_warn(self) -> None:
+        self.sent()
+        self.assertEqual(self.stderr, "")
+        os.environ.update(launched(INCIDENT_KEY))
+        self.sent()
+        self.assertEqual(self.stderr, "")
+
+    def test_the_environment_is_used_without_a_state_investigation(self) -> None:
+        os.environ.update(launched(INCIDENT_KEY))
         for state in (
             None, {"investigation": None}, {"investigation": {"incident_key": "  "}},
             {"investigation": {"thread_id": "from-an-older-release"}}, {"investigation": "x"}, [1],
@@ -911,7 +947,7 @@ class JoinCloseTests(LedgerTestCase):
 
     def test_a_join_the_state_did_not_take_warns_and_sends_only_the_calls_event(self) -> None:
         # The environment names the same investigation, so only a check of the state itself fails here.
-        os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
+        os.environ.update(launched(INCIDENT_KEY))
         fake = self.fake()
         with patch.object(ledger_hook, "update_session_state", lambda event, change, lock_timeout: None):
             self.run_hook(cli_call("join", "joined"), fake)
@@ -1513,10 +1549,11 @@ class RetryFileTests(LedgerTestCase):
         self.assertEqual(self.spool_lines(), [])
 
     def test_a_resent_event_keeps_its_time_and_investigation(self) -> None:
-        os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
+        os.environ.update(launched(INCIDENT_KEY))
         self.run_hook(hook_input(), self.fake(OSError("refused")))
         (saved,) = self.spooled()
-        del os.environ["MEZMO_LEDGER_INCIDENT_KEY"]
+        for name in launched(INCIDENT_KEY):
+            del os.environ[name]
         fake = self.fake()
         self.run_hook(hook_input(tool_use_id="tool-use-2"), fake)
         self.assertEqual(fake.resent_calls()[0]["events"], [saved])

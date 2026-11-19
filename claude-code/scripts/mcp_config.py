@@ -35,6 +35,8 @@ MCP_URL = "https://mcp.mezmo.com/mcp"
 PRODUCTION_API_URL = "https://api.mezmo.com"
 SERVER = "mezmo"
 KEY_ENV = "MEZMO_SERVICE_KEY"
+# Claude Code loads MCP servers when a session starts, so a server added or changed mid-session has no tools in it.
+RESTART = "Restart Claude Code (`claude --continue` keeps this conversation) to use the Mezmo MCP."
 
 EXIT_ERROR, EXIT_USAGE, EXIT_REJECTED, EXIT_EXISTS = 1, 2, 3, 4
 
@@ -126,12 +128,20 @@ def _is_mezmo(info: Mapping[str, Any], url: str = MCP_URL) -> bool:
 
 
 def connect(
-    key: str, url: str, claude: ClaudeRunner, send: Transport = mc.http_request, *, force: bool, check: bool = True
+    key: str,
+    url: str,
+    claude: ClaudeRunner,
+    send: Transport = mc.http_request,
+    *,
+    force: bool,
+    check: bool = True,
+    restart: bool = True,
 ) -> int:
     """Check the key against `url`, then add it as the user-scope server mezmo. Prints what it did.
 
     With `force`, a user-scope server called mezmo is replaced. One from a project or local config
-    never is. Returns 0, EXIT_REJECTED, EXIT_EXISTS or EXIT_ERROR. Never prints the key.
+    never is. With `restart`, a server added ends with RESTART. Returns 0, EXIT_REJECTED,
+    EXIT_EXISTS or EXIT_ERROR. Never prints the key.
     """
     if check:
         result = check_key(key, send, url)
@@ -163,7 +173,9 @@ def connect(
     info = server_info(claude) or {}
     print(f"Added the {SERVER} MCP server ({url}) with service key {mc.mask(key)} for all your projects.")
     print(f"Claude Code says: {info.get('status') or 'status unknown'}.")
-    print("It's available in new Claude Code sessions. Its tools appear as mcp__mezmo__<tool>.")
+    print("Its tools appear as mcp__mezmo__<tool> in sessions started from now on.")
+    if restart:
+        print(RESTART)
     return 0
 
 

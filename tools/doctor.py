@@ -62,6 +62,8 @@ hook = load_hook()
 # The Codex settings loader and setup command, which the hook just put on sys.path.
 codex_settings = hook.mezmo_settings
 import mezmo_setup  # noqa: E402
+# The ledger hook beside it, for the marker ledger_investigation.py launch sets beside the incident key.
+import mezmo_ledger_hook  # noqa: E402
 
 CODEX_LEDGER_FILE = "mezmo_ledger_hook.py"
 CODEX_SETUP = "./mezmo-governance setup codex"
@@ -695,6 +697,41 @@ def ledger_last_send(report: Report, subject: str, folder: Path, agent: str, fix
         report.line("FAIL", subject, f"{stamp}{host}, HTTP {status}, {events}, not 202", f"check the API URL; production is {DEFAULT_API_URL}")
 
 
+LEDGER_ACCOUNT_ENV = "MEZMO_LEDGER_ACCOUNT"
+CODEX_DAEMON = (
+    "; Codex's app-server daemon keeps the environment it started with, even for a new terminal,"
+    ' so also run pkill -f "codex app-server" to reset it'
+)
+
+
+def ledger_leftovers(report: Report, agent: str, sources: list, fix: str = "") -> None:
+    """Warn about ledger variables in `sources`, [(where, environment)], highest first: what the ledger hooks would see.
+
+    The hooks honor MEZMO_LEDGER_INCIDENT_KEY only beside the marker ledger_investigation.py launch sets, and
+    0.6.0 and later never read MEZMO_LEDGER_ACCOUNT.
+    """
+
+    def found(name: str) -> Optional[tuple]:
+        return next(((where, str(env[name]).strip()) for where, env in sources if str(env.get(name) or "").strip()), None)
+
+    incident = found(mezmo_ledger_hook.LEDGER_INCIDENT_KEY_ENV)
+    if incident is not None:
+        where, key = incident
+        marker = found(mezmo_ledger_hook.LEDGER_LAUNCHED_ENV)
+        if marker is not None and marker[1] == mezmo_ledger_hook.launch_marker(key):
+            report.line("info", f"{agent} incident key", f"{key} {where}, set by ledger_investigation.py launch: calls outside an investigation are filed under it")
+        else:
+            report.line(
+                "warn", f"{agent} incident key",
+                f"MEZMO_LEDGER_INCIDENT_KEY={key} is set {where}, but not by ledger_investigation.py launch,"
+                " so the ledger hooks ignore it: calls outside an investigation are not filed under it",
+                f"unset it{fix}",
+            )
+    account = found(LEDGER_ACCOUNT_ENV)
+    if account is not None:
+        report.line("warn", f"{agent} ledger account", f"{LEDGER_ACCOUNT_ENV} is set {account[0]}, but unused since 0.6.0", f"remove it{fix}")
+
+
 def state_folder(default: Path) -> Path:
     """Where a ledger hook keeps its session state: MEZMO_GOVERNANCE_STATE_DIR, else `default` under HOME."""
     configured = (os.environ.get("MEZMO_GOVERNANCE_STATE_DIR") or "").strip()
@@ -817,6 +854,11 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
     if enabled_plugins and claude_ledger(report, enabled_plugins[0], settings):
         ledger_last_send(report, "Claude Code ledger last send", state_folder(CLAUDE_STATE_DIR), "Claude Code",
                          "run /mezmo:setup governance with a current service account token")
+    if enabled_plugins:
+        ledger_leftovers(
+            report, "Claude Code",
+            [(f"under env in {shown(root / 'settings.json')}", as_dict(settings.get("env"))), ("in this shell", os.environ)],
+        )
     for source in sources:
         if source.data.get("disableAllHooks") is not True:
             continue
@@ -972,6 +1014,7 @@ def check_codex_ledger(report: Report, hooks: Optional[list]) -> None:
 
     The ledger hook can never block a call, so its problems are warnings.
     """
+    ledger_leftovers(report, "Codex", [("in this shell", os.environ)], CODEX_DAEMON)
     for name, value, source in codex_settings.describe():
         shown_value = shown_url(value) if name.endswith("URL") and value != "off" else value
         report.line("info", f"Codex {name}", f"{shown_value} (from {codex_source(source)})")

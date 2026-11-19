@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import shutil
@@ -18,6 +19,8 @@ from typing import Any, Callable, Union
 
 DOCTOR = Path(__file__).resolve().with_name("doctor.py")
 REPO = DOCTOR.parent.parent
+# What ledger_investigation.py launch sets MEZMO_LEDGER_LAUNCHED to beside the incident key pagerduty:TEST-1.
+LAUNCH_MARKER = hashlib.sha256(b"pagerduty:TEST-1").hexdigest()[:16]
 CANARY = "canary-key-7f3e9b21"
 ENOAGENT = {
     "status": 403,
@@ -481,6 +484,31 @@ class ClaudeCodeTests(DoctorTestCase):
         self.install_plugin()
         self.assertEqual(self.lines(self.doctor(MEZMO_LEDGER_URL=None), "Claude Code ledger last send"), [])
 
+    def test_a_stray_incident_key_and_account_warn_for_claude_code(self) -> None:
+        self.fake_claude()
+        self.install_plugin()
+        result = self.doctor()
+        self.assertEqual(self.lines(result, "Claude Code incident key") + self.lines(result, "Claude Code ledger account"), [])
+
+        result = self.doctor(MEZMO_LEDGER_INCIDENT_KEY="pagerduty:TEST-1", MEZMO_LEDGER_ACCOUNT="leftover")
+
+        line = self.assertStatus(result, "Claude Code incident key", "warn")
+        self.assertIn("MEZMO_LEDGER_INCIDENT_KEY=pagerduty:TEST-1 is set in this shell", line)
+        self.assertIn("the ledger hooks ignore it", line)
+        self.assertIn("unused since 0.6.0", self.assertStatus(result, "Claude Code ledger account", "warn"))
+        self.assertIn("Fix: remove it", self.line(result, "Claude Code ledger account"))
+        # From settings.json too, and a marker for another key does not vouch for it.
+        settings = json.loads((self.home / ".claude/settings.json").read_text())
+        settings["env"] = {"MEZMO_LEDGER_INCIDENT_KEY": "jira:LOG-1"}
+        self.write(".claude/settings.json", settings)
+        result = self.doctor(MEZMO_LEDGER_LAUNCHED=LAUNCH_MARKER)
+        self.assertIn("jira:LOG-1 is set under env in ~/.claude/settings.json", self.assertStatus(result, "Claude Code incident key", "warn"))
+
+        del settings["env"]
+        self.write(".claude/settings.json", settings)
+        result = self.doctor(MEZMO_LEDGER_INCIDENT_KEY="pagerduty:TEST-1", MEZMO_LEDGER_LAUNCHED=LAUNCH_MARKER)
+        self.assertIn("set by ledger_investigation.py launch", self.assertStatus(result, "Claude Code incident key", "info"))
+
     def test_the_plugins_ledger_gets_an_empty_batch(self) -> None:
         # (plugin options, environment, ledger answer, status, words)
         cases = [
@@ -716,6 +744,23 @@ class CodexTests(DoctorTestCase):
         self.assertIn("exit 2", self.lines(result, "Codex hook")[1])
         self.assertStatus(result, "Codex trust", "ok")
         self.assertStatus(result, "Codex smoke", "ok")
+
+    def test_a_stray_incident_key_and_account_warn_for_codex(self) -> None:
+        self.install()
+        result = self.doctor()
+        self.assertEqual(self.lines(result, "Codex incident key") + self.lines(result, "Codex ledger account"), [])
+
+        result = self.doctor(MEZMO_LEDGER_INCIDENT_KEY="pagerduty:TEST-1", MEZMO_LEDGER_ACCOUNT="leftover")
+
+        self.assertEqual(result.returncode, 0, result.stdout)
+        line = self.assertStatus(result, "Codex incident key", "warn")
+        self.assertIn("the ledger hooks ignore it", line)
+        self.assertIn('pkill -f "codex app-server"', line)
+        line = self.assertStatus(result, "Codex ledger account", "warn")
+        self.assertIn("unused since 0.6.0", line)
+        self.assertIn('pkill -f "codex app-server"', line)
+        result = self.doctor(MEZMO_LEDGER_INCIDENT_KEY="pagerduty:TEST-1", MEZMO_LEDGER_LAUNCHED=LAUNCH_MARKER)
+        self.assertStatus(result, "Codex incident key", "info")
 
     def test_an_untrusted_ledger_handler_fails_no_check(self) -> None:
         # install adds the ledger handler after the governance handler; until the user trusts it, only the ledger is off.

@@ -69,6 +69,12 @@ DENY_STDOUT = (
     + "\n"
 ).encode()
 INCIDENT_KEY = "pagerduty:Q34FCCWSTU9OI2"
+
+
+def launched(incident_key: str) -> dict[str, str]:
+    """The environment ledger_investigation.py launch gives its command for `incident_key`."""
+    return {"MEZMO_LEDGER_INCIDENT_KEY": incident_key, "MEZMO_LEDGER_LAUNCHED": ledger.launch_marker(incident_key)}
+
 DROP = object()
 
 
@@ -893,12 +899,42 @@ class InvestigationTests(LedgerTestCase):
         self.assertEqual(sorted(state), ["investigation", "ledger_last_send", "session_id", "updated", "version"])
 
     def test_session_state_wins_over_the_environment(self) -> None:
-        os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
+        os.environ.update(launched(INCIDENT_KEY))
         self.write_state({"investigation": {"incident_key": " jira:LOG-1 "}})
         self.assertEqual(self.sent()["extra"]["incident_key"], "jira:LOG-1")
 
-    def test_the_environment_is_used_without_a_state_investigation(self) -> None:
+    def test_an_environment_key_launch_did_not_set_is_not_sent(self) -> None:
+        for environment in (
+            {"MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY},
+            {**launched(INCIDENT_KEY), "MEZMO_LEDGER_LAUNCHED": "1"},
+            {**launched("jira:LOG-1"), "MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY},
+        ):
+            with self.subTest(environment=environment), patch.dict(os.environ, environment):
+                self.assertNotIn("incident_key", self.sent()["extra"])
+
+    def test_an_ignored_environment_key_warns_once_per_session_and_key(self) -> None:
         os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
+        warning = f"Mezmo ledger ignores MEZMO_LEDGER_INCIDENT_KEY={INCIDENT_KEY}"
+        self.sent()
+        self.assertIn(warning, self.stderr)
+        self.assertIn("ledger_investigation.py launch", self.stderr)
+        self.sent("PostToolUse")
+        self.assertNotIn(warning, self.stderr)
+        self.run_hook(hook_input(session_id="session-2"), self.fake())
+        self.assertIn(warning, self.stderr)
+        os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = "jira:LOG-2"
+        self.sent()
+        self.assertIn("MEZMO_LEDGER_INCIDENT_KEY=jira:LOG-2", self.stderr)
+
+    def test_a_launched_environment_key_and_none_at_all_never_warn(self) -> None:
+        self.sent()
+        self.assertEqual(self.stderr, "")
+        os.environ.update(launched(INCIDENT_KEY))
+        self.sent()
+        self.assertEqual(self.stderr, "")
+
+    def test_the_environment_is_used_without_a_state_investigation(self) -> None:
+        os.environ.update(launched(INCIDENT_KEY))
         for state in (
             None, {"investigation": None}, {"investigation": {"incident_key": "  "}},
             {"investigation": {"thread_id": "from-an-older-release"}}, {"investigation": "x"}, [1],
@@ -1037,7 +1073,7 @@ class InvestigationChangeTests(LedgerTestCase):
 
     def test_a_join_the_state_did_not_take_warns_and_sends_only_the_calls_event(self) -> None:
         # The environment names the same investigation, so only a check of the state itself fails here.
-        os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
+        os.environ.update(launched(INCIDENT_KEY))
         fake = self.fake()
         with patch.object(ledger, "update_session_state", lambda *, change, lock_timeout, session_id: None):
             self.run_hook(self.cli_input("join", "joined"), fake)
@@ -2767,8 +2803,11 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "INSIGHTS_ID_FIELDS",
     "INSIGHTS_TOOL_NAMES",
     "INVESTIGATION_ACTIONS",
+    "IGNORED_INCIDENT_KEY_FIELD",
     "INVESTIGATION_SCRIPT",
     "LEDGER_DRAIN_BATCH",
+    "LEDGER_INCIDENT_KEY_ENV",
+    "LEDGER_LAUNCHED_ENV",
     "LEDGER_KEY_ENV",
     "LEDGER_SPOOL_ENV",
     "LEDGER_SPOOL_MAX_LINES",
@@ -2802,10 +2841,13 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "_resend_ledger_events",
     "_response_object",
     "_retryable",
+    "_session_state",
     "_skip_ledger_mcp_tool",
     "_spool_ledger_events",
     "_spool_locked",
     "drain_ledger_spool",
+    "environment_incident_key",
+    "launch_marker",
     "_one_line",
     "key_fingerprint",
     "last_send",
@@ -2819,6 +2861,7 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "save_ledger_events",
     "send_ledger_events",
     "tool_references",
+    "warn_ignored_incident_key",
 )
 # The ledger file's own copies of helpers the Claude Code ledger imports from its governance hook.
 CLAUDE_CODE_HOOK_DEFINITIONS = ("_locked", "_setting", "authorization_header")
