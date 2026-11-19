@@ -497,7 +497,7 @@ account to set. These variables override that, as in [Overrides](#overrides):
 
 | Variable | Purpose |
 | --- | --- |
-| `MEZMO_LEDGER_INCIDENT_KEY` | Incident the session is working on, such as `pagerduty:<incident id>`. Honored only when [`launch`](#investigations) set it |
+| `MEZMO_LEDGER_INCIDENT_KEY` | Incident the session is working on, such as `pagerduty:<incident id>`. Joined only by the first session [`launch`](#investigations) starts |
 | `MEZMO_LEDGER_KEY` | Mezmo service key. Optional, defaults to the governance key |
 | `MEZMO_LEDGER_SPOOL` | Retry file. Optional, defaults to `~/.mezmo/ledger-spool.jsonl` |
 | `MEZMO_LEDGER_URL` | Ledger events URL. Optional, defaults as above |
@@ -629,14 +629,16 @@ the path of `ledger_investigation.py`.
 `python3 ~/.codex/hooks/ledger_investigation.py launch --incident-key <key> -- codex exec "<prompt>"`.
 It sends `opened` with `opened_by: "alert"`, then runs the command in its
 place with `MEZMO_LEDGER_INCIDENT_KEY` set, and `MEZMO_LEDGER_LAUNCHED` set to
-a marker tied to that key, so `launch` exits with the command's exit code. It uses the same settings as the hooks: what setup
+a one-time claim, so `launch` exits with the command's exit code. It uses the same settings as the hooks: what setup
 saved, or the [overrides](#overrides) exported in the shell it runs from.
 With the ledger off (no key, or `ledger_enabled` false) it runs nothing.
 An `opened` that can't be sent is saved for retry and the command still runs.
 
-The ledger hook takes the incident key from the environment only with that
-marker. A `MEZMO_LEDGER_INCIDENT_KEY` set any other way, such as one left from
-testing, is ignored, and the hook says so once per session on stderr.
+The first session to see the claim joins the investigation, as `join` would,
+and `close` ends it for good. No later session, such as another one Codex's
+`app-server` starts with the same environment, and no call after the close, is
+filed under the key. A `MEZMO_LEDGER_INCIDENT_KEY` set any other way, such as
+one left from testing, is ignored, and the hook says so once per session on stderr.
 Otherwise it would file every call made outside an investigation under that
 incident. `doctor codex` warns of it too, and of a `MEZMO_LEDGER_ACCOUNT`,
 which no release since 0.6.0 reads.

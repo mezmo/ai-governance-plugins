@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import ast
-import hashlib
 import json
 import os
 import shutil
@@ -19,8 +18,8 @@ from typing import Any, Callable, Union
 
 DOCTOR = Path(__file__).resolve().with_name("doctor.py")
 REPO = DOCTOR.parent.parent
-# What ledger_investigation.py launch sets MEZMO_LEDGER_LAUNCHED to beside the incident key pagerduty:TEST-1.
-LAUNCH_MARKER = hashlib.sha256(b"pagerduty:TEST-1").hexdigest()[:16]
+# The shape of what ledger_investigation.py launch sets MEZMO_LEDGER_LAUNCHED to: the name of its one-time claim.
+LAUNCH_MARKER = "0123456789abcdef" * 2
 CANARY = "canary-key-7f3e9b21"
 ENOAGENT = {
     "status": 403,

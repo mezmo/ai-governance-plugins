@@ -332,8 +332,8 @@ def ledger_leftovers(
 ) -> List[str]:
     """Warnings for ledger variables the hooks would see but ignore, highest source first.
 
-    The hooks take MEZMO_LEDGER_INCIDENT_KEY only beside the marker ledger_investigation.py launch
-    sets, and no release since 0.6.0 reads MEZMO_LEDGER_ACCOUNT.
+    Only a session ledger_investigation.py launch starts joins MEZMO_LEDGER_INCIDENT_KEY's
+    investigation, through its marker, and no release since 0.6.0 reads MEZMO_LEDGER_ACCOUNT.
     """
     names = (mezmo_ledger.LEDGER_INCIDENT_KEY_ENV, mezmo_ledger.LEDGER_LAUNCHED_ENV, LEDGER_ACCOUNT_ENV)
     sources: List[Tuple[str, Mapping[str, Any]]] = []
@@ -354,7 +354,8 @@ def ledger_leftovers(
     incident = _first(found, (mezmo_ledger.LEDGER_INCIDENT_KEY_ENV,))
     if incident is not None:
         marker = _first(found, (mezmo_ledger.LEDGER_LAUNCHED_ENV,))
-        if marker is None or marker[1] != mezmo_ledger.launch_marker(incident[1]):
+        # launch sets both in one environment, so a marker from another source never vouches for the key.
+        if marker is None or marker[0] != incident[0] or not mezmo_ledger.is_launch_marker(marker[1]):
             warnings.append(
                 f"{mezmo_ledger.LEDGER_INCIDENT_KEY_ENV}={incident[1]} is set (from {incident[0]}), but not by ledger_investigation.py "
                 "launch, so the ledger hooks ignore it: tool calls outside an investigation are not filed under it. "

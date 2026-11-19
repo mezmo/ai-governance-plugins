@@ -1,5 +1,4 @@
 import contextlib
-import hashlib
 import io
 import json
 import os
@@ -453,7 +452,7 @@ class CliTest(CliCase):
         self.assertNotIn(KEY, out)
 
     def test_status_warns_of_ledger_variables_the_hooks_ignore(self):
-        marker = hashlib.sha256(b"pagerduty:TEST-1").hexdigest()[:16]
+        marker = "0123456789abcdef" * 2
         code, out, _ = self.run_cli("status", "--json")
         self.assertEqual((code, json.loads(out)["warnings"]), (0, []))
         environ = {"MEZMO_LEDGER_INCIDENT_KEY": "pagerduty:TEST-1", "MEZMO_LEDGER_ACCOUNT": "leftover"}
@@ -467,6 +466,9 @@ class CliTest(CliCase):
         self.assertEqual(json.loads(out)["warnings"], [
             "MEZMO_LEDGER_ACCOUNT is set (from environment), but unused since 0.6.0. Remove it.",
         ])
+        # A marker that isn't launch's shape vouches for nothing.
+        code, out, _ = self.run_cli("status", "--json", environ={**environ, "MEZMO_LEDGER_LAUNCHED": "1"})
+        self.assertEqual(len(json.loads(out)["warnings"]), 2)
         # Another key in user settings wins, and the launch marker does not vouch for it.
         self.settings.write_text(json.dumps({"env": {"MEZMO_LEDGER_INCIDENT_KEY": "jira:LOG-1"}}))
         code, out, _ = self.run_cli("status", "--json", environ={"MEZMO_LEDGER_LAUNCHED": marker})
