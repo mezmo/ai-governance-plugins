@@ -34,10 +34,12 @@ ENV_NAMES = ("MEZMO_GOVERNANCE_URL", "MEZMO_GOVERNANCE_TOKEN", "MEZMO_LEDGER_URL
 class FakeStore:
     """Stands in for subprocess.run: answers security and secret-tool like an empty store, and keeps a key given on stdin."""
 
-    def __init__(self, fail_reads: bool = False) -> None:
+    def __init__(self, fail_reads: bool = False, fail_deletes: bool = False, hang_secret_tool: bool = False) -> None:
         self.calls: list[tuple[list, str]] = []
         self.key: str | None = None
         self.fail_reads = fail_reads
+        self.fail_deletes = fail_deletes
+        self.hang_secret_tool = hang_secret_tool
 
     def __call__(self, args: list, **kwargs: Any) -> subprocess.CompletedProcess:
         stdin = kwargs.get("input") or ""
@@ -54,9 +56,14 @@ class FakeStore:
             else:
                 out = self.key + "\n"
         elif args[:2] == ["secret-tool", "store"]:
+            if self.hang_secret_tool:
+                raise subprocess.TimeoutExpired(args, kwargs.get("timeout") or 30)
             self.key = stdin
         elif args[:2] in (["security", "delete-generic-password"], ["secret-tool", "clear"]):
-            code, self.key = (0, None) if self.key is not None else (44, None)
+            if self.fail_deletes:
+                code = 51
+            else:
+                code, self.key = (0, None) if self.key is not None else (44, None)
         return subprocess.CompletedProcess(args, code, out, "")
 
     def assert_key_never_in_argv(self, case: unittest.TestCase) -> None:
@@ -328,6 +335,65 @@ class SetupTests(SettingsCase):
             self.assertEqual(mezmo_setup.main(["--remove"]), 0)
         self.assertFalse((self.dir / "codex-key").exists())
         self.assertFalse((self.dir / "codex.json").exists())
+
+    def test_a_failed_remove_keeps_the_settings_and_exits_1(self) -> None:
+        fake = FakeStore()
+        self.run_setup("darwin", lambda name: f"/usr/bin/{name}", fake)
+        fake.fail_deletes = True
+        err = StringIO()
+        with patch.object(subprocess, "run", fake), redirect_stdout(StringIO()), redirect_stderr(err):
+            self.assertEqual(mezmo_setup.main(["--remove"]), 1)
+        self.assertIn("could not delete the key", err.getvalue())
+        self.assertEqual(fake.key, KEY)
+        # codex.json still names the store, so a second --remove can finish the job.
+        self.assertEqual(self.config()["key_store"], "keychain")
+        fake.fail_deletes = False
+        out = StringIO()
+        with patch.object(subprocess, "run", fake), redirect_stdout(out):
+            self.assertEqual(mezmo_setup.main(["--remove"]), 0)
+        self.assertIsNone(fake.key)
+        self.assertFalse((self.dir / "codex.json").exists())
+        # A key already gone is not a failure.
+        self.save(key_store="keychain")
+        out = StringIO()
+        with patch.object(subprocess, "run", fake), redirect_stdout(out):
+            self.assertEqual(mezmo_setup.main(["--remove"]), 0)
+        self.assertIn("no key was in", out.getvalue())
+
+    def test_switching_stores_keeps_the_old_setup_until_the_new_settings_are_saved(self) -> None:
+        self.run_setup("win32", lambda name: None, FakeStore())
+        old_key = self.dir / "codex-key"
+        self.assertTrue(old_key.exists())
+        real_write = mezmo_setup.write_private
+
+        def disk_full(path: Path, text: str) -> None:
+            if path.name == "codex.json":
+                raise OSError(28, "No space left on device")
+            real_write(path, text)
+
+        with patch.object(mezmo_setup, "write_private", disk_full):
+            code, text = self.run_setup("darwin", lambda name: f"/usr/bin/{name}", FakeStore())
+        self.assertEqual(code, 1)
+        self.assertIn("previous settings are unchanged", text)
+        self.assertEqual(self.config()["key_store"], "file")
+        self.assertTrue(old_key.exists())
+        mezmo_settings._read_store.cache_clear()
+        self.assertEqual(mezmo_settings.governance_key().value, KEY)
+
+        # Saved: then the old store's key goes.
+        code, text = self.run_setup("darwin", lambda name: f"/usr/bin/{name}", FakeStore())
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.config()["key_store"], "keychain")
+        self.assertFalse(old_key.exists())
+
+    def test_a_keyring_that_never_answers_falls_back_to_the_key_file(self) -> None:
+        fake = FakeStore(hang_secret_tool=True)
+        code, text = self.run_setup("linux", lambda name: f"/usr/bin/{name}" if name == "secret-tool" else None, fake)
+
+        self.assertEqual(code, 0, text)
+        self.assertIn("did not answer", text)
+        self.assertEqual(self.config()["key_store"], "file")
+        self.assertEqual((self.dir / "codex-key").read_text(encoding="utf-8").strip(), KEY)
 
 
 if __name__ == "__main__":

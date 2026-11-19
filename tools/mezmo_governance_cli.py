@@ -50,6 +50,13 @@ SMOKE_KEY = "smoke-test"
 CLI_SECONDS = 300
 POLICY_URL = "https://api.mezmo.com/v3/governance"
 ADMIN_KEY = "MEZMO_GOVERNANCE_ADMIN_KEY"
+# The Codex ledger is on wherever governance has a key, and follows the governance URL's host. A smoke call is not
+# one to record: its ledger goes to a closed port, and what it then saves for retry goes in the smoke's scratch folder.
+SMOKE_LEDGER_URL = "http://127.0.0.1:9/v1/audit/events"
+
+
+def smoke_ledger(scratch: Path) -> dict:
+    return {"MEZMO_LEDGER_URL": SMOKE_LEDGER_URL, "MEZMO_LEDGER_SPOOL": str(scratch / "ledger-spool.jsonl")}
 PAGE_LIMIT = 50  # the most policies Mezmo returns a page
 # The starter rules policy apply adds, keyed by the agent's tool they list; an agent without that tool gets none.
 STARTER = {
@@ -1100,6 +1107,7 @@ def live_env(scratch: Path) -> dict:
     env = {key: value for key, value in os.environ.items() if not key.startswith("MEZMO_LEDGER_")}
     # The Claude Code plugin's ledger is on wherever governance has a key, unless switched off.
     env["CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED"] = "false"
+    env.update(smoke_ledger(scratch))
     for name in ("MEZMO_GOVERNANCE_URL", "MEZMO_GOVERNANCE_TOKEN"):
         if not (env.get(name) or "").strip():
             raise Failure(f"set {name} in this shell, as for the hooks")
@@ -1173,6 +1181,7 @@ def smoke(names: list, live: bool = False) -> int:
                     "MEZMO_GOVERNANCE_STATE_DIR": str(scratch / "state"),
                     # The Claude Code plugin's ledger is on wherever governance has a key, unless switched off.
                     "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED": "false",
+                    **smoke_ledger(scratch),
                 }
             )
             print(f"mock  Mezmo stand-in on {url}, denies {', '.join(SHELL_TOOLS)}", flush=True)
