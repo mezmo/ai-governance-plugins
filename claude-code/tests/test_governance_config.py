@@ -690,6 +690,14 @@ class LedgerLastSendTest(CliCase):
         self.assertEqual(gc.describe_last_send(self.last(202), now=today),
                          (True, "last send 16:14:40 UTC to api.mezmo.com, HTTP 202, 2 events"))
 
+    def test_the_newest_send_wins_whatever_file_changed_last(self):
+        # Governance rewrites session files too, so file times don't order the sends.
+        old_ok = {**self.last(202), "ts": "2026-11-18T10:00:00+00:00"}
+        new_fail = {**self.last(401, events=1), "ts": "2026-11-18T12:00:00+00:00"}
+        self.session("s-new", new_fail, age=3600)
+        self.session("s-old", old_ok)
+        self.assertEqual(gc.latest_ledger_send(self.sessions), new_fail)
+
     def test_a_401_is_a_failure_with_the_fix(self):
         self.session("s-1", self.last(401, events=1))
         out = self.status()

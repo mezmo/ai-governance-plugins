@@ -371,9 +371,11 @@ def latest_session(state_dir: pathlib.Path) -> Optional[Dict[str, Any]]:
 
 
 def latest_ledger_send(state_dir: pathlib.Path) -> Optional[Dict[str, Any]]:
-    """The last send ledger_hook.py kept in the most recently updated session that has one, or None."""
+    """The newest last send ledger_hook.py kept in any session, by the send's own time, or None.
+    Governance rewrites session files too, so a file's modification time says nothing about its send."""
+    newest: Optional[Dict[str, Any]] = None
     try:
-        files = sorted(state_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+        files = list(state_dir.glob("*.json"))
     except OSError:
         return None
     for path in files:
@@ -381,9 +383,9 @@ def latest_ledger_send(state_dir: pathlib.Path) -> Optional[Dict[str, Any]]:
             found = json.loads(path.read_text(encoding="utf-8")).get(LAST_SEND_FIELD)
         except (OSError, ValueError, AttributeError):
             continue
-        if isinstance(found, dict):
-            return found
-    return None
+        if isinstance(found, dict) and (newest is None or str(found.get("ts", "")) > str(newest.get("ts", ""))):
+            newest = found
+    return newest
 
 
 def describe_last_send(

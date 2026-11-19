@@ -559,6 +559,17 @@ class NonInteractiveTests(SettingsCase):
         self.assertIn("skip  the Mezmo MCP", text)
         self.assertFalse((self.codex / "config.toml").exists())
 
+    def test_moving_to_an_api_without_an_mcp_url_removes_setups_old_mcp(self) -> None:
+        code, text = self.main("--key-file", str(self.key_file()), "--delete-key-file")
+        self.assertEqual(code, 0, text)
+        self.assertIn("[mcp_servers.mezmo]", self.codex_config())
+
+        # The saved key now belongs to another API; the old table would send it to the old MCP.
+        code, text = self.main("--keep-key", "--api-url", API)
+        self.assertEqual(code, 0, text)
+        self.assertIn("removed the Mezmo MCP setup wrote for an earlier API URL", text)
+        self.assertNotIn("[mcp_servers.mezmo]", self.codex_config())
+
     def test_a_hand_written_mezmo_server_is_kept_unless_replace_mcp(self) -> None:
         self.codex.mkdir()
         mine = '[mcp_servers.mezmo]\nurl = "https://mcp.mezmo.com/mcp"\nbearer_token_env_var = "MEZMO_MCP_KEY"\n\n[mcp_servers.mezmo.tools.x]\napproval_mode = "approve"\n\n[other]\na = 1\n'

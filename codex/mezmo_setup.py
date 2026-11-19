@@ -532,6 +532,15 @@ def setup(ledger: bool = True, send: Optional[Http] = None, platform: str = sys.
         print("note: MEZMO_* variables set in this shell still win over these settings")
     code = 0
     if mcp_url is None:
+        # A table setup wrote for an earlier API URL would get this key for the old environment.
+        try:
+            removed = edit_mcp(None)
+        except (SetupError, OSError) as error:
+            print(f"FAIL  could not remove the Mezmo MCP setup wrote before: {error}", file=sys.stderr)
+            code = 1
+        else:
+            if removed:
+                print(f"removed the Mezmo MCP setup wrote for an earlier API URL ({codex_config_path()})")
         print("skip  the Mezmo MCP: no MCP URL for this API URL; run setup again with --mcp-url to add it")
     else:
         try:

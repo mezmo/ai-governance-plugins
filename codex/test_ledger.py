@@ -1509,9 +1509,14 @@ class LastSendTests(LedgerTestCase):
         old.write_text("{}", encoding="utf-8")
         week_ago = time.time() - ledger.STATE_RETENTION_SECONDS - 60
         os.utime(old, (week_ago, week_ago))
+        old_lock = old.with_name(old.name + ".lock")
+        old_lock.write_text("", encoding="utf-8")
+        os.utime(old_lock, (week_ago, week_ago))
         self.run_hook(hook_input("PostToolUse"), self.fake((202, b"{}")))
         self.assertFalse(old.exists())
         self.assertTrue(ledger.session_state_path("session-1").exists())
+        # Another hook may hold an old lock; deleting it would let two hooks lock different files.
+        self.assertTrue(old_lock.exists())
 
 
 class RetryFileTests(LedgerTestCase):
