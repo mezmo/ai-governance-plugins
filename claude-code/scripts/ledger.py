@@ -8,10 +8,11 @@
 - governance_hook.py calls `record_governance_refusal` when governance denies a call, its
   approval expires or it errors, since no hook runs after a deny. That is its only use of this
   module.
-- Off until MEZMO_LEDGER_ACCOUNT and MEZMO_LEDGER_URL are both set. It doesn't need the governance
-  key, and nothing here may change a decision, a deny message, the exit code or the local audit
-  log. What isn't sent is saved to ~/.mezmo/ledger-spool.jsonl, and a later ledger_hook.py run
-  resends it.
+- On whenever there is a key, unless the plugin's ledger_enabled option is off (load_ledger_config).
+  It sends to the API URL plus LEDGER_PATH, and the ledger service takes the account from the key
+  and the investigation from `extra.incident_key`. Nothing here may change a decision, a deny
+  message, the exit code or the local audit log. What isn't sent is saved to
+  ~/.mezmo/ledger-spool.jsonl, and a later ledger_hook.py run resends it.
 """
 
 from __future__ import annotations
@@ -28,7 +29,6 @@ import stat
 import subprocess
 import sys
 import threading
-import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.client import HTTPException
@@ -40,6 +40,8 @@ from urllib.request import Request, build_opener
 
 from governance_hook import (
     AGENT,
+    API_URL_OPTION,
+    FALSE_VALUES,
     KEY_ENVS,
     KEY_OPTION,
     MAX_DETAIL_CHARACTERS,
@@ -47,21 +49,24 @@ from governance_hook import (
     RefuseRedirect,
     _locked,
     _setting,
+    api_url,
     authorization_header,
     call_identity,
     load_config as load_governance_config,
     normalize_tool_call,
+    option_key,
     refuse_exposed_token,
     result_has_known_error,
     session_state_path,
 )
 
-LEDGER_ACCOUNT_ENV = "MEZMO_LEDGER_ACCOUNT"
 LEDGER_INCIDENT_KEY_ENV = "MEZMO_LEDGER_INCIDENT_KEY"
-LEDGER_INVESTIGATION_ID_ENV = "MEZMO_LEDGER_INVESTIGATION_ID"
 LEDGER_KEY_ENV = "MEZMO_LEDGER_KEY"
 LEDGER_SPOOL_ENV = "MEZMO_LEDGER_SPOOL"
 LEDGER_URL_ENV = "MEZMO_LEDGER_URL"
+LEDGER_ENABLED_OPTION = "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED"
+# Appended to the API URL when MEZMO_LEDGER_URL is not set.
+LEDGER_PATH = "/v1/audit/events"
 DEFAULT_LEDGER_SPOOL = Path.home() / ".mezmo" / "ledger-spool.jsonl"
 LEDGER_APPLICATION = "mezmo-claude-code-plugin"
 SKIP_LEDGER_MCP_TOOL_NAMES = frozenset({"get_ledger_investigation", "list_ledger_entries"})
@@ -182,7 +187,6 @@ SPOOL_LOCK = threading.Lock()
 
 
 class LedgerConfig(NamedTuple):
-    account: str
     # The Mezmo access key as configured, or None to send no Authorization header.
     key: Optional[str]
     url: str
@@ -201,25 +205,32 @@ LedgerHttp = Callable[..., Tuple[int, bytes]]
 
 
 def load_ledger_config() -> Optional[LedgerConfig]:
-    """The ledger settings, or None when sending is off or the settings aren't safe to use."""
-    account = _setting(LEDGER_ACCOUNT_ENV)
+    """The ledger settings, or None when sending is off or the settings aren't safe to use.
+
+    The URL is MEZMO_LEDGER_URL, else the API URL plus LEDGER_PATH. The key is MEZMO_LEDGER_KEY,
+    else the governance key from the environment, else the one in the plugin options. Off when the
+    ledger_enabled option is off and MEZMO_LEDGER_URL is not set, or with no key and no
+    MEZMO_LEDGER_URL. A MEZMO_LEDGER_URL with no key sends no Authorization header.
+    """
     url = _setting(LEDGER_URL_ENV)
-    if account is None or url is None:
+    url_setting = LEDGER_URL_ENV if url is not None else API_URL_OPTION
+    if url is None and (_setting(LEDGER_ENABLED_OPTION) or "").lower() in FALSE_VALUES:
         return None
-    # MEZMO_LEDGER_KEY, else the governance key when governance is configured, else no header.
     key = _setting(LEDGER_KEY_ENV)
     key_setting = LEDGER_KEY_ENV
     if key is None:
-        governance = load_governance_config()
-        if governance is not None:
-            key = governance.access_key
-            key_setting = next((name for name in KEY_ENVS if _setting(name) is not None), KEY_OPTION)
+        key_setting = next((name for name in KEY_ENVS if _setting(name) is not None), KEY_OPTION)
+        key = _setting(*KEY_ENVS) or option_key()
+    if url is None:
+        if key is None:
+            return None
+        url = api_url() + LEDGER_PATH
     # The messages name the setting, never its value.
     try:
         refuse_exposed_token(url, "")
     except (HookContractError, ValueError):
         print(
-            f"Mezmo ledger sending is off: {LEDGER_URL_ENV} must use https://, or http:// to this machine, "
+            f"Mezmo ledger sending is off: {url_setting} must use https://, or http:// to this machine, "
             "with no user name or password",
             file=sys.stderr,
         )
@@ -230,7 +241,7 @@ def load_ledger_config() -> Optional[LedgerConfig]:
             file=sys.stderr,
         )
         return None
-    return LedgerConfig(account, key, url)
+    return LedgerConfig(key, url)
 
 
 def ledger_spool_path() -> Path:
@@ -667,11 +678,6 @@ def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str
     return None
 
 
-def investigation_thread_id(*, account: str, incident_key: str) -> str:
-    """The investigation's thread id, as mcp-service and the investigation CLI derive it."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"mezmo-investigation:{account}:{incident_key}"))
-
-
 def _reference_string(*, value: Any) -> Optional[str]:
     """`value` stripped, when it is a string of 1 to MAX_REFERENCE_ID_CHARACTERS characters, else None."""
     text = value.strip() if isinstance(value, str) else ""
@@ -849,11 +855,11 @@ def tool_references(*, hook_input: Mapping[str, Any], read_at: str) -> List[Dict
         return []
 
 
-def ledger_context(*, account: str, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
-    """{incident_key, references, thread_id} for this session, absent ones left out.
+def ledger_context(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
+    """{incident_key, references} for this session, absent ones left out.
 
-    The session state's investigation wins over the environment's, and the two are never mixed.
-    `references` are the state's valid ones as merge_references keeps them, left out when none is.
+    The session state's investigation wins over MEZMO_LEDGER_INCIDENT_KEY. `references` are the
+    state's valid ones as merge_references keeps them, left out when none is.
     """
     state: Any = {}
     session_id = hook_input.get("session_id")
@@ -869,29 +875,19 @@ def ledger_context(*, account: str, hook_input: Mapping[str, Any]) -> Dict[str, 
     if references:
         context["references"] = references
     investigation = state.get("investigation")
-    if isinstance(investigation, dict) and isinstance(investigation.get("thread_id"), str) \
-            and investigation["thread_id"].strip():
-        incident_key = investigation.get("incident_key")
-        if isinstance(incident_key, str) and incident_key.strip():
-            context["incident_key"] = incident_key.strip()
-        context["thread_id"] = investigation["thread_id"].strip()
+    incident_key = investigation.get("incident_key") if isinstance(investigation, dict) else None
+    if isinstance(incident_key, str) and incident_key.strip():
+        context["incident_key"] = incident_key.strip()
         return context
     incident_key = _setting(LEDGER_INCIDENT_KEY_ENV)
-    thread_id = _setting(LEDGER_INVESTIGATION_ID_ENV)
-    if thread_id is None and incident_key is not None:
-        thread_id = investigation_thread_id(account=account, incident_key=incident_key)
     if incident_key is not None:
         context["incident_key"] = incident_key
-    if thread_id is not None:
-        context["thread_id"] = thread_id
     return context
 
 
 def ledger_envelope(
     *,
-    account: str,
-    correlation_id: Optional[str],
-    entity_id: str,
+    entity_id: Optional[str],
     entity_type: str,
     event: str,
     extra: Mapping[str, Any],
@@ -900,29 +896,26 @@ def ledger_envelope(
 ) -> Dict[str, Any]:
     """The top-level fields audit-service takes, for any entity. `event` is the event name.
 
-    `extra` gets the person's git email when there is one, unless the caller already set it.
+    No account and no correlation_id: the ledger service sets them from the key and from
+    `extra.incident_key`, and sets entity_id too when it is None, as for an investigation's events. `extra` gets the person's git email when there is one, unless the caller
+    already set it.
     """
     extra = dict(extra)
     email = person_email()
     if email is not None:
         extra.setdefault("person_email", email)
     envelope: Dict[str, Any] = {
-        "actor": {"account": account, "pk": f"{AGENT}:{session_id}", "type": "agent"},
+        "actor": {"pk": f"{AGENT}:{session_id}", "type": "agent"},
         "application": {"name": LEDGER_APPLICATION, "version": plugin_version()},
+        "entity_type": entity_type,
+        "event": event,
+        "extra": extra,
+        "internal": False,
+        "message": message,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-    if correlation_id is not None:
-        envelope["correlation_id"] = correlation_id
-    envelope.update(
-        {
-            "entity_id": entity_id,
-            "entity_type": entity_type,
-            "event": event,
-            "extra": extra,
-            "internal": False,
-            "message": message,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    )
+    if entity_id is not None:
+        envelope["entity_id"] = entity_id
     return envelope
 
 
@@ -957,7 +950,7 @@ def ledger_event(
     described = isinstance(description, str) and bool(description.strip())
     investigation = _investigation_intent(tool)
     intent = investigation or (_one_line(description) if described else f"{tool.namespace}.{tool.name}")
-    context = ledger_context(account=config.account, hook_input=hook_input)
+    context = ledger_context(hook_input=hook_input)
 
     extra: Dict[str, Any] = {"access": access, "agent": AGENT}
     if kind == "started":
@@ -999,8 +992,6 @@ def ledger_event(
     extra["request_id"] = identity.request_id
     extra["session_id"] = identity.session_id
     extra["target"] = target
-    if "thread_id" in context:
-        extra["thread_id"] = context["thread_id"]
     extra["tool_name"] = tool.name
     extra["tool_namespace"] = tool.namespace
 
@@ -1008,8 +999,6 @@ def ledger_event(
     if kind in LEDGER_ENDINGS:
         message = f"{intent}: {LEDGER_ENDINGS[kind]}" + (f" - {line}" if line else "")
     return ledger_envelope(
-        account=config.account,
-        correlation_id=context.get("thread_id"),
         entity_id=target,
         entity_type="tool_call",
         event=f"agent.tool_call.{kind}",
@@ -1026,20 +1015,20 @@ def investigation_event(
     hook_input: Mapping[str, Any],
     incident_key: str,
     service: Optional[str] = None,
-    thread_id: str,
 ) -> Optional[Dict[str, Any]]:
-    """The session's `agent.investigation.<action>`: `action` is joined or closed. None without an identity."""
+    """The session's `agent.investigation.<action>`: `action` is joined or closed. None without an identity.
+
+    It has no entity_id: the ledger service sets it to the investigation it derives from the incident key.
+    """
     try:
         session_id = call_identity(hook_input).session_id
     except Exception:
         return None
-    extra = {"agent": AGENT, "incident_key": incident_key, "session_id": session_id, "thread_id": thread_id}
+    extra = {"agent": AGENT, "incident_key": incident_key, "session_id": session_id}
     if service is not None:
         extra["service"] = service
     return ledger_envelope(
-        account=config.account,
-        correlation_id=thread_id,
-        entity_id=thread_id,
+        entity_id=None,
         entity_type="investigation",
         event=f"agent.investigation.{action}",
         extra=extra,

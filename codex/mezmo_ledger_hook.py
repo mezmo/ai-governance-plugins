@@ -8,7 +8,8 @@ Codex runs it alongside mezmo_governance_hook.py for every tool call.
 - Codex does not report a failed Bash command, so those are sent as `ran`.
 - A call governance refuses is sent as `not_run`. The governance hook reports it through
   `end_governance_refusal`, because Codex says nothing more about a denied call.
-- Off unless MEZMO_LEDGER_ACCOUNT and MEZMO_LEDGER_URL are both set.
+- Off unless MEZMO_LEDGER_URL is set. The ledger service takes the account from the key and the
+  investigation from `extra.incident_key`.
 - It always exits 0 and prints no hook output, so it can never block or change a tool call.
 - A Bash call that runs ledger_investigation.py join or close, and printed its result line, also
   joins or leaves the investigation in the session state and sends `joined` or `closed`.
@@ -34,7 +35,6 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.client import HTTPException
@@ -60,9 +60,7 @@ from mezmo_governance_hook import (  # noqa: E402
 
 GOVERNANCE_TOKEN_ENV = "MEZMO_GOVERNANCE_TOKEN"
 GOVERNANCE_URL_ENV = "MEZMO_GOVERNANCE_URL"
-LEDGER_ACCOUNT_ENV = "MEZMO_LEDGER_ACCOUNT"
 LEDGER_INCIDENT_KEY_ENV = "MEZMO_LEDGER_INCIDENT_KEY"
-LEDGER_INVESTIGATION_ID_ENV = "MEZMO_LEDGER_INVESTIGATION_ID"
 LEDGER_KEY_ENV = "MEZMO_LEDGER_KEY"
 LEDGER_SPOOL_ENV = "MEZMO_LEDGER_SPOOL"
 LEDGER_URL_ENV = "MEZMO_LEDGER_URL"
@@ -114,7 +112,7 @@ MAX_REFERENCES = 20
 MEMORY_BRIEF_TOOL_NAME = "mezmo_memory_brief"
 # For application.version. A file install has no manifest beside the script, so this is a
 # constant, and test_ledger.py checks it against .codex-plugin/plugin.json.
-LEDGER_VERSION = "0.5.2"
+LEDGER_VERSION = "0.6.0"
 # The socket timeout of each request this hook makes, and the deadline its main thread waits for
 # its ledger threads from when they start. A socket timeout alone bounds neither DNS nor the whole
 # request, hence the threads. Read at call time, so a test can patch it.
@@ -211,7 +209,6 @@ SPOOL_LOCK = threading.Lock()
 
 
 class LedgerConfig(NamedTuple):
-    account: str
     # The Mezmo access key as configured, or None to send no Authorization header.
     key: Optional[str]
     url: str
@@ -284,15 +281,14 @@ def governance_configured() -> bool:
 
 
 def ledger_configured() -> bool:
-    """Whether Mezmo ledger sending is on: both of its settings are set. Prints nothing."""
-    return _setting(LEDGER_ACCOUNT_ENV) is not None and _setting(LEDGER_URL_ENV) is not None
+    """Whether Mezmo ledger sending is on: MEZMO_LEDGER_URL is set. Prints nothing."""
+    return _setting(LEDGER_URL_ENV) is not None
 
 
 def load_ledger_config() -> Optional[LedgerConfig]:
     """The ledger settings, or None when sending is off or the settings aren't safe to use."""
-    account = _setting(LEDGER_ACCOUNT_ENV)
     url = _setting(LEDGER_URL_ENV)
-    if account is None or url is None:
+    if url is None:
         return None
     # MEZMO_LEDGER_KEY, else the governance token, else no header.
     key = _setting(LEDGER_KEY_ENV)
@@ -316,7 +312,7 @@ def load_ledger_config() -> Optional[LedgerConfig]:
             file=sys.stderr,
         )
         return None
-    return LedgerConfig(account, key, url)
+    return LedgerConfig(key, url)
 
 
 def ledger_spool_path() -> Path:
@@ -685,11 +681,6 @@ def ledger_result(*, hook_input: Mapping[str, Any]) -> Tuple[str, Optional[int]]
     return "ran", None
 
 
-def investigation_thread_id(*, account: str, incident_key: str) -> str:
-    """The investigation's thread id, as mcp-service and the investigation CLI derive it."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"mezmo-investigation:{account}:{incident_key}"))
-
-
 def _reference_string(*, value: Any) -> Optional[str]:
     """`value` stripped, when it is a string of 1 to MAX_REFERENCE_ID_CHARACTERS characters, else None."""
     text = value.strip() if isinstance(value, str) else ""
@@ -867,11 +858,11 @@ def tool_references(*, hook_input: Mapping[str, Any], read_at: str) -> List[Dict
         return []
 
 
-def ledger_context(*, account: str, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
-    """{incident_key, references, thread_id} for this session, absent ones left out.
+def ledger_context(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
+    """{incident_key, references} for this session, absent ones left out.
 
-    The session state's investigation wins over the environment's, and the two are never mixed.
-    `references` are the state's valid ones as merge_references keeps them, left out when none is.
+    The session state's investigation wins over MEZMO_LEDGER_INCIDENT_KEY. `references` are the
+    state's valid ones as merge_references keeps them, left out when none is.
     """
     state: Any = {}
     session_id = hook_input.get("session_id")
@@ -887,21 +878,13 @@ def ledger_context(*, account: str, hook_input: Mapping[str, Any]) -> Dict[str, 
     if references:
         context["references"] = references
     investigation = state.get("investigation")
-    if isinstance(investigation, dict) and isinstance(investigation.get("thread_id"), str) \
-            and investigation["thread_id"].strip():
-        incident_key = investigation.get("incident_key")
-        if isinstance(incident_key, str) and incident_key.strip():
-            context["incident_key"] = incident_key.strip()
-        context["thread_id"] = investigation["thread_id"].strip()
+    incident_key = investigation.get("incident_key") if isinstance(investigation, dict) else None
+    if isinstance(incident_key, str) and incident_key.strip():
+        context["incident_key"] = incident_key.strip()
         return context
     incident_key = _setting(LEDGER_INCIDENT_KEY_ENV)
-    thread_id = _setting(LEDGER_INVESTIGATION_ID_ENV)
-    if thread_id is None and incident_key is not None:
-        thread_id = investigation_thread_id(account=account, incident_key=incident_key)
     if incident_key is not None:
         context["incident_key"] = incident_key
-    if thread_id is not None:
-        context["thread_id"] = thread_id
     return context
 
 
@@ -924,9 +907,7 @@ def person_email() -> Optional[str]:
 
 def ledger_envelope(
     *,
-    account: str,
-    correlation_id: Optional[str],
-    entity_id: str,
+    entity_id: Optional[str],
     entity_type: str,
     event: str,
     extra: Mapping[str, Any],
@@ -935,29 +916,25 @@ def ledger_envelope(
 ) -> Dict[str, Any]:
     """The top-level fields audit-service takes, for any entity. `event` is the event name.
 
-    `extra` gains person_email when git has one and `extra` gives none.
+    No account and no correlation_id: the ledger service sets them from the key and from
+    `extra.incident_key`, and sets entity_id too when it is None, as for an investigation's events. `extra` gains person_email when git has one and `extra` gives none.
     """
     stamped = dict(extra)
     email = person_email()
     if email is not None:
         stamped.setdefault("person_email", email)
     envelope: Dict[str, Any] = {
-        "actor": {"account": account, "pk": f"{AGENT}:{session_id}", "type": "agent"},
+        "actor": {"pk": f"{AGENT}:{session_id}", "type": "agent"},
         "application": {"name": LEDGER_APPLICATION, "version": LEDGER_VERSION},
+        "entity_type": entity_type,
+        "event": event,
+        "extra": stamped,
+        "internal": False,
+        "message": message,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-    if correlation_id is not None:
-        envelope["correlation_id"] = correlation_id
-    envelope.update(
-        {
-            "entity_id": entity_id,
-            "entity_type": entity_type,
-            "event": event,
-            "extra": stamped,
-            "internal": False,
-            "message": message,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-    )
+    if entity_id is not None:
+        envelope["entity_id"] = entity_id
     return envelope
 
 
@@ -984,7 +961,7 @@ def ledger_event(
     command = tool.arguments.get("command")
     if not investigation and isinstance(command, str) and command.strip():
         intent += f": {_one_line(command)[:MAX_INTENT_COMMAND_CHARACTERS]}"
-    context = ledger_context(account=config.account, hook_input=hook_input)
+    context = ledger_context(hook_input=hook_input)
 
     extra: Dict[str, Any] = {"access": access, "agent": AGENT}
     if kind == "started":
@@ -1019,8 +996,6 @@ def ledger_event(
     extra["request_id"] = identity.request_id
     extra["session_id"] = identity.session_id
     extra["target"] = target
-    if "thread_id" in context:
-        extra["thread_id"] = context["thread_id"]
     extra["tool_name"] = tool.name
     extra["tool_namespace"] = tool.namespace
 
@@ -1029,8 +1004,6 @@ def ledger_event(
         ending = "ok" if kind == "ran" and exit_status == 0 else LEDGER_ENDINGS.get(kind, kind)
         message = f"{intent}: {ending}" + (f" - {line}" if line else "")
     return ledger_envelope(
-        account=config.account,
-        correlation_id=context.get("thread_id"),
         entity_id=target,
         entity_type="tool_call",
         event=f"agent.tool_call.{kind}",
@@ -1134,20 +1107,20 @@ def investigation_event(
     hook_input: Mapping[str, Any],
     incident_key: str,
     service: Optional[str] = None,
-    thread_id: str,
 ) -> Optional[Dict[str, Any]]:
-    """The `joined` or `closed` event for this session and investigation. None without an identity."""
+    """The `joined` or `closed` event for this session and investigation. None without an identity.
+
+    It has no entity_id: the ledger service sets it to the investigation it derives from the incident key.
+    """
     try:
         session_id = call_identity(hook_input, normalize_tool_call(hook_input)).session_id
     except Exception:
         return None
-    extra = {"agent": AGENT, "incident_key": incident_key, "session_id": session_id, "thread_id": thread_id}
+    extra = {"agent": AGENT, "incident_key": incident_key, "session_id": session_id}
     if service is not None:
         extra["service"] = service
     return ledger_envelope(
-        account=config.account,
-        correlation_id=thread_id,
-        entity_id=thread_id,
+        entity_id=None,
         entity_type="investigation",
         event=f"agent.investigation.{action}",
         extra=extra,
@@ -1649,14 +1622,14 @@ def _new_event(*, config: LedgerConfig, hook_input: Mapping[str, Any]) -> Option
         return None
 
 
-def _state_thread_id(*, session_id: str) -> Any:
-    """The thread_id of the investigation in this session's state, or None. Never raises.
+def _state_incident_key(*, session_id: str) -> Any:
+    """The incident key of the investigation in this session's state, or None. Never raises.
 
     Read from the state alone: ledger_context would fall back to the environment's investigation.
     """
     try:
         state = json.loads(session_state_path(session_id).read_text(encoding="utf-8"))
-        return state["investigation"]["thread_id"]
+        return state["investigation"]["incident_key"]
     except Exception:
         return None
 
@@ -1677,32 +1650,29 @@ def _change_investigation(
 ) -> Optional[Dict[str, Any]]:
     """Join or leave the investigation in the session state, and return its event. Never raises.
 
-    The thread is derived here, from this hook's account, so it is the one ledger_context and the
-    ledger service derive, whatever the CLI printed. `joined` is returned only once the session
-    state holds that thread. `closed` is returned whatever the state holds, which is cleared only
-    when it holds this thread.
+    `joined` is returned only once the session state holds this incident key. `closed` is returned
+    whatever the state holds, which is cleared only when it holds this incident key.
     """
     closed: Optional[Dict[str, Any]] = None
     try:
-        thread_id = investigation_thread_id(account=config.account, incident_key=incident_key)
         session_id = hook_input.get("session_id")
         session_id = session_id.strip() if isinstance(session_id, str) else ""
         joined_at = datetime.now(timezone.utc).isoformat()
 
         def join(state: Dict[str, Any]) -> None:
-            state["investigation"] = {"incident_key": incident_key, "joined_at": joined_at, "thread_id": thread_id}
+            state["investigation"] = {"incident_key": incident_key, "joined_at": joined_at}
             if service is not None:
                 state["investigation"]["service"] = service
 
         def leave(state: Dict[str, Any]) -> None:
             current = state.get("investigation")
-            if isinstance(current, dict) and current.get("thread_id") == thread_id:
+            if isinstance(current, dict) and current.get("incident_key") == incident_key:
                 del state["investigation"]
 
         if action == "joined":
             if session_id:
                 update_session_state(change=join, lock_timeout=_lock_timeout(deadline=deadline), session_id=session_id)
-            if not session_id or _state_thread_id(session_id=session_id) != thread_id:
+            if not session_id or _state_incident_key(session_id=session_id) != incident_key:
                 ledger_warn(
                     message=f"Mezmo ledger did not join investigation {incident_key}: the session state was not written"
                 )
@@ -1713,15 +1683,14 @@ def _change_investigation(
                 hook_input=hook_input,
                 incident_key=incident_key,
                 service=service,
-                thread_id=thread_id,
             )
         closed = investigation_event(
-            action=action, config=config, hook_input=hook_input, incident_key=incident_key, thread_id=thread_id
+            action=action, config=config, hook_input=hook_input, incident_key=incident_key
         )
         # No write for another investigation, so a close can't create a state file.
-        if session_id and _state_thread_id(session_id=session_id) == thread_id:
+        if session_id and _state_incident_key(session_id=session_id) == incident_key:
             update_session_state(change=leave, lock_timeout=_lock_timeout(deadline=deadline), session_id=session_id)
-            if _state_thread_id(session_id=session_id) == thread_id:
+            if _state_incident_key(session_id=session_id) == incident_key:
                 ledger_warn(
                     message=f"Mezmo ledger did not leave investigation {incident_key}: the session state still holds it"
                 )

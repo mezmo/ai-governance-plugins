@@ -17,7 +17,8 @@ plugins repo, with these changes:
   fails closed, as the adapter does.
 - Configuration comes from MEZMO_GOVERNANCE_* environment variables (managed settings) or,
   failing that, from the plugin's options, which Claude Code exports to plugin hooks as
-  CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL and CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY.
+  CLAUDE_PLUGIN_OPTION_API_URL and CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY. The authorize URL
+  is the API URL plus GOVERNANCE_PATH.
 - The service answers HTTP 207 while a person decides, with {approved, reason} on both the
   POST and the status GET. 207 means pending, whatever `approved` says. The adapter's
   {status: ...} poll body is still accepted.
@@ -51,7 +52,9 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 AGENT = "claude_code"
-DEFAULT_URL = "https://api.mezmo.com/governance/workflow/authorize"
+DEFAULT_API_URL = "https://api.mezmo.com"
+GOVERNANCE_PATH = "/governance/workflow/authorize"
+DEFAULT_URL = DEFAULT_API_URL + GOVERNANCE_PATH
 DEFAULT_TIMEOUT_SECONDS = 590.0
 # hooks.json gives the hook 600 seconds; deny before Claude Code stops it.
 MAX_TIMEOUT_SECONDS = 590.0
@@ -84,7 +87,7 @@ ARGUMENT_NAME_MAX = 64
 URL_ENV = "MEZMO_GOVERNANCE_URL"
 KEY_ENVS = ("MEZMO_GOVERNANCE_ACCESS_KEY", "MEZMO_GOVERNANCE_TOKEN")
 REQUIRED_ENV = "MEZMO_GOVERNANCE_REQUIRED"
-URL_OPTION = "CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL"
+API_URL_OPTION = "CLAUDE_PLUGIN_OPTION_API_URL"
 KEY_OPTION = "CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY"
 ENABLED_OPTION = "CLAUDE_PLUGIN_OPTION_GOVERNANCE_ENABLED"
 # Claude Code can't unset a sensitive option, so /mezmo:remove overwrites the key with this.
@@ -155,12 +158,23 @@ def load_config() -> Optional[Config]:
     """
     key = _setting(*KEY_ENVS)
     if key is None:
-        switched_off = (_setting(ENABLED_OPTION) or "").lower() in FALSE_VALUES
-        option_key = _setting(KEY_OPTION)
-        if switched_off or option_key is None or option_key.lower() == REMOVED_KEY:
+        if (_setting(ENABLED_OPTION) or "").lower() in FALSE_VALUES:
             return None
-        key = option_key
-    return Config(_setting(URL_ENV, URL_OPTION) or DEFAULT_URL, key)
+        key = option_key()
+        if key is None:
+            return None
+    return Config(_setting(URL_ENV) or api_url() + GOVERNANCE_PATH, key)
+
+
+def api_url() -> str:
+    """The Mezmo API URL from the plugin options, else production, with no trailing slash."""
+    return (_setting(API_URL_OPTION) or DEFAULT_API_URL).rstrip("/")
+
+
+def option_key() -> Optional[str]:
+    """The key in the plugin options, or None when it is unset or the placeholder remove leaves."""
+    key = _setting(KEY_OPTION)
+    return None if key is None or key.lower() == REMOVED_KEY else key
 
 
 def governance_required() -> bool:

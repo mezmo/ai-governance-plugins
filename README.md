@@ -412,7 +412,8 @@ adapter at your installed `claude` with `CLAUDE_CODE_EXECUTABLE`. See
 | `MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS` | no | `5` |
 | `MEZMO_GOVERNANCE_AUDIT_LOG` | no | `~/.mezmo/governance-audit.jsonl` |
 
-The Claude Code plugin differs: `MEZMO_GOVERNANCE_URL` defaults to
+The Claude Code plugin differs: `MEZMO_GOVERNANCE_URL` defaults to its Mezmo
+API URL option plus `/governance/workflow/authorize`, so
 `https://api.mezmo.com/governance/workflow/authorize`, and it reads the key
 from `MEZMO_GOVERNANCE_ACCESS_KEY` first, then `MEZMO_GOVERNANCE_TOKEN`
 (see [claude-code/](claude-code/#governance)).
@@ -428,7 +429,7 @@ Before each tool call it governs (for Claude Code, each Bash and MCP tool
 call), the plugin sends Mezmo the tool name and its full arguments: the shell command, the file path, and for write tools the file
 content. It also sends the session id and the tool call id (Gemini CLI, Antigravity CLI, Copilot, Droid and Windsurf send a fresh random id per call, because they expose none; VS Code Local exposes one). Tool results are
 not sent to Mezmo: post-tool hooks only append a line to a local file. The
-optional ledger sending of Claude Code and Codex, below, is the one exception.
+ledger sending of Claude Code and Codex, below, is the one exception.
 
 Not every plugin sends only that, and not only to the Governance service:
 
@@ -443,16 +444,17 @@ Not every plugin sends only that, and not only to the Governance service:
   the Governance service. While your settings point it at Mezmo, the plugin's
   status display also posts an empty body to that endpoint once per session
   to check the ingestion key. See [claude-code/README.md](claude-code/README.md#telemetry).
-- Claude Code's ledger sending is off by default. With `MEZMO_LEDGER_URL` and
-  `MEZMO_LEDGER_ACCOUNT` set, it sends the ledger service a record when each
-  Bash and MCP call is requested and one when it ends, with the arguments and
-  the result or error, each cut at 4,096 characters. Records that can't be sent
-  wait in a local retry file. This happens with governance on or off. When
-  `MEZMO_LEDGER_KEY` isn't set and governance is configured, it sends the
-  governance key to `MEZMO_LEDGER_URL`, whatever host that is. See
-  [claude-code/README.md](claude-code/README.md#ledger).
-- Codex's ledger sending is off by default too, and uses the same two
-  settings, limits and retry file. It records every tool Codex runs a hook
+- Claude Code's ledger sending is on whenever the plugin has a service account
+  token, unless its `ledger_enabled` option is off. It sends the ledger service,
+  at the Mezmo API URL plus `/v1/audit/events` (or `MEZMO_LEDGER_URL`), a record
+  when each Bash and MCP call is requested and one when it ends, with the
+  arguments and the result or error, each cut at 4,096 characters. Records that
+  can't be sent wait in a local retry file. This happens with governance's own
+  switch on or off. When `MEZMO_LEDGER_KEY` isn't set, it sends the governance
+  key, so with `MEZMO_LEDGER_URL` set the key goes to that host, whatever it
+  is. See [claude-code/README.md](claude-code/README.md#ledger).
+- Codex's ledger sending is off until `MEZMO_LEDGER_URL` is set, and uses the
+  same limits and retry file. It records every tool Codex runs a hook
   for, such as `apply_patch`, `Bash`, MCP tools and `update_plan`, not only
   Bash and MCP calls. When `MEZMO_LEDGER_KEY` isn't set, it sends
   `MEZMO_GOVERNANCE_TOKEN` to `MEZMO_LEDGER_URL`, whatever host that is. See

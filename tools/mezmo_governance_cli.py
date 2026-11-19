@@ -1090,6 +1090,8 @@ def live_env(scratch: Path) -> dict:
     Their ledger settings stay out: with them, a hook that denies would record the smoke call in the real ledger.
     """
     env = {key: value for key, value in os.environ.items() if not key.startswith("MEZMO_LEDGER_")}
+    # The Claude Code plugin's ledger is on wherever governance has a key, unless switched off.
+    env["CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED"] = "false"
     for name in ("MEZMO_GOVERNANCE_URL", "MEZMO_GOVERNANCE_TOKEN"):
         if not (env.get(name) or "").strip():
             raise Failure(f"set {name} in this shell, as for the hooks")
@@ -1161,6 +1163,8 @@ def smoke(names: list, live: bool = False) -> int:
                     # Keep the smoke calls out of the user's audit log and the plugin's status display.
                     "MEZMO_GOVERNANCE_AUDIT_LOG": str(scratch / "audit.jsonl"),
                     "MEZMO_GOVERNANCE_STATE_DIR": str(scratch / "state"),
+                    # The Claude Code plugin's ledger is on wherever governance has a key, unless switched off.
+                    "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED": "false",
                 }
             )
             print(f"mock  Mezmo stand-in on {url}, denies {', '.join(SHELL_TOOLS)}", flush=True)

@@ -25,10 +25,7 @@ CLI_PATH = ADAPTER_DIR / "ledger_investigation.py"
 CLAUDE_CODE_CLI_PATH = ADAPTER_DIR.parent / "claude-code" / "scripts" / "ledger_investigation.py"
 SCRIPTS = ("ledger_investigation.py", "mezmo_governance_hook.py", "mezmo_ledger_hook.py")
 
-ACCOUNT = "test-acct"
-# The epic's check value: account test-acct and this incident key.
 INCIDENT_KEY = "pagerduty:Q34FCCWSTU9OI2"
-CHECK_THREAD_ID = "ab2763da-3eea-5b82-a1bf-7922641cdf6c"
 
 
 def serve(requests: list[Any], test: unittest.TestCase) -> str:
@@ -79,7 +76,6 @@ class LedgerInvestigationTests(unittest.TestCase):
             "HOME": str(folder),
             "MEZMO_GOVERNANCE_AUDIT_LOG": str(folder / "audit.jsonl"),
             "MEZMO_GOVERNANCE_STATE_DIR": str(folder / "codex-sessions"),
-            "MEZMO_LEDGER_ACCOUNT": ACCOUNT,
             "MEZMO_LEDGER_SPOOL": str(folder / "spool" / "ledger-spool.jsonl"),
             "MEZMO_LEDGER_URL": serve(requests, self),
             "NO_PROXY": "*",
@@ -89,7 +85,8 @@ class LedgerInvestigationTests(unittest.TestCase):
             [
                 sys.executable, str(hooks / "ledger_investigation.py"), "launch", "--incident-key", INCIDENT_KEY,
                 "--service", "checkout", "--",
-                sys.executable, "-c", "import os; print(os.environ['MEZMO_LEDGER_INVESTIGATION_ID'])",
+                sys.executable, "-c",
+                "import os; print(os.environ['MEZMO_LEDGER_INCIDENT_KEY'], os.environ.get('MEZMO_LEDGER_INVESTIGATION_ID'))",
             ],
             capture_output=True,
             check=False,
@@ -100,11 +97,14 @@ class LedgerInvestigationTests(unittest.TestCase):
             timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, f"{CHECK_THREAD_ID}\n")
+        self.assertEqual(result.stdout, f"{INCIDENT_KEY} None\n")
         ((opened,),) = requests
-        self.assertEqual(opened["actor"], {"account": ACCOUNT, "pk": "codex:launcher", "type": "agent"})
+        # No account, correlation_id or entity_id: the ledger service sets them from the key and the incident key.
+        self.assertEqual(opened["actor"], {"pk": "codex:launcher", "type": "agent"})
+        self.assertNotIn("correlation_id", opened)
+        self.assertNotIn("entity_id", opened)
         self.assertEqual(opened["application"]["name"], "mezmo-codex-plugin")
-        self.assertEqual((opened["entity_id"], opened["event"]), (CHECK_THREAD_ID, "agent.investigation.opened"))
+        self.assertEqual((opened["entity_type"], opened["event"]), ("investigation", "agent.investigation.opened"))
         # Whole, with no session_id and, since git reports no email here, no person_email.
         self.assertEqual(
             opened["extra"],
@@ -113,7 +113,6 @@ class LedgerInvestigationTests(unittest.TestCase):
                 "incident_key": INCIDENT_KEY,
                 "opened_by": "alert",
                 "service": "checkout",
-                "thread_id": CHECK_THREAD_ID,
             },
         )
         self.assertFalse((folder / "spool").exists())

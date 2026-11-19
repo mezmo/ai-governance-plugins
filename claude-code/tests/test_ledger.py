@@ -34,7 +34,6 @@ import governance_hook as hook  # noqa: E402
 import ledger  # noqa: E402
 import ledger_hook  # noqa: E402
 
-ACCOUNT = "test-acct"
 # Never reached: run_hook and run_governance pass a fake, and the guard in LedgerTestCase.setUp
 # stops a real request to it. `.invalid` never resolves, so this names no real host or port.
 LEDGER_URL = "https://audit.ledger.invalid/v1/events"
@@ -47,9 +46,7 @@ GOVERNANCE = {
     "MEZMO_GOVERNANCE_URL": AUTHORIZE_URL,
 }
 DENY_REASON = "mock policy: Bash is denied"
-# The epic's check value: account test-acct and this incident key.
 INCIDENT_KEY = "pagerduty:Q34FCCWSTU9OI2"
-CHECK_THREAD_ID = "ab2763da-3eea-5b82-a1bf-7922641cdf6c"
 DROP = object()
 # Whole PostToolUse hook inputs, written from mcp-service's source until real captures replace them.
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
@@ -62,9 +59,10 @@ MEMORY_REFERENCE = BRIEF_REFERENCES[0]
 # The first template_id in tests/fixtures/find_log_patterns.synthetic.json.
 PATTERN_ID = "3647542932298209019"
 
-# What audit-service's schema/audit-event.js enforces.
-REQUIRED_FIELDS = {"actor", "application", "entity_id", "entity_type", "event", "internal", "message", "timestamp"}
-TOP_LEVEL_FIELDS = REQUIRED_FIELDS | {"correlation_id", "extra"}
+# What audit-service's schema/audit-event.js enforces. The ledger service sets an investigation event's
+# entity_id before it validates, so the plugin sends one only on a tool-call event.
+REQUIRED_FIELDS = {"actor", "application", "entity_type", "event", "internal", "message", "timestamp"}
+TOP_LEVEL_FIELDS = REQUIRED_FIELDS | {"entity_id", "extra"}
 EVENT_NAME = re.compile(r"^[a-z0-9]+(?:[_-][a-z0-9]+)*(?:\.[a-z0-9]+(?:[_-][a-z0-9]+)*){2}$")
 
 
@@ -94,11 +92,8 @@ def hook_input(name: str = "PreToolUse", **fields: Any) -> Dict[str, Any]:
 
 
 def cli_call(subcommand: str, action: str, service: Optional[str] = None) -> Dict[str, Any]:
-    """The PostToolUse of a Bash call that ran ledger_investigation.py's `subcommand` and printed `action`.
-
-    The printed thread_id is not the one the hook derives, and is ignored.
-    """
-    line = {"action": action, "incident_key": INCIDENT_KEY, "thread_id": "printed-thread"}
+    """The PostToolUse of a Bash call that ran ledger_investigation.py's `subcommand` and printed `action`."""
+    line = {"action": action, "incident_key": INCIDENT_KEY}
     arguments = f"--incident-key {INCIDENT_KEY}"
     if service is not None:
         line["service"] = service
@@ -294,7 +289,6 @@ class LedgerTestCase(unittest.TestCase):
             "HOME": str(self.dir),
             "MEZMO_GOVERNANCE_AUDIT_LOG": str(self.audit_log),
             "MEZMO_GOVERNANCE_STATE_DIR": str(self.state_dir),
-            "MEZMO_LEDGER_ACCOUNT": ACCOUNT,
             "MEZMO_LEDGER_SPOOL": str(self.spool),
             "MEZMO_LEDGER_URL": LEDGER_URL,
         }
@@ -422,14 +416,19 @@ class LedgerTestCase(unittest.TestCase):
         """What audit-service's schema enforces, applied to every event a test captures."""
         self.assertEqual(REQUIRED_FIELDS - set(event), set(), event)
         self.assertEqual(set(event) - TOP_LEVEL_FIELDS, set(), event)
-        self.assertEqual(set(event["actor"]) - {"account", "pk", "type"}, set())
+        # The ledger service sets the account and the investigation from the key and the incident key.
+        self.assertEqual(set(event["actor"]), {"pk", "type"})
+        self.assertNotIn("correlation_id", event)
+        self.assertNotIn("thread_id", event.get("extra", {}))
+        self.assertEqual("entity_id" in event, event["entity_type"] != "investigation")
+        if event["entity_type"] == "investigation":
+            self.assertTrue(event["extra"]["incident_key"])
         self.assertEqual(event["actor"]["type"], "agent")
         self.assertEqual(set(event["application"]) - {"name", "version"}, set())
         for value in (
-            event["actor"].get("account"),
             event["application"].get("name"),
             event["application"].get("version"),
-            event["entity_id"],
+            event.get("entity_id", "set by the ledger service"),
             event["entity_type"],
             event["message"],
         ):
@@ -584,7 +583,7 @@ class FieldTests(LedgerTestCase):
         self.assertEqual((bash["extra"]["tool_namespace"], bash["extra"]["tool_name"]), ("claude_code", "Bash"))
         self.assertEqual((mcp["extra"]["tool_namespace"], mcp["extra"]["tool_name"]), ("kubernetes_demo", "pods_delete"))
         for event in (bash, mcp):
-            self.assertEqual(event["actor"], {"account": ACCOUNT, "pk": "claude_code:session-1", "type": "agent"})
+            self.assertEqual(event["actor"], {"pk": "claude_code:session-1", "type": "agent"})
             self.assertEqual(event["entity_type"], "tool_call")
             self.assertEqual(event["entity_id"], "unknown")
             self.assertIs(event["internal"], False)
@@ -731,54 +730,42 @@ class InvestigationTests(LedgerTestCase):
 
     def test_investigation_and_references_come_from_session_state(self) -> None:
         self.write_state({
-            "investigation": {"incident_key": "jira:LOG-1", "joined_at": "2026-11-09T00:00:00Z", "thread_id": "thread-1"},
+            "investigation": {"incident_key": "jira:LOG-1", "joined_at": "2026-11-09T00:00:00Z"},
             "references": [MEMORY_REFERENCE],
         })
         for name in ("PreToolUse", "PostToolUse"):
             event = self.sent(name)
-            self.assertEqual(event["correlation_id"], "thread-1")
-            self.assertEqual(event["extra"]["thread_id"], "thread-1")
             self.assertEqual(event["extra"]["incident_key"], "jira:LOG-1")
             self.assertEqual(event["extra"]["references"], [MEMORY_REFERENCE])
 
-    def test_session_state_wins_over_the_environment_without_mixing(self) -> None:
-        os.environ.update({"MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY, "MEZMO_LEDGER_INVESTIGATION_ID": "env-thread"})
-        self.write_state({"investigation": {"thread_id": "state-thread"}})
-        event = self.sent()
-        self.assertEqual(event["extra"]["thread_id"], "state-thread")
-        self.assertEqual(event["correlation_id"], "state-thread")
-        self.assertNotIn("incident_key", event["extra"])
+    def test_session_state_wins_over_the_environment(self) -> None:
+        os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
+        self.write_state({"investigation": {"incident_key": " jira:LOG-1 "}})
+        self.assertEqual(self.sent()["extra"]["incident_key"], "jira:LOG-1")
 
     def test_the_environment_is_used_without_a_state_investigation(self) -> None:
-        os.environ.update({"MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY, "MEZMO_LEDGER_INVESTIGATION_ID": "env-thread"})
-        for state in (None, {"investigation": None}, {"investigation": {"thread_id": "  "}}, {"investigation": "x"}, [1]):
+        os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
+        for state in (
+            None, {"investigation": None}, {"investigation": {"incident_key": "  "}},
+            {"investigation": {"thread_id": "from-an-older-release"}}, {"investigation": "x"}, [1],
+        ):
             with self.subTest(state=state):
                 if state is not None:
                     self.write_state(state)  # type: ignore[arg-type]
-                event = self.sent()
-                self.assertEqual(event["extra"]["thread_id"], "env-thread")
-                self.assertEqual(event["extra"]["incident_key"], INCIDENT_KEY)
-                self.assertEqual(event["correlation_id"], "env-thread")
+                self.assertEqual(self.sent()["extra"]["incident_key"], INCIDENT_KEY)
 
     def test_an_unreadable_state_file_means_no_investigation(self) -> None:
         self.state_dir.mkdir(parents=True)
         hook.session_state_path("session-1").write_text("{not json", encoding="utf-8")
         event = self.sent()
-        self.assertNotIn("thread_id", event["extra"])
+        self.assertNotIn("incident_key", event["extra"])
         self.assertNotIn("references", event["extra"])
 
-    def test_thread_id_is_derived_from_the_incident_key(self) -> None:
-        os.environ["MEZMO_LEDGER_INCIDENT_KEY"] = INCIDENT_KEY
-        event = self.sent()
-        self.assertEqual(event["extra"]["thread_id"], CHECK_THREAD_ID)
-        self.assertEqual(event["correlation_id"], CHECK_THREAD_ID)
-        self.assertEqual(event["extra"]["incident_key"], INCIDENT_KEY)
-
-    def test_only_the_investigation_id(self) -> None:
+    def test_an_older_investigation_id_in_the_environment_is_not_sent(self) -> None:
         os.environ["MEZMO_LEDGER_INVESTIGATION_ID"] = "env-thread"
         event = self.sent()
-        self.assertEqual(event["extra"]["thread_id"], "env-thread")
         self.assertNotIn("incident_key", event["extra"])
+        self.assertNotIn("env-thread", json.dumps(event))
 
     def test_references_that_are_not_a_list_are_left_out(self) -> None:
         self.write_state({"references": MEMORY_REFERENCE})
@@ -786,8 +773,7 @@ class InvestigationTests(LedgerTestCase):
 
     def test_no_investigation_fields_without_a_source(self) -> None:
         event = self.sent()
-        self.assertNotIn("correlation_id", event)
-        for field in ("incident_key", "references", "thread_id"):
+        for field in ("incident_key", "references"):
             self.assertNotIn(field, event["extra"])
 
 
@@ -799,16 +785,13 @@ class JoinCloseTests(LedgerTestCase):
 
     def assert_investigation_event(self, event: Mapping[str, Any], action: str) -> None:
         self.assertEqual(event["event"], f"agent.investigation.{action}")
-        self.assertEqual(event["correlation_id"], CHECK_THREAD_ID)
-        self.assertEqual(event["entity_id"], CHECK_THREAD_ID)
+        self.assertNotIn("entity_id", event)
         self.assertEqual(event["entity_type"], "investigation")
-        self.assertEqual(event["extra"], {
-            "agent": hook.AGENT, "incident_key": INCIDENT_KEY, "session_id": "session-1", "thread_id": CHECK_THREAD_ID,
-        })
+        self.assertEqual(event["extra"], {"agent": hook.AGENT, "incident_key": INCIDENT_KEY, "session_id": "session-1"})
 
     def test_only_a_real_join_or_close_with_its_own_key_is_recognized(self) -> None:
         cli = '"/plugin/scripts/ledger_investigation.py"'
-        joined = json.dumps({"action": "joined", "incident_key": INCIDENT_KEY, "thread_id": "printed-thread"})
+        joined = json.dumps({"action": "joined", "incident_key": INCIDENT_KEY})
         example = '{"action":"joined","incident_key":"jira:OPS-123"}'
         # A runbook that shows a join, and a printf whose quoted first word starts with punctuation.
         runbook = f"python3 scripts/ledger_investigation.py join --incident-key jira:OPS-123\n{example}\n"
@@ -877,15 +860,15 @@ class JoinCloseTests(LedgerTestCase):
         self.run_hook(cli_call("join", "joined"), fake)
         investigation = self.state()["investigation"]
         self.assertNotIn("service", investigation)
+        self.assertEqual(set(investigation), {"incident_key", "joined_at"})
         self.assertEqual(investigation["incident_key"], INCIDENT_KEY)
-        self.assertEqual(investigation["thread_id"], CHECK_THREAD_ID)
         self.assertEqual(datetime.fromisoformat(investigation["joined_at"]).utcoffset().total_seconds(), 0)
         # Each in a request of its own, and the join's own `ran` already carries the investigation.
         self.assertEqual([len(call["events"]) for call in fake.new_calls()], [1, 1])
         events = {event["event"]: event for event in fake.events()}
         self.assertEqual(set(events), {"agent.investigation.joined", "agent.tool_call.ran"})
         self.assert_investigation_event(events["agent.investigation.joined"], "joined")
-        self.assertEqual(events["agent.tool_call.ran"]["extra"]["thread_id"], CHECK_THREAD_ID)
+        self.assertEqual(events["agent.tool_call.ran"]["extra"]["incident_key"], INCIDENT_KEY)
         self.assertEqual(self.spool_lines(), [])
 
     def test_a_join_with_a_service_keeps_it_in_the_state_and_on_joined(self) -> None:
@@ -907,13 +890,10 @@ class JoinCloseTests(LedgerTestCase):
             "incident_key": INCIDENT_KEY,
             "service": "checkout",
             "session_id": "session-1",
-            "thread_id": CHECK_THREAD_ID,
         })
 
     def test_a_close_clears_the_state_and_sends_closed(self) -> None:
-        self.write_state({"investigation": {
-            "incident_key": INCIDENT_KEY, "joined_at": "2026-11-09T00:00:00+00:00", "thread_id": CHECK_THREAD_ID,
-        }})
+        self.write_state({"investigation": {"incident_key": INCIDENT_KEY, "joined_at": "2026-11-09T00:00:00+00:00"}})
         fake = self.fake()
         self.run_hook(cli_call("close", "closed"), fake)
         self.assertNotIn("investigation", self.state())
@@ -921,7 +901,7 @@ class JoinCloseTests(LedgerTestCase):
         self.assertEqual(set(events), {"agent.investigation.closed", "agent.tool_call.ran"})
         self.assert_investigation_event(events["agent.investigation.closed"], "closed")
         # Built before the state was cleared.
-        self.assertEqual(events["agent.tool_call.ran"]["extra"]["thread_id"], CHECK_THREAD_ID)
+        self.assertEqual(events["agent.tool_call.ran"]["extra"]["incident_key"], INCIDENT_KEY)
         self.assertEqual(self.spool_lines(), [])
 
     def test_a_join_the_state_did_not_take_warns_and_sends_only_the_calls_event(self) -> None:
@@ -1209,7 +1189,7 @@ class PersonEmailTests(LedgerTestCase):
         self.assertEqual(commands, [["git", "config", "--get", "user.email"]])
         # The caller's value wins.
         envelope = ledger.ledger_envelope(
-            account=ACCOUNT, correlation_id=None, entity_id="e", entity_type="t", event="agent.test.sent",
+            entity_id="e", entity_type="t", event="agent.test.sent",
             extra={"person_email": "launcher@example.test"}, message="m", session_id="session-1",
         )
         self.assertEqual(envelope["extra"]["person_email"], "launcher@example.test")
@@ -1231,11 +1211,18 @@ class PersonEmailTests(LedgerTestCase):
 
 
 class SettingsTests(LedgerTestCase):
-    def test_sending_is_off_when_either_setting_is_missing(self) -> None:
-        for missing in (("MEZMO_LEDGER_URL",), ("MEZMO_LEDGER_ACCOUNT",), ("MEZMO_LEDGER_URL", "MEZMO_LEDGER_ACCOUNT")):
-            with self.subTest(missing=missing):
+    def test_sending_is_off_without_a_url_and_a_key_or_when_switched_off(self) -> None:
+        cases = [
+            {"MEZMO_LEDGER_URL": "  "},
+            {"MEZMO_LEDGER_URL": "", "CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "off"},
+            {"MEZMO_LEDGER_URL": "", "MEZMO_GOVERNANCE_ACCESS_KEY": "sts_env", "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED": "false"},
+            {"MEZMO_LEDGER_URL": "", "CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "sts_option",
+             "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED": "false"},
+        ]
+        for values in cases:
+            with self.subTest(values=values):
                 fake = self.fake()
-                with patch.dict(os.environ, {name: "  " for name in missing}):
+                with patch.dict(os.environ, values):
                     for name in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied"):
                         self.assertIsNone(self.run_hook(hook_input(name), fake))
                         self.assertEqual(self.stderr, "")
@@ -1278,7 +1265,11 @@ class SettingsTests(LedgerTestCase):
             ({"MEZMO_GOVERNANCE_ACCESS_KEY": "sts_env"}, "Token sts_env"),
             ({"MEZMO_GOVERNANCE_TOKEN": "Bearer sts_token"}, "Bearer sts_token"),
             ({"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "sts_option"}, "Token sts_option"),
-            ({"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "sts_option", "CLAUDE_PLUGIN_OPTION_GOVERNANCE_ENABLED": "false"}, None),
+            # The ledger has its own switch: governance's leaves it on.
+            ({"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "sts_option", "CLAUDE_PLUGIN_OPTION_GOVERNANCE_ENABLED": "false"},
+             "Token sts_option"),
+            # The placeholder /mezmo:remove leaves is no key.
+            ({"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "off"}, None),
         ]
         for values, header in cases:
             with self.subTest(values=values), patch.dict(os.environ, values):
@@ -1336,7 +1327,37 @@ class SettingsTests(LedgerTestCase):
     def test_https_and_loopback_http_are_allowed(self) -> None:
         for url in ("https://audit.example.test/v1/events", "http://localhost:65530/v1/events", "http://[::1]:65530/v1/events"):
             with self.subTest(url=url), patch.dict(os.environ, {"MEZMO_LEDGER_URL": url}):
-                self.assertEqual(ledger.load_ledger_config(), ledger.LedgerConfig(ACCOUNT, None, url))
+                self.assertEqual(ledger.load_ledger_config(), ledger.LedgerConfig(None, url))
+
+    def test_the_url_and_key_come_from_the_environment_then_the_plugin_options_then_the_default(self) -> None:
+        del os.environ["MEZMO_LEDGER_URL"]
+        option_url = "https://api.example.test/"
+        cases = [
+            # The URL: MEZMO_LEDGER_URL, then the API URL option plus the ledger path, then production.
+            ({"MEZMO_LEDGER_URL": LEDGER_URL, "CLAUDE_PLUGIN_OPTION_API_URL": option_url, "MEZMO_LEDGER_KEY": "k"},
+             ledger.LedgerConfig("k", LEDGER_URL)),
+            ({"CLAUDE_PLUGIN_OPTION_API_URL": option_url, "MEZMO_LEDGER_KEY": "k"},
+             ledger.LedgerConfig("k", "https://api.example.test/v1/audit/events")),
+            ({"MEZMO_LEDGER_KEY": "k"}, ledger.LedgerConfig("k", "https://api.mezmo.com/v1/audit/events")),
+            # The key: MEZMO_LEDGER_KEY, then the governance keys in the environment, then the plugin option.
+            ({"MEZMO_LEDGER_KEY": "k", "MEZMO_GOVERNANCE_ACCESS_KEY": "g", "CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "o"},
+             ledger.LedgerConfig("k", "https://api.mezmo.com/v1/audit/events")),
+            ({"MEZMO_GOVERNANCE_ACCESS_KEY": "g", "MEZMO_GOVERNANCE_TOKEN": "t", "CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "o"},
+             ledger.LedgerConfig("g", "https://api.mezmo.com/v1/audit/events")),
+            ({"MEZMO_GOVERNANCE_TOKEN": "t", "CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "o"},
+             ledger.LedgerConfig("t", "https://api.mezmo.com/v1/audit/events")),
+            ({"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "o"}, ledger.LedgerConfig("o", "https://api.mezmo.com/v1/audit/events")),
+            # The switch turns off only the plugin's own ledger: a MEZMO_LEDGER_URL from settings still applies.
+            ({"MEZMO_LEDGER_URL": LEDGER_URL, "CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "o",
+              "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED": "false"}, ledger.LedgerConfig("o", LEDGER_URL)),
+            ({"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "o", "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED": "false"}, None),
+            ({"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "o", "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED": "true"},
+             ledger.LedgerConfig("o", "https://api.mezmo.com/v1/audit/events")),
+            ({}, None),
+        ]
+        for values, expected in cases:
+            with self.subTest(values=values), patch.dict(os.environ, values):
+                self.assertEqual(ledger.load_ledger_config(), expected)
 
     def test_a_redirect_is_not_followed_and_the_events_are_dropped(self) -> None:
         elsewhere = Recorder()
@@ -1449,8 +1470,8 @@ class RetryFileTests(LedgerTestCase):
         fake = self.fake()
         self.run_hook(hook_input(tool_use_id="tool-use-2"), fake)
         self.assertEqual(fake.resent_calls()[0]["events"], [saved])
-        self.assertEqual(saved["extra"]["thread_id"], CHECK_THREAD_ID)
-        self.assertNotIn("thread_id", fake.new_calls()[0]["events"][0]["extra"])
+        self.assertEqual(saved["extra"]["incident_key"], INCIDENT_KEY)
+        self.assertNotIn("incident_key", fake.new_calls()[0]["events"][0]["extra"])
 
     def test_at_most_ten_lines_are_resent_in_one_run(self) -> None:
         self.write_spool([self.spool_line() for _ in range(15)])
@@ -1914,8 +1935,11 @@ class RefusedTests(LedgerTestCase):
         self.assertIn("HTTP 400", self.stderr)
 
     def test_refused_is_a_no_op_when_unconfigured(self) -> None:
-        for missing in ("MEZMO_LEDGER_URL", "MEZMO_LEDGER_ACCOUNT"):
-            with self.subTest(missing=missing), patch.dict(os.environ, {missing: " "}):
+        for values in (
+            {"MEZMO_LEDGER_URL": " "},
+            {"MEZMO_LEDGER_URL": " ", "MEZMO_GOVERNANCE_ACCESS_KEY": "sts_env", "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED": "false"},
+        ):
+            with self.subTest(values=values), patch.dict(os.environ, values):
                 fake = self.fake()
                 self.refuse(fake)
                 self.assertEqual(fake.calls, [])
@@ -2040,9 +2064,10 @@ class GovernanceCallSiteTests(LedgerTestCase):
         self.assertEqual(outputs, self.expected_refusals())
         refused.assert_not_called()
 
-    def test_ledger_unconfigured_leaves_governance_byte_for_byte(self) -> None:
+    def test_ledger_switched_off_leaves_governance_byte_for_byte(self) -> None:
         for name in [name for name in os.environ if name.startswith("MEZMO_LEDGER_")]:
             del os.environ[name]
+        os.environ["CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED"] = "false"
         # DEFAULT_LEDGER_SPOOL is bound from the real home at import, so point it into the test dir:
         # with MEZMO_LEDGER_SPOOL gone, a stray write would land there.
         default_spool = self.dir / ".mezmo" / "ledger-spool.jsonl"
@@ -2162,7 +2187,6 @@ class EndToEndTests(unittest.TestCase):
             "HOME": str(self.dir),
             "MEZMO_GOVERNANCE_AUDIT_LOG": str(self.dir / "audit.jsonl"),
             "MEZMO_GOVERNANCE_STATE_DIR": str(self.dir / "sessions"),
-            "MEZMO_LEDGER_ACCOUNT": ACCOUNT,
             "MEZMO_LEDGER_SPOOL": str(self.spool),
             "MEZMO_LEDGER_URL": url,
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
@@ -2241,7 +2265,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(started["extra"]["call_id"], not_run["extra"]["call_id"])
 
     def test_unset_settings_exit_at_once_without_a_request(self) -> None:
-        for name in ("MEZMO_LEDGER_ACCOUNT", "MEZMO_LEDGER_SPOOL", "MEZMO_LEDGER_URL"):
+        for name in ("MEZMO_LEDGER_SPOOL", "MEZMO_LEDGER_URL"):
             del self.env[name]
         for name in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied"):
             with self.subTest(name=name):
