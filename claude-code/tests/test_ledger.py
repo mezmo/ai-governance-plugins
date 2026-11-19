@@ -396,10 +396,15 @@ class LedgerTestCase(unittest.TestCase):
         self.spool.parent.mkdir(parents=True, exist_ok=True)
         self.spool.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
 
-    def spool_line(self, event: Optional[Dict[str, Any]] = None, url: str = LEDGER_URL) -> str:
+    def spool_line(self, event: Optional[Dict[str, Any]] = None, url: str = LEDGER_URL, key_id: object = DROP) -> str:
+        """A saved line, as queued with the current key unless `key_id` says otherwise (None: no key_id field)."""
         if event is None:
             event = self.build("started", tool_use_id=f"saved-{time.monotonic_ns()}")
-        return json.dumps({"event": event, "url": url}, separators=(",", ":"))
+        if key_id is DROP:
+            config = ledger.load_ledger_config()
+            key_id = ledger.key_fingerprint(config.key if config else None)
+        entry = {"event": event, "url": url} if key_id is None else {"event": event, "key_id": key_id, "url": url}
+        return json.dumps(entry, separators=(",", ":"))
 
     def build(self, kind: str, name: str = "PreToolUse", **fields: Any) -> Dict[str, Any]:
         config = ledger.load_ledger_config()
@@ -1552,6 +1557,25 @@ class RetryFileTests(LedgerTestCase):
         self.assertEqual(fake.calls, [])
         self.assertEqual(self.spool.stat().st_mtime_ns, before)
         self.assertFalse(pathlib.Path(f"{self.spool}.tmp").exists())
+
+    def test_a_line_queued_with_another_key_is_never_sent_with_this_one(self) -> None:
+        # Another account's records, and records from before lines named their key, stay for their own key.
+        others = [self.spool_line(key_id=ledger.key_fingerprint("another-accounts-key")), self.spool_line(key_id=None)]
+        mine = self.spool_line()
+        self.write_spool([*others, mine])
+        fake = self.fake()
+        self.run_hook(hook_input(), fake)
+        self.assertEqual([call["events"] for call in fake.resent_calls()], [[json.loads(mine)["event"]]])
+        self.assertEqual(self.spool_lines(), others)
+
+    def test_a_saved_line_names_its_key_by_fingerprint_only(self) -> None:
+        config = ledger.load_ledger_config()
+        ledger.save_ledger_events(config=config, events=[self.build("started")])
+        (line,) = self.spool_lines()
+        self.assertEqual(json.loads(line)["key_id"], ledger.key_fingerprint(config.key))
+        self.assertEqual(len(json.loads(line)["key_id"]), 16)
+        if config.key:
+            self.assertNotIn(config.key, line)
 
     def test_a_line_for_another_url_is_not_sent_and_is_removed(self) -> None:
         other = self.spool_line(url="http://127.0.0.1:9999/v1/events")

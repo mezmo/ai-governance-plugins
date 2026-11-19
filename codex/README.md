@@ -425,8 +425,10 @@ oldest past that. It holds the full records, including arguments and output,
 and is readable only by you. Delete it to discard what is waiting.
 
 Claude Code and Codex share the default retry file, and each run discards
-records saved for a different ledger URL. If the two send to
-different URLs, give one its own `MEZMO_LEDGER_SPOOL`.
+records saved for a different ledger URL. A record is resent only with the
+key it was saved with; it names that key by a short fingerprint, never the key
+itself. If the two send to different URLs, give one its own
+`MEZMO_LEDGER_SPOOL`.
 
 ### Governance refusals
 
