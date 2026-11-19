@@ -1004,9 +1004,21 @@ def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
         smokes.append(Smoke("Codex", hook_path(command), CLAUDE_EVENT))
     if plugins:
         smokes += check_codex_plugin(report, plugins, hooks, why)
+    check_codex_governance_off(report)
     check_codex_ledger(report, hooks)
     check_codex_mcp(report)
     return smokes
+
+
+def check_codex_governance_off(report: Report) -> None:
+    """mezmo_governance_hook.py lets every call run with no key configured, unless MEZMO_GOVERNANCE_REQUIRED=1."""
+    if codex_settings.governance_configured():
+        return
+    fix = "ask Codex to set up Mezmo, or run ~/.mezmo/bin/mezmo-setup in a terminal"
+    if codex_settings.governance_required():
+        report.line("info", "Codex governance", "no key configured, and MEZMO_GOVERNANCE_REQUIRED=1, so every call is denied", fix)
+    else:
+        report.line("warn", "Codex governance", "governance is off: no key configured, so the Codex hooks let every call run and record nothing", fix)
 
 
 def check_codex_ledger(report: Report, hooks: Optional[list]) -> None:
@@ -1165,6 +1177,8 @@ def check_codex_mcp(report: Report) -> None:
         return
     owner = "written by setup" if mezmo_setup.mcp_tables(text.splitlines())[1] else "not written by setup"
     report.line("info", "Codex MCP", f"server mezmo at {shown_url(url)} ({owner})")
+    # Codex reads [mcp_servers] when a session starts, so a session older than the table lacks its tools.
+    report.line("info", "Codex MCP session", "start a new Codex session to use the Mezmo MCP if it was added or changed after the session started")
     tools = server.get("enabled_tools")
     if isinstance(tools, list) and "get_ledger_investigation" not in tools:
         report.line("warn", "Codex MCP tools", "enabled_tools leaves out get_ledger_investigation, which investigations read", CODEX_MCP_FIX)

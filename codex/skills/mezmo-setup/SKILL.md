@@ -21,9 +21,18 @@ The plugin root is the folder two levels above this file's folder: this file is
 absolute path. Write it out in each command, quoted. Never show it, or any version number, to the
 user: tell them what a command does, not where it is.
 
-These commands write outside the workspace (`~/.mezmo` and Codex's `config.toml`) and use the
-macOS Keychain or the Linux keyring, so run each one outside the sandbox, with the user's
-approval.
+Steps 1 and 3 only read, or write a temporary file, so run them as usual, inside the sandbox.
+
+Step 5 saves the setup outside the workspace (`~/.mezmo`, Codex's `config.toml`, and the macOS
+Keychain or the Linux keyring) and checks the key over the network, which Codex's sandbox does not
+allow. **Run the step 5 command outside the sandbox: call the shell tool with
+`sandbox_permissions` set to `"require_escalated"`**, and a `justification` such as "Save the Mezmo
+key and settings outside the workspace?". Codex then asks the user once to approve it. Don't run it
+inside the sandbox first to see whether it fails.
+
+If you can't run it outside the sandbox (the approval policy is `never`, the user declines, or
+Codex rejects the request), use [the terminal route](#the-terminal-route) instead. With the
+approval policy `never` you know that from the start: skip steps 3 and 5.
 
 **Never put the key in a command, and never ask for it in the chat.** The governance hook records
 every shell command's arguments in Mezmo, so a key in a command would end up in the trail. The key
@@ -37,7 +46,8 @@ python3 "<plugin root>/mezmo_setup.py" --status
 ```
 
 It prints the saved API URL, whether the ledger is on, whether a key is saved and where, and the
-Codex MCP entry. It never prints the key. Exit 1 means nothing is saved yet.
+Codex MCP entry. It never prints the key. Exit 1 means nothing is saved yet, not that the sandbox
+stopped it: don't run it again outside the sandbox.
 
 If the Codex MCP line says `(not written by setup)`, Codex already has a server named `mezmo` that
 someone added by hand. Ask now whether setup may replace it (it backs up `config.toml` first). If
@@ -87,6 +97,9 @@ Before saving, tell the user:
 
 ## 5. Save
 
+Outside the sandbox (`sandbox_permissions: "require_escalated"`, see
+[Running the commands](#running-the-commands)):
+
 ```bash
 python3 "<plugin root>/mezmo_setup.py" --api-url <API URL> --mcp-url <MCP URL> --key-file "<KEY_FILE>" --delete-key-file
 ```
@@ -106,11 +119,40 @@ macOS Keychain, the Linux keyring, or else a 0600 file, and deletes the key file
   account in Mezmo, with a fresh key file from step 3. If it says the MCP wasn't set up,
   governance and the ledger are saved anyway.
 
-If the command itself is blocked with "no Mezmo key", the Mezmo hooks were trusted before setup
-ran, so governance denies every call. Ask the user to quit Codex, start it once with
-`codex --disable hooks`, ask again to set up Mezmo, and then restart Codex normally.
+## The terminal route
 
-## 6. Trust the hooks
+When step 5 can't run outside the sandbox, the user runs setup in their own terminal. Check that
+the setup command exists, inside the sandbox:
+
+```bash
+test -x ~/.mezmo/bin/mezmo-setup && echo ok
+```
+
+If it prints `ok`, ask the user to run this in a terminal, outside Codex:
+
+```bash
+~/.mezmo/bin/mezmo-setup
+```
+
+If it doesn't exist yet, give them `python3 "<plugin root>/mezmo_setup.py"` with `<plugin root>`
+written out: the one time you show the path. Once it saves, `~/.mezmo/bin/mezmo-setup` exists for
+next time.
+
+It asks for the Mezmo API URL (Enter keeps production), the MCP URL for another API URL, and the
+key, which it reads without showing it. The key file from step 3 isn't needed then: delete it with
+`python3 "<plugin root>/mezmo_key_file.py" delete-key-file "<KEY_FILE>"` if you made one. Ask the
+user to tell you when it is done, then go on with step 6.
+
+If every call is blocked with `MEZMO_GOVERNANCE_REQUIRED=1`, the user's organization requires
+governance, so no call runs until setup is done: only the terminal route works.
+
+Until setup is done, Codex may warn "Mezmo Governance is off until you set up Mezmo". That is
+expected: with no key, the hooks let every call run and record nothing.
+
+## 6. Start a new session and trust the hooks
+
+If setup printed "Start a new Codex session to use the Mezmo MCP", say so: Codex connects to MCP
+servers when a session starts, so this session doesn't have the Mezmo MCP's tools.
 
 Tell the user to start a new Codex session, run `/hooks`, and trust the four Mezmo hooks:
 

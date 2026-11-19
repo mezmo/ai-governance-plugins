@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Codex PreToolUse / PostToolUse hook for Mezmo Governance."""
+"""Codex PreToolUse / PostToolUse hook for Mezmo Governance.
+
+Off until a key is configured (MEZMO_GOVERNANCE_TOKEN, or a key store in ~/.mezmo/codex.json): until
+then it allows every call, records nothing and warns once a session, unless MEZMO_GOVERNANCE_REQUIRED=1,
+which denies instead. Once configured it fails closed.
+"""
 
 from __future__ import annotations
 
@@ -107,7 +112,8 @@ def authorization_header() -> str:
     key = mezmo_settings.governance_key().value
     if not key:
         raise HookContractError(
-            "no Mezmo key: run mezmo_setup.py (./mezmo-governance setup codex), or set MEZMO_GOVERNANCE_TOKEN"
+            "no Mezmo key could be read from where setup saved it: run ~/.mezmo/bin/mezmo-setup"
+            " (./mezmo-governance setup codex) again, or set MEZMO_GOVERNANCE_TOKEN"
         )
     if key.lower().startswith("token ") or key.lower().startswith("bearer "):
         return key
@@ -992,6 +998,43 @@ def handle_post_tool_use(event: Mapping[str, Any]) -> None:
     )
 
 
+GOVERNANCE_OFF = (
+    "Mezmo Governance is off until you set up Mezmo: no Mezmo key is configured, so Codex runs tool calls"
+    " without asking Mezmo or recording them. Ask Codex to set up Mezmo, or run ~/.mezmo/bin/mezmo-setup"
+    " in a terminal."
+)
+GOVERNANCE_REQUIRED = (
+    "Mezmo Governance is required (MEZMO_GOVERNANCE_REQUIRED=1) but no Mezmo key is configured: run"
+    " ~/.mezmo/bin/mezmo-setup in a terminal, or set MEZMO_GOVERNANCE_TOKEN"
+)
+
+
+def notice_path() -> Path:
+    # Holds the id of the last session told that governance is off.
+    return mezmo_settings.settings_dir() / "codex-governance-off"
+
+
+def unconfigured_output(event: Mapping[str, Any]) -> dict[str, Any] | None:
+    """With no key configured: allow, and tell the user once per session. Never raises.
+
+    The first time in a session it also writes the setup launcher, if it is missing, so the command
+    the notice names exists.
+    """
+    session = event.get("session_id")
+    session = session.strip() if isinstance(session, str) else ""
+    try:
+        path = notice_path()
+        if session and path.is_file() and path.read_text(encoding="utf-8").strip() == session:
+            return None
+        if not mezmo_settings.launcher_path().is_file():
+            mezmo_settings.install_launcher()
+        path.write_text(session + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    # Codex shows a hook's systemMessage as a warning and runs the tool.
+    return {"systemMessage": GOVERNANCE_OFF}
+
+
 def deny_output(reason: str) -> dict[str, Any]:
     return {
         "hookSpecificOutput": {
@@ -1029,6 +1072,15 @@ def handle_event(
 ) -> dict[str, Any] | None:
     """Decide one hook event. Each refusal is noted in `refusal` as (outcome, reason)."""
     event_name = event.get("hook_event_name")
+    if event_name in ("PreToolUse", "PostToolUse") and not mezmo_settings.governance_configured():
+        # Off until configured, as in Claude Code: allow and record nothing, unless it is required.
+        if event_name == "PostToolUse":
+            return None
+        if mezmo_settings.governance_required():
+            if refusal is not None:
+                refusal.append(("error", GOVERNANCE_REQUIRED))
+            return deny_output(f"Mezmo Governance blocked this tool call: {GOVERNANCE_REQUIRED}")
+        return unconfigured_output(event)
     if event_name == "PreToolUse":
         try:
             return handle_pre_tool_use(event, http, clock, sleep, refusal=refusal)

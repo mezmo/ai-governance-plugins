@@ -207,6 +207,65 @@ def read_key_file(path: Path) -> Optional[str]:
         return handle.read().strip() or None
 
 
+def governance_configured() -> bool:
+    """Whether a key was given at all: MEZMO_GOVERNANCE_TOKEN, or a key store codex.json names.
+
+    A configured key that cannot be read still counts, so the hook fails closed on it.
+    """
+    return bool(_env("MEZMO_GOVERNANCE_TOKEN")) or read_config().get("key_store") in KEY_STORES
+
+
+def governance_required() -> bool:
+    """MEZMO_GOVERNANCE_REQUIRED=1: deny every call until a key is configured, as in Claude Code."""
+    return (_env("MEZMO_GOVERNANCE_REQUIRED") or "").lower() in ("1", "true", "yes")
+
+
+# The setup launcher: a path that stays the same across plugin updates, for the user to run in a
+# terminal when Codex cannot run setup outside its sandbox.
+LAUNCHER = '''#!/usr/bin/env python3
+"""Written by Mezmo setup: run mezmo_setup.py from the newest Mezmo plugin Codex has installed.
+
+Arguments go to mezmo_setup.py, so `mezmo-setup --status` works too.
+"""
+import os
+import re
+import sys
+from pathlib import Path
+
+INSTALLED = {installed!r}
+
+
+def version(path):
+    return tuple(int(part) for part in re.findall(r"[0-9]+", path.parent.name))
+
+
+home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser()
+found = sorted((home / "plugins" / "cache" / "mezmo" / "mezmo-governance").glob("*/mezmo_setup.py"), key=version)
+setup = found[-1] if found else Path(INSTALLED)
+if not setup.is_file():
+    sys.exit("mezmo-setup: no Mezmo plugin for Codex is installed: run codex plugin add mezmo-governance@mezmo")
+os.execv(sys.executable, [sys.executable, str(setup), *sys.argv[1:]])
+'''
+
+
+def launcher_path() -> Path:
+    return settings_dir() / "bin" / "mezmo-setup"
+
+
+def install_launcher() -> Path:
+    """Write ~/.mezmo/bin/mezmo-setup, which runs this plugin's setup whatever its version. Raises OSError."""
+    path = launcher_path()
+    for folder in (settings_dir(), path.parent):
+        folder.mkdir(mode=0o700, exist_ok=True)
+    text = LAUNCHER.format(installed=str(Path(__file__).resolve().with_name("mezmo_setup.py")))
+    temporary = path.with_name(f".{path.name}.{os.getpid()}")
+    with open(temporary, "w", encoding="utf-8", opener=lambda name, flags: os.open(name, flags, 0o700)) as handle:
+        handle.write(text)
+    os.chmod(temporary, 0o700)
+    os.replace(temporary, path)
+    return path
+
+
 def describe() -> list:
     """(name, shown value, source) for each setting, for doctor. The key is never shown."""
     rows: list = []
