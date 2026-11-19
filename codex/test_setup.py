@@ -559,6 +559,54 @@ class NonInteractiveTests(SettingsCase):
         self.assertIn("skip  the Mezmo MCP", text)
         self.assertFalse((self.codex / "config.toml").exists())
 
+    def test_setup_ends_with_the_restart_line_only_when_the_mcp_changed(self) -> None:
+        restart = "Start a new Codex session to use the Mezmo MCP"
+        code, text = self.main("--key-file", str(self.key_file()), "--delete-key-file")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(text.rstrip("\n").splitlines()[-1], restart)
+        # The same table again: nothing for Codex to reload.
+        code, text = self.main("--keep-key")
+        self.assertEqual(code, 0, text)
+        self.assertNotIn(restart, text)
+        code, text = self.main("--keep-key", "--mcp-url", "https://mcp.example.test/mcp")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(text.rstrip("\n").splitlines()[-1], restart)
+
+    def test_setup_installs_a_launcher_that_runs_the_newest_installed_plugin(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX launcher")
+        code, text = self.main("--api-url", API, "--key-file", str(self.key_file()), "--delete-key-file")
+        self.assertEqual(code, 0, text)
+        launcher = self.dir / "bin" / "mezmo-setup"
+        self.assertEqual(launcher, mezmo_settings.launcher_path())
+        self.assertEqual(stat.S_IMODE(launcher.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(launcher.parent.stat().st_mode), 0o700)
+
+        # Stand-ins, so the real setup it runs never reaches the real Keychain or keyring.
+        stubs = self.dir.parent / "stubs"
+        stubs.mkdir()
+        for name, code in (("security", 44), ("secret-tool", 1)):
+            (stubs / name).write_text(f"#!/bin/sh\nexit {code}\n", encoding="utf-8")
+            (stubs / name).chmod(0o700)
+
+        def run(*args: str) -> str:
+            path = f"{stubs}:{os.environ.get('PATH', '/usr/bin:/bin')}"
+            env = {"PATH": path, "CODEX_HOME": str(self.codex), "HOME": str(self.dir.parent)}
+            result = REAL_RUN([str(launcher), *args], env=env, capture_output=True, text=True, timeout=30, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return result.stdout
+
+        # No plugin in Codex's cache: the plugin that installed it.
+        self.assertIn("API URL:", run("--status"))
+        # Versions compare as numbers, so 0.10.0 is newer than 0.9.1; arguments pass through.
+        cache = self.codex / "plugins" / "cache" / "mezmo" / "mezmo-governance"
+        for version in ("0.9.1", "0.10.0", "0.7.0"):
+            (cache / version).mkdir(parents=True)
+            (cache / version / "mezmo_setup.py").write_text(
+                f"import sys\nprint({version!r}, sys.argv[1:])\n", encoding="utf-8"
+            )
+        self.assertEqual(run("--status"), "0.10.0 ['--status']\n")
+
     def test_moving_to_an_api_without_an_mcp_url_removes_setups_old_mcp(self) -> None:
         code, text = self.main("--key-file", str(self.key_file()), "--delete-key-file")
         self.assertEqual(code, 0, text)
@@ -675,6 +723,19 @@ class SkillTests(unittest.TestCase):
         self.assertIn("--no-ledger", text)
         self.assertIn("/hooks", text)
         self.assertNotIn("--key ", text)
+
+    def test_setup_runs_outside_the_sandbox_or_hands_over_the_stable_command(self) -> None:
+        text = self.skills()["mezmo-setup"]
+        # Codex's shell tool asks the user to approve a call made with this.
+        self.assertIn('`sandbox_permissions` set to `"require_escalated"`', text)
+        self.assertIn("`never`", text)
+        # The terminal route names the launcher setup and the hook install, never a versioned path.
+        self.assertIn("~/.mezmo/bin/mezmo-setup", text)
+        self.assertEqual(mezmo_settings.launcher_path(), mezmo_settings.settings_dir() / "bin" / "mezmo-setup")
+        self.assertNotIn("find ", text)
+        self.assertNotIn("--disable hooks", text)
+        self.assertIn("Start a new Codex session to use the Mezmo MCP", text)
+        self.assertIn("Start a new Codex session to use the Mezmo MCP", (ADAPTER_DIR / "mezmo_setup.py").read_text(encoding="utf-8"))
 
     def test_investigate_follows_the_readme_steps(self) -> None:
         text = self.skills()["mezmo-investigate"]

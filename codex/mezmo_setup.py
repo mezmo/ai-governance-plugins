@@ -17,7 +17,8 @@ what is saved here: see mezmo_settings.py.
 
 Setup also writes [mcp_servers.mezmo] into Codex's config.toml ($CODEX_HOME, default ~/.codex),
 with an http_headers_helper that prints the Authorization header from the same key store, so
-neither config.toml nor Codex's environment holds the key.
+neither config.toml nor Codex's environment holds the key. It also writes ~/.mezmo/bin/mezmo-setup,
+which runs this script from the newest installed plugin, so the command survives plugin updates.
 """
 
 from __future__ import annotations
@@ -520,6 +521,12 @@ def setup(ledger: bool = True, send: Optional[Http] = None, platform: str = sys.
         print(f"FAIL  could not save {mezmo_settings.config_path()}: {error}. The previous settings are unchanged.", file=sys.stderr)
         return 1
     print(("kept the key in " if kept else "saved the key in ") + f"{store_name(store)}, and the settings in {mezmo_settings.config_path()}")
+    try:
+        launcher = mezmo_settings.install_launcher()
+    except OSError as error:
+        print(f"warn  could not write {mezmo_settings.launcher_path()}: {error}", file=sys.stderr)
+    else:
+        print(f"ok    {launcher} runs this setup again, whatever the plugin's version")
     previous = old.get("key_store")
     if previous in mezmo_settings.KEY_STORES and previous != store:
         try:
@@ -531,6 +538,7 @@ def setup(ledger: bool = True, send: Optional[Http] = None, platform: str = sys.
     if any(os.environ.get(name) for name in ("MEZMO_GOVERNANCE_URL", "MEZMO_GOVERNANCE_TOKEN", "MEZMO_LEDGER_URL", "MEZMO_LEDGER_KEY")):
         print("note: MEZMO_* variables set in this shell still win over these settings")
     code = 0
+    mcp_changed = False
     if mcp_url is None:
         # A table setup wrote for an earlier API URL would get this key for the old environment.
         try:
@@ -545,7 +553,9 @@ def setup(ledger: bool = True, send: Optional[Http] = None, platform: str = sys.
     else:
         try:
             install_helper()
+            before = read_codex_config()[1]
             backup = edit_mcp(mcp_url, replace=choices.replace_mcp)
+            mcp_changed = read_codex_config()[1] != before
         except (SetupError, OSError) as error:
             print(f"FAIL  the Mezmo MCP was not set up: {error}. Governance and the ledger are saved.", file=sys.stderr)
             code = 1
@@ -554,6 +564,9 @@ def setup(ledger: bool = True, send: Optional[Http] = None, platform: str = sys.
             if backup:
                 print(f"      the previous config.toml is in {backup}")
     print("next: start a new Codex session, run /hooks, and trust the four Mezmo hooks")
+    if mcp_changed:
+        # Codex reads [mcp_servers] when a session starts.
+        print("Start a new Codex session to use the Mezmo MCP")
     return code
 
 

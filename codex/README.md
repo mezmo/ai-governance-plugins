@@ -17,12 +17,25 @@ The script needs Python 3.9 or later and uses only the standard library.
 
 1. `codex plugin marketplace add mezmo/ai-governance-plugins`
 2. `codex plugin add mezmo-governance@mezmo`
-3. Start Codex and ask it to "set up Mezmo". Its `mezmo-setup` skill asks for
-   the Mezmo API URL (production by default) and creates a private file for
-   you to paste the key into in your own editor. It then checks the key, saves
-   it and connects the Mezmo MCP. See [Setup](#setup).
-4. Start a new session, run `/hooks`, and trust all four Mezmo hooks.
-5. Ask Codex to investigate an incident, such as "investigate PagerDuty
+3. Start `codex` as usual, in the default sandbox. Until Mezmo is set up,
+   governance is off: the hooks let every call run and record nothing, and
+   Codex warns once a session "Mezmo Governance is off until you set up
+   Mezmo" (once the hooks are trusted, step 5).
+4. Ask Codex to "set up Mezmo". Its `mezmo-setup` skill:
+   - checks what is saved and asks for the Mezmo API URL (production by
+     default);
+   - creates a private file and asks you to paste the key into it in your own
+     editor, then tell Codex you're done;
+   - asks to run setup outside the sandbox, since it writes `~/.mezmo`,
+     Codex's `config.toml` and the Keychain. **Approve that one prompt.**
+     Setup checks the key, saves it, and connects the Mezmo MCP.
+
+   If Codex can't ask (approval policy `never`) or you decline, it asks you
+   to run `~/.mezmo/bin/mezmo-setup` in your terminal instead. That asks for
+   the URL and the key, without showing the key. See [Setup](#setup).
+5. Setup ends with "Start a new Codex session to use the Mezmo MCP". Start
+   one, run `/hooks`, and trust all four Mezmo hooks.
+6. Ask Codex to investigate an incident, such as "investigate PagerDuty
    incident Q34FCCWSTU9OI2". Its `mezmo-investigate` skill joins the
    incident's investigation and reads the Mezmo ledger before it changes
    anything. See [Incident investigations](#incident-investigations).
@@ -34,12 +47,21 @@ yourself, type `$` and pick it, or run `/skills`: Codex lists them as
 
 ## Setup
 
-The `mezmo-setup` skill runs `mezmo_setup.py` for you. Run by hand,
-`mezmo_setup.py` asks for two things: the Mezmo API URL (default
+The `mezmo-setup` skill runs `mezmo_setup.py` for you, outside the sandbox
+with your approval. Run by hand, `mezmo_setup.py` asks for two things: the Mezmo API URL (default
 `https://api.mezmo.com`) and the key, a Mezmo service key read with
 `getpass`, so it never shows on screen, in shell history, in a command line or
 in an agent transcript. With no flags, run it in your own terminal, not
-through Codex.
+through Codex:
+
+```bash
+~/.mezmo/bin/mezmo-setup
+```
+
+That launcher stays at the same path across plugin updates: it runs
+`mezmo_setup.py` from the newest version of the plugin in Codex's plugin
+cache, with any flags you give it. Setup writes it, and so does the
+governance hook the first time it runs in a session with no key.
 
 The skill runs it with flags instead, so nothing is asked:
 
@@ -140,13 +162,25 @@ export MEZMO_GOVERNANCE_TOKEN="<service account token>"
 ```
 
 With neither variable nor setup, the URL is `https://api.mezmo.com` and there
-is no key, so the hook denies every call.
+is no key, so governance is off: see [Fail behavior](#fail-behavior).
 
 Tested version: Codex CLI 0.162.1, run live against `tools/mock_governance.py`:
 `Bash` was denied, and with the guard a hook crash blocked the call. The
 native plugin's trust behavior was seen on 0.163.0.
 
 ## Fail behavior
+
+Governance is off until a key is configured, as in the Claude Code plugin.
+With no `MEZMO_GOVERNANCE_TOKEN` and no key store in `~/.mezmo/codex.json`,
+the hook lets every call run, sends nothing to Mezmo and writes no audit
+record. Once a session it returns a `systemMessage`, which Codex shows as a
+warning: "Mezmo Governance is off until you set up Mezmo". Set
+`MEZMO_GOVERNANCE_REQUIRED=1` to deny every call instead until a key is
+configured.
+
+Once a key is configured, the hook fails closed: it denies the call when the
+key can't be read from its store, when Mezmo refuses it, or when Mezmo can't
+be reached.
 
 Codex has no fail-closed setting. Codex 0.162.1 runs the tool when a hook
 exits 1, for example on a crash (verified live). The example command ends
@@ -709,14 +743,19 @@ error and its fix. The top cause for Codex: a hook not trusted in `/hooks`.
 `doctor` also checks the Mezmo MCP: the server's URL, how it authenticates,
 and an MCP `initialize` call with the key.
 
-- **Every call is denied with "no Mezmo key"**: the hooks were trusted before
-  setup saved a key, so governance denies the setup command too. Quit Codex,
-  start it once with `codex --disable hooks`, ask it to set up Mezmo, then
-  start it normally. Or run `./mezmo-governance setup codex` from a clone.
-- **Setting up without Codex**: `./mezmo-governance setup codex` from a clone
-  of this repository runs the same `mezmo_setup.py` in your terminal. The
-  plugin's copy is in Codex's plugin cache, under a folder named for the
-  plugin version, so it moves with each update.
+- **Every call is denied with "no Mezmo key could be read"**: setup saved
+  a key, but its store can't be read now. Run `~/.mezmo/bin/mezmo-setup`
+  in a terminal.
+- **Every call is denied with "MEZMO_GOVERNANCE_REQUIRED=1"**: governance
+  is required and no key is configured, so the setup skill can't run either.
+  Run `~/.mezmo/bin/mezmo-setup` in a terminal.
+- **"Mezmo Governance is off until you set up Mezmo"**: no key is configured.
+  Ask Codex to set up Mezmo. `doctor codex` warns about this too.
+- **The Mezmo MCP's tools are missing**: Codex connects to MCP servers when a
+  session starts. Start a new session after setup adds or changes the MCP.
+- **Setting up without Codex**: `~/.mezmo/bin/mezmo-setup` runs the plugin's
+  `mezmo_setup.py` in your terminal, and so does
+  `./mezmo-governance setup codex` from a clone of this repository.
 
 ## Tests
 

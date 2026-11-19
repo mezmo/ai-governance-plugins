@@ -784,6 +784,25 @@ class CodexTests(DoctorTestCase):
         self.assertNotIn("mezmo_ledger_hook.py", result.stdout)
         self.assertIn("preToolUse (untrusted)", self.assertStatus(result, "Codex ledger trust", "warn"))
 
+    def test_governance_is_off_with_no_key_configured(self) -> None:
+        self.install()
+
+        # The hook allows every call with no key, so doctor warns rather than fails.
+        result = self.doctor(MEZMO_GOVERNANCE_TOKEN=None)
+        line = self.assertStatus(result, "Codex governance", "warn")
+        self.assertIn("governance is off: no key configured", line)
+        self.assertIn("~/.mezmo/bin/mezmo-setup", line)
+
+        result = self.doctor(MEZMO_GOVERNANCE_TOKEN=None, MEZMO_GOVERNANCE_REQUIRED="1")
+        self.assertIn("every call is denied", self.assertStatus(result, "Codex governance", "info"))
+
+        # A key from setup, even one that can't be read now, is configured: the hook fails closed on it.
+        self.write(".mezmo/codex.json", {"key_store": "file"})
+        result = self.doctor(MEZMO_GOVERNANCE_TOKEN=None)
+        self.assertEqual(self.lines(result, "Codex governance"), [], result.stdout)
+        result = self.doctor()
+        self.assertEqual(self.lines(result, "Codex governance"), [], result.stdout)
+
     def test_settings_saved_by_setup_pass_with_no_variables(self) -> None:
         # What setup codex saves: the API URL in codex.json, the key in a 0600 file (the store with no OS service).
         self.install()
@@ -947,6 +966,8 @@ class CodexTests(DoctorTestCase):
         self.assertIn("(written by setup)", self.assertStatus(result, "Codex MCP", "info"))
         self.assertIn("http_headers_helper", self.assertStatus(result, "Codex MCP auth", "info"))
         self.assertIn("answered initialize", self.assertStatus(result, "Codex MCP connect", "ok"))
+        # Codex reads the table when a session starts.
+        self.assertIn("start a new Codex session to use the Mezmo MCP", self.assertStatus(result, "Codex MCP session", "info"))
         (call,) = [request for request in self.stub.requests if request["path"] == "/mcp"]
         self.assertEqual((call["auth"], call["body"]["method"]), (f"Token {CANARY}", "initialize"))
 

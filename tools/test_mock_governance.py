@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import mock_governance  # noqa: E402
 
 HOOK = Path(__file__).parent.parent / "claude-code" / "scripts" / "governance_hook.py"
-# The Claude Code plugin lets every call run while it has no key; the Codex hook denies.
+# Both plugins let every call run while they have no key, unless MEZMO_GOVERNANCE_REQUIRED=1.
 KEYED_HOOK = Path(__file__).parent.parent / "codex" / "mezmo_governance_hook.py"
 
 
@@ -149,9 +149,13 @@ class MockGovernanceTests(unittest.TestCase):
             self.run_hook(event("mcp__github__list_issues", "c7"))
         self.assertEqual(writes.calls, ["approved github:list_issues\n"])
 
-    def test_missing_key_is_rejected(self) -> None:
+    def test_missing_key_is_rejected_when_required(self) -> None:
         self.env.pop("MEZMO_GOVERNANCE_TOKEN")
         result = self.run_hook(event("Read", "c5"), KEYED_HOOK)
+        # Allowed, with the once-a-session notice.
+        self.assertIn("Governance is off", json.loads(result.stdout)["systemMessage"])
+        self.env["MEZMO_GOVERNANCE_REQUIRED"] = "1"
+        result = self.run_hook(event("Read", "c6"), KEYED_HOOK)
         self.assertEqual(self.decision(result), "deny")
 
 

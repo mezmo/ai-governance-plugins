@@ -709,6 +709,9 @@ class HookConfigTests(unittest.TestCase):
     def test_the_crash_guard_keeps_the_hook_deny_output(self) -> None:
         pre, _ = self.pre_and_post_commands()
         with tempfile.TemporaryDirectory() as home:
+            # Set up, but the key file is gone: a configured key that can't be read denies.
+            (Path(home) / ".mezmo").mkdir(mode=0o700)
+            (Path(home) / ".mezmo" / "codex.json").write_text('{"key_store": "file"}', encoding="utf-8")
             result = self.run_command(pre, HOOK_PATH, home=home)
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1278,14 +1281,54 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(stub.requests[1]["method"], "GET")
         self.assertIn(f"decision_id={decision_id}", stub.requests[1]["path"])
 
-    def test_missing_key_denies_before_any_request(self) -> None:
-        # No URL either: the production default applies, and no key means nothing is sent there.
-        result = self.run_hook(hook_event(PRE_EVENT), None, {"MEZMO_GOVERNANCE_TOKEN": "", "HOME": self.tmp.name})
+    def test_no_key_anywhere_allows_and_says_so_once_per_session(self) -> None:
+        # No URL either: the production default applies, and nothing is sent there.
+        unset = {"MEZMO_GOVERNANCE_TOKEN": "", "HOME": self.tmp.name}
+        home = Path(self.tmp.name)
+        with StubGovernance([]) as stub:
+            first = self.run_hook(hook_event(PRE_EVENT), stub.url, unset)
+            again = self.run_hook(hook_event(PRE_EVENT), stub.url, unset)
+            post = self.run_hook(hook_event(POST_EVENT), stub.url, unset)
+            other = self.run_hook({**hook_event(PRE_EVENT), "session_id": "session-2"}, stub.url, unset)
+            self.assertEqual(stub.requests, [])
+
+        for result in (first, again, post, other):
+            self.assertEqual(result.returncode, 0, result.stderr)
+        # Codex shows a systemMessage as a warning and runs the tool; no permissionDecision is sent.
+        self.assertEqual(stdout_json(first), {"systemMessage": hook.GOVERNANCE_OFF})
+        self.assertIn("~/.mezmo/bin/mezmo-setup", hook.GOVERNANCE_OFF)
+        self.assertEqual((again.stdout, post.stdout), ("", ""))
+        self.assertEqual(stdout_json(other), {"systemMessage": hook.GOVERNANCE_OFF})
+        # Nothing recorded, and the launcher the notice names now exists.
+        self.assertFalse((home / "audit.jsonl").exists())
+        launcher = home / ".mezmo" / "bin" / "mezmo-setup"
+        self.assertEqual(stat.S_IMODE(launcher.stat().st_mode), 0o700)
+        self.assertIn(str(HOOK_PATH.with_name("mezmo_setup.py")), launcher.read_text(encoding="utf-8"))
+
+    def test_required_with_no_key_denies_before_any_request(self) -> None:
+        extra = {"MEZMO_GOVERNANCE_TOKEN": "", "HOME": self.tmp.name, "MEZMO_GOVERNANCE_REQUIRED": "1"}
+        with StubGovernance([]) as stub:
+            result = self.run_hook(hook_event(PRE_EVENT), stub.url, extra)
+            self.assertEqual(stub.requests, [])
 
         self.assertEqual(result.returncode, 0, result.stderr)
         output = stdout_json(result)
         self.assertEqual(set(output), set(deny_schema("x")))
-        self.assertIn("no Mezmo key", json.dumps(output))
+        self.assertIn("MEZMO_GOVERNANCE_REQUIRED=1", json.dumps(output))
+        self.assertIn("mezmo-setup", json.dumps(output))
+
+    def test_a_configured_key_that_cannot_be_read_denies_before_any_request(self) -> None:
+        settings = Path(self.tmp.name) / ".mezmo"
+        settings.mkdir(mode=0o700)
+        (settings / "codex.json").write_text('{"key_store": "file"}', encoding="utf-8")
+        with StubGovernance([]) as stub:
+            result = self.run_hook(hook_event(PRE_EVENT), stub.url, {"MEZMO_GOVERNANCE_TOKEN": "", "HOME": self.tmp.name})
+            self.assertEqual(stub.requests, [])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = stdout_json(result)
+        self.assertEqual(set(output), set(deny_schema("x")))
+        self.assertIn("no Mezmo key could be read", json.dumps(output))
         self.assertIn("setup codex", json.dumps(output))
 
     def test_a_reply_it_cannot_read_denies(self) -> None:
@@ -1628,9 +1671,9 @@ class RefusalHandOffTests(unittest.TestCase):
 class RefusalMainTests(unittest.TestCase):
     """main() tells the ledger of a refusal once the deny is printed. The ledger is a stand-in."""
 
-    # With no key the hook denies before any request.
-    NO_KEY = "no Mezmo key: run mezmo_setup.py (./mezmo-governance setup codex), or set MEZMO_GOVERNANCE_TOKEN"
-    REASON = f"Mezmo Governance could not authorize this exact tool call, so Codex blocked it: {NO_KEY}"
+    # Required with no key: the hook denies before any request.
+    NO_KEY = hook.GOVERNANCE_REQUIRED
+    REASON = f"Mezmo Governance blocked this tool call: {NO_KEY}"
 
     def run_main(self, *, env: Mapping[str, str] | None = None, stdin: str | None = None) -> tuple[int, str]:
         """main() on a PreToolUse call: its exit code and stdout. Each call to the ledger is kept in self.calls."""
@@ -1640,8 +1683,12 @@ class RefusalMainTests(unittest.TestCase):
             self.calls.append({**details, "name": name, "printed": out.getvalue()})
 
         out = StringIO()
+        empty = tempfile.TemporaryDirectory()
+        self.addCleanup(empty.cleanup)
         with (
             patch.dict(os.environ, {"MEZMO_GOVERNANCE_TOKEN": "sts_test", **(env or {})}, clear=True),
+            # Never the developer's own saved settings.
+            patch.object(hook.mezmo_settings, "settings_dir", lambda: Path(empty.name) / ".mezmo"),
             patch.object(hook, "_tell_ledger", side_effect=tell),
             patch.object(sys, "stdin", StringIO(json.dumps(hook_event(PRE_EVENT)) if stdin is None else stdin)),
             patch.object(sys, "stdout", out),
@@ -1651,7 +1698,7 @@ class RefusalMainTests(unittest.TestCase):
         return code, out.getvalue()
 
     def test_the_ledger_is_told_once_the_deny_is_printed(self) -> None:
-        code, stdout = self.run_main(env={"MEZMO_GOVERNANCE_TOKEN": ""})
+        code, stdout = self.run_main(env={"MEZMO_GOVERNANCE_TOKEN": "", "MEZMO_GOVERNANCE_REQUIRED": "1"})
 
         self.assertEqual((code, stdout), (0, deny_line(self.REASON)))
         (call,) = self.calls
