@@ -869,6 +869,56 @@ class CodexTests(DoctorTestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertTrue(any(line.startswith("FAIL") and words in line for line in self.lines(result, subject)), result.stdout)
 
+    def mcp(self, table: str, answer: tuple = (200, {"jsonrpc": "2.0", "id": 1, "result": {}})) -> None:
+        """A Codex install with a mezmo MCP server on the stub, at /mcp."""
+        self.install(extra="\n" + table.replace("MCP_URL", self.stub.url.rsplit("/governance/", 1)[0] + "/mcp"))
+        governance = self.stub.answers[("POST", True)]
+
+        def post(request: dict) -> tuple:
+            if request["path"] == "/mcp":
+                return answer
+            return governance(request) if callable(governance) else governance
+
+        self.stub.answers[("POST", True)] = post
+
+    def test_the_mcp_helper_setup_writes_connects(self) -> None:
+        # What setup writes: the header helper and the settings loader in ~/.mezmo/codex-mcp, the key in its store.
+        helper = self.home / ".mezmo/codex-mcp"
+        helper.mkdir(parents=True)
+        (self.home / ".mezmo").chmod(0o700)
+        for name in ("mezmo_mcp_headers.py", "mezmo_settings.py"):
+            shutil.copy(REPO / "codex" / name, helper)
+        self.write(".mezmo/codex.json", {"api_url": "https://api.example.test", "key_store": "file"})
+        self.write(".mezmo/codex-key", CANARY + "\n").chmod(0o600)
+        self.mcp(
+            "# Written by Mezmo setup: run it again to change this table, or with --remove to delete it.\n"
+            '[mcp_servers.mezmo]\nurl = "MCP_URL"\n'
+            f'http_headers_helper = "python3 {helper}/mezmo_mcp_headers.py"\n'
+            'enabled_tools = ["get_ledger_investigation", "list_ledger_entries"]\ndefault_tools_approval_mode = "auto"\n'
+        )
+
+        result = self.doctor()
+
+        self.assertIn("(written by setup)", self.assertStatus(result, "Codex MCP", "info"))
+        self.assertIn("http_headers_helper", self.assertStatus(result, "Codex MCP auth", "info"))
+        self.assertIn("answered initialize", self.assertStatus(result, "Codex MCP connect", "ok"))
+        (call,) = [request for request in self.stub.requests if request["path"] == "/mcp"]
+        self.assertEqual((call["auth"], call["body"]["method"]), (f"Token {CANARY}", "initialize"))
+
+    def test_mcp_problems_warn(self) -> None:
+        cases = [
+            ("", "Codex MCP", "no mezmo MCP server"),
+            ('[mcp_servers.mezmo]\nurl = "MCP_URL"\nbearer_token_env_var = "MEZMO_MCP_KEY"\n', "Codex MCP auth", "does not set"),
+            ('[mcp_servers.mezmo]\nurl = "MCP_URL"\nhttp_headers_helper = "exit 3"\n', "Codex MCP auth", "exited 3"),
+            ('[mcp_servers.mezmo]\nurl = "MCP_URL"\nhttp_headers = { Authorization = "Token wrong" }\n', "Codex MCP connect", "refused the key (HTTP 401)"),
+        ]
+        for table, subject, words in cases:
+            with self.subTest(subject=subject, words=words):
+                self.mcp(table, (401, {}))
+                result = self.doctor()
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertIn(words, self.assertStatus(result, subject, "warn"))
+
 
 class CodexPluginTests(DoctorTestCase):
     """The native plugin: `codex app-server` hooks/list answers for trust, as Codex 0.163.0 did live."""

@@ -7,5 +7,6 @@
   },
   "homepage": "https://github.com/mezmo/ai-governance-plugins",
   "repository": "https://github.com/mezmo/ai-governance-plugins",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "skills": "./skills/"
 }

@@ -288,7 +288,8 @@ class InstallTests(CliTestCase):
         copied = {
             "codex": (
                 "codex/hooks/mezmo_governance_hook.py", "codex/hooks/mezmo_ledger_hook.py", "codex/hooks/ledger_investigation.py",
-                "codex/hooks/mezmo_settings.py", "codex/hooks/mezmo_setup.py",
+                "codex/hooks/mezmo_settings.py", "codex/hooks/mezmo_setup.py", "codex/hooks/mezmo_key_file.py",
+                "codex/hooks/mezmo_mcp_headers.py",
             ),
             "cursor": ("home/.cursor/hooks/mezmo_governance_hook.py",),
             "copilot": ("copilot/hooks/mezmo_governance_hook.py", "copilot/hooks/mezmo-governance.json"),
@@ -523,8 +524,10 @@ class InstallTests(CliTestCase):
                         self.assertEqual(kept, group["hooks"], f"{event} group {g}")
                 command = f'python3 "{folder}/hooks/mezmo_ledger_hook.py" || true'
                 pre, post = now["hooks"]["PreToolUse"], now["hooks"]["PostToolUse"]
-                self.assertEqual(pre[1]["hooks"][2:], [{"command": command, "timeout": 10, "type": "command"}])
-                self.assertEqual(post[0]["hooks"][1:], [{"command": command, "timeout": 15, "type": "command"}])
+                self.assertEqual(pre[1]["hooks"][2:], [{"command": command, "timeout": 10, "type": "command",
+                                                            "statusMessage": "Recording the call in the Mezmo Ledger"}])
+                self.assertEqual(post[0]["hooks"][1:], [{"command": command, "timeout": 15, "type": "command",
+                                                            "statusMessage": "Recording the result in the Mezmo Ledger"}])
                 self.assertEqual((pre[0], pre[2]), (older["hooks"]["PreToolUse"][0], later))
                 installed = self.files()
 
@@ -699,13 +702,15 @@ class InstallTests(CliTestCase):
         self.assertTrue(command.endswith("exit 2; }"), command)
         self.assertTrue((self.tmp / "codex/hooks/mezmo_governance_hook.py").is_file())
         # Codex gets a second script, the ledger hook: the last handler of the same group, for both events.
-        for event, timeout in (("PreToolUse", 10), ("PostToolUse", 15)):
+        for event, timeout, name in (("PreToolUse", 10, "call"), ("PostToolUse", 15, "result")):
             (group,) = codex["hooks"][event]
             self.assertEqual(len(group["hooks"]), 2, event)
-            ledger = {"command": f'python3 "{self.tmp}/codex/hooks/mezmo_ledger_hook.py" || true', "timeout": timeout, "type": "command"}
+            ledger = {"command": f'python3 "{self.tmp}/codex/hooks/mezmo_ledger_hook.py" || true', "timeout": timeout, "type": "command",
+                      "statusMessage": f"Recording the {name} in the Mezmo Ledger"}
             self.assertEqual(group["hooks"][1], ledger)
         # Beside it, the investigation CLI, which no handler runs, the settings loader and the setup command.
-        for name in ("mezmo_ledger_hook.py", "ledger_investigation.py", "mezmo_settings.py", "mezmo_setup.py"):
+        for name in ("mezmo_ledger_hook.py", "ledger_investigation.py", "mezmo_settings.py", "mezmo_setup.py", "mezmo_key_file.py",
+                     "mezmo_mcp_headers.py"):
             self.assertEqual((self.tmp / "codex/hooks" / name).read_bytes(), (REPO / "codex" / name).read_bytes())
         self.assertIn("next: Start codex, run /hooks, and trust the four Mezmo hook entries", result.stdout)
         # No other agent has a ledger script.
@@ -824,7 +829,8 @@ class InstallTests(CliTestCase):
                                 ("antigravity", "home/.gemini/config")):
             (self.tmp / folder / "hooks").mkdir(parents=True, exist_ok=True)
             shutil.copy2(REPO / adapter / "mezmo_governance_hook.py", self.tmp / folder / "hooks")
-        for name in ("mezmo_ledger_hook.py", "ledger_investigation.py", "mezmo_settings.py", "mezmo_setup.py"):
+        for name in ("mezmo_ledger_hook.py", "ledger_investigation.py", "mezmo_settings.py", "mezmo_setup.py", "mezmo_key_file.py",
+                     "mezmo_mcp_headers.py"):
             shutil.copy2(REPO / "codex" / name, self.tmp / "codex/hooks")
         before = self.files()
         result = self.cli("install", "gemini-cli", "codex", "pi", "droid", "windsurf", "antigravity")

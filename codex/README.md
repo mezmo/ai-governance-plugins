@@ -15,21 +15,48 @@ The script needs Python 3.9 or later and uses only the standard library.
 
 ## Getting started
 
-1. Install, as a [Codex plugin](#as-a-codex-plugin) or with the
-   [file install](#install): `./mezmo-governance install codex`.
-2. Set up the Mezmo API URL and key, in your own terminal:
-   `./mezmo-governance setup codex` from a clone, or
-   `python3 <plugin root>/mezmo_setup.py` for the plugin. See [Setup](#setup).
-3. Start Codex, run `/hooks`, and trust all four Mezmo hooks.
-4. Check it: `./mezmo-governance doctor codex`.
-5. Investigate: see [Incident investigations](#incident-investigations).
+1. `codex plugin marketplace add mezmo/ai-governance-plugins`
+2. `codex plugin add mezmo-governance@mezmo`
+3. Start Codex and ask it to "set up Mezmo". Its `mezmo-setup` skill asks for
+   the Mezmo API URL (production by default) and creates a private file for
+   you to paste the key into in your own editor. It then checks the key, saves
+   it and connects the Mezmo MCP. See [Setup](#setup).
+4. Start a new session, run `/hooks`, and trust all four Mezmo hooks.
+5. Ask Codex to investigate an incident, such as "investigate PagerDuty
+   incident Q34FCCWSTU9OI2". Its `mezmo-investigate` skill joins the
+   incident's investigation and reads the Mezmo ledger before it changes
+   anything. See [Incident investigations](#incident-investigations).
+
+Codex picks a plugin's skill when your request matches it. To name one
+yourself, type `$` and pick it, or run `/skills`: Codex lists them as
+`mezmo-governance:mezmo-setup` and `mezmo-governance:mezmo-investigate`. For the [file install](#install), which has no skills, see
+[Setup](#setup) and [Incident investigations](#incident-investigations).
 
 ## Setup
 
+The `mezmo-setup` skill runs `mezmo_setup.py` for you. Run by hand,
 `mezmo_setup.py` asks for two things: the Mezmo API URL (default
 `https://api.mezmo.com`) and the key, a Mezmo service key read with
 `getpass`, so it never shows on screen, in shell history, in a command line or
-in an agent transcript. Run it in your own terminal, not through Codex.
+in an agent transcript. With no flags, run it in your own terminal, not
+through Codex.
+
+The skill runs it with flags instead, so nothing is asked:
+
+| Flag | What it does |
+| --- | --- |
+| `--api-url URL` | The Mezmo API URL. Default: the saved one, else production |
+| `--mcp-url URL` | The Mezmo MCP URL. Default: `https://mcp.mezmo.com/mcp` for the production API, none for another |
+| `--key-file PATH` | Read the key from a private file: mode `0600`, in a `0700` folder, not a symlink. `python3 mezmo_key_file.py create-key-file` makes an empty one and prints its path |
+| `--delete-key-file` | Delete the key file afterwards, on failure too |
+| `--keep-key` | Use the key setup saved before, in the store `codex.json` names or, on macOS, the Keychain item below |
+| `--no-ledger` | Save the ledger as off and skip its check |
+| `--replace-mcp` | Replace a `[mcp_servers.mezmo]` setup did not write |
+| `--status` | Show what is saved, never the key |
+| `--remove` | Delete the key, `codex.json` and the MCP entry setup wrote |
+
+The key never goes through the chat or a command line: governance records
+each shell command's arguments, so a key there would end up in the trail.
 
 It checks both before saving anything: governance with a status lookup that
 records no decision, and the [ledger](#ledger) with an empty batch, which must
@@ -60,6 +87,39 @@ settings are saved, and a keyring that does not answer counts as no keyring.
 From the API URL the hooks derive the governance URL,
 `<api_url>/governance/workflow/authorize`, and the ledger URL,
 `<api_url>/v1/audit/events`.
+
+### The Mezmo MCP
+
+[Investigations](#investigations) read the ledger through the Mezmo MCP
+server's `get_ledger_investigation` tool, so setup also adds the server to
+Codex's `config.toml` (`$CODEX_HOME`, default `~/.codex`) as `mezmo`:
+
+```toml
+# Written by Mezmo setup: run it again to change this table, or with --remove to delete it.
+[mcp_servers.mezmo]
+url = "https://mcp.mezmo.com/mcp"
+http_headers_helper = "python3 /Users/you/.mezmo/codex-mcp/mezmo_mcp_headers.py"
+enabled_tools = ["get_ledger_investigation", "list_ledger_entries"]
+default_tools_approval_mode = "auto"
+```
+
+- Only the two ledger reads are on, and they run without asking. The
+  server's other tools, including the ones that change pipelines, stay off.
+- `http_headers_helper` is a command Codex runs with `sh -c` when it
+  connects, and reads a JSON object of headers from its output. This one
+  prints `{"Authorization": "Token <key>"}` from the key store setup used,
+  so neither `config.toml` nor Codex's environment holds the key. A key in an
+  environment variable (`bearer_token_env_var`) would have to be in the
+  environment of Codex's background `app-server`, which keeps the one it
+  started with.
+- Setup copies the helper and `mezmo_settings.py` to `~/.mezmo/codex-mcp/`,
+  so a plugin update does not move the path in `config.toml`.
+- Setup changes only that table, and keeps the previous file as
+  `config.toml.mezmo-backup`. If `config.toml` already has a `mezmo` server
+  setup did not write, setup saves nothing and exits 4; `--replace-mcp`
+  replaces it.
+- For an API URL other than production, give `--mcp-url`, or setup skips the
+  MCP and says so.
 
 ### Overrides
 
@@ -132,12 +192,12 @@ for `~/.codex`.
 
 1. Copy both hook scripts, the governance hook and the ledger hook, the
    [investigation](#investigations) CLI, the settings loader both hooks
-   import, and the setup command:
+   import, and the setup command with its key-file and MCP helpers:
 
 ```bash
 mkdir -p ~/.codex/hooks
 cp codex/mezmo_governance_hook.py codex/mezmo_ledger_hook.py codex/ledger_investigation.py \
-  codex/mezmo_settings.py codex/mezmo_setup.py ~/.codex/hooks/
+  codex/mezmo_settings.py codex/mezmo_setup.py codex/mezmo_key_file.py codex/mezmo_mcp_headers.py ~/.codex/hooks/
 ```
 
 2. Merge [hooks.example.json](hooks.example.json) into `~/.codex/hooks.json`, or
@@ -192,12 +252,10 @@ codex plugin marketplace add mezmo/ai-governance-plugins
 codex plugin add mezmo-governance@mezmo
 ```
 
-Then run `python3 <plugin root>/mezmo_setup.py` in your terminal, or
+Then start Codex and ask it to "set up Mezmo", or run
 `./mezmo-governance setup codex` from a clone; both save the same settings.
-The plugin root is the folder of the installed plugin's `mezmo_setup.py`
-(`find ~/.codex -name mezmo_setup.py`). Then trust all four hooks in
-`/hooks`. Until you do, Codex skips them without a
-warning and every tool runs ungoverned (0.163.0). Use the plugin or the file
+Then trust all four hooks in `/hooks`. Until you do, Codex skips them without
+a warning and every tool runs ungoverned (0.163.0). Use the plugin or the file
 install, not both: both run the hook twice. `doctor` checks the plugin's
 trust; `smoke` checks only the file install. For a headless setup, see
 [Codex CLI, Copilot CLI and Droid](../README.md#codex-cli-copilot-cli-and-droid).
@@ -221,6 +279,11 @@ source.
   `plugin contents changed; hook approval required` and Codex runs the tool
   ungoverned, until you approve all four again in `/hooks`. Approve them
   right after each update, then run `./mezmo-governance doctor codex`.
+- Changing a hook entry also makes Codex ask to trust it again. This version
+  names the two ledger entries, "Recording the call in the Mezmo Ledger" and
+  "Recording the result in the Mezmo Ledger", which `/hooks` showed as
+  "Unnamed hook" before, so trust them again after the update, and after
+  `./mezmo-governance install codex` for the file install.
 
 ## Verify
 
@@ -487,12 +550,13 @@ command worked.
 - After a `close`, it sends `closed` and clears the session's investigation,
   but only when it is the one closed.
 
-The CLI is at `~/.codex/hooks/ledger_investigation.py` for the file install,
-where `./mezmo-governance install codex` copies it, and under
-`~/.codex/plugins/cache/mezmo/mezmo-governance/<version>/` for the plugin.
+With the plugin, ask Codex to investigate: the `mezmo-investigate` skill
+follows the steps below, and runs the CLI from the plugin's own folder.
 
-Codex has no skills, so the instructions go in `AGENTS.md`. Paste this block
-there and put the CLI's path in place of `<cli>`:
+The file install has no skills, so its instructions go in `AGENTS.md`. The CLI
+is at `~/.codex/hooks/ledger_investigation.py`, where
+`./mezmo-governance install codex` copies it. Paste this block into
+`AGENTS.md` and put the CLI's path in place of `<cli>`:
 
 ```markdown
 ## Incident investigations
@@ -631,6 +695,17 @@ hook also deletes any file there older than 7 days.
 Run `./mezmo-governance doctor --probe codex` from the repository root.
 [Troubleshooting](../README.md#troubleshooting) in the root README lists each
 error and its fix. The top cause for Codex: a hook not trusted in `/hooks`.
+`doctor` also checks the Mezmo MCP: the server's URL, how it authenticates,
+and an MCP `initialize` call with the key.
+
+- **Every call is denied with "no Mezmo key"**: the hooks were trusted before
+  setup saved a key, so governance denies the setup command too. Quit Codex,
+  start it once with `codex --disable hooks`, ask it to set up Mezmo, then
+  start it normally. Or run `./mezmo-governance setup codex` from a clone.
+- **Setting up without Codex**: `./mezmo-governance setup codex` from a clone
+  of this repository runs the same `mezmo_setup.py` in your terminal. The
+  plugin's copy is in Codex's plugin cache, under a folder named for the
+  plugin version, so it moves with each update.
 
 ## Tests
 
@@ -639,5 +714,5 @@ python3 -m unittest test_hook.py test_ledger.py test_ledger_investigation.py tes
 ```
 
 `test_hook.py` covers the governance hook, `test_ledger.py` the ledger hook,
-`test_ledger_investigation.py` the investigation CLI and `test_setup.py` setup
-and the settings loader. From the repo root, `make test-codex` runs all four.
+`test_ledger_investigation.py` the investigation CLI and `test_setup.py` setup,
+the settings loader, the MCP entry and the two skills. From the repo root, `make test-codex` runs all four.
