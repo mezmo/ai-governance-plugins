@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Join, close or launch a Mezmo investigation: tool calls on one incident share one thread_id.
+"""Join, close or launch a Mezmo investigation: tool calls on one incident share one incident key.
 
-- `id --incident-key K` prints {incident_key, thread_id} as one line of JSON.
+The ledger service derives the investigation from the incident key and the account of the key the
+events are sent with, so nothing here needs the account.
+
 - `join --incident-key K [--service S]` and `close --incident-key K` print {action, incident_key,
-  service, thread_id} as one line of JSON, `service` only when given, and do nothing else. The ledger hook sees that line in the Bash call's output
-  and records the join or close itself.
+  service} as one line of JSON, `service` only when given, and do nothing else. The ledger hook
+  sees that line in the Bash call's output and records the join or close itself.
 - `launch --incident-key K [--service S] -- <command...>` sends `agent.investigation.opened`, sets
-  MEZMO_LEDGER_INCIDENT_KEY and MEZMO_LEDGER_INVESTIGATION_ID, and execs the command, so its exit
-  code is the command's. An `opened` it can't send is saved to the retry file and the command
+  MEZMO_LEDGER_INCIDENT_KEY, and execs the command, so its exit code is the command's. An `opened` it can't send is saved to the retry file and the command
   still runs. A command that can't be found exits 127, and one that can't be run 126, with
   nothing sent.
 - A service is the deployment or app the incident is about, as a DNS label that isn't all digits.
@@ -29,13 +30,10 @@ import re
 import shutil
 import sys
 import threading
-import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-LEDGER_ACCOUNT_ENV = "MEZMO_LEDGER_ACCOUNT"
 LEDGER_INCIDENT_KEY_ENV = "MEZMO_LEDGER_INCIDENT_KEY"
-LEDGER_INVESTIGATION_ID_ENV = "MEZMO_LEDGER_INVESTIGATION_ID"
 INCIDENT_SOURCES = ("jira", "pagerduty", "slack")
 # The ledgers' PLAIN_NAME: a DNS label.
 SERVICE_NAME = re.compile(r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?")
@@ -68,11 +66,6 @@ def parse_service(value: str) -> Optional[str]:
     return service if SERVICE_NAME.fullmatch(service) and not service.isdigit() else None
 
 
-def investigation_id(*, account: str, incident_key: str) -> str:
-    """The investigation's thread_id. ledger_context() and the ledger service derive the same one."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"mezmo-investigation:{account}:{incident_key}"))
-
-
 def print_line(value: Dict[str, Any]) -> None:
     """Print `value` as one line of JSON, the form the ledger hook reads back."""
     print(json.dumps(value, separators=(",", ":"), sort_keys=True))
@@ -83,10 +76,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         allow_abbrev=False, description="Join, close or launch a Mezmo investigation.", prog="ledger_investigation.py"
     )
-    commands = parser.add_subparsers(dest="action", metavar="{id,join,close,launch}")
+    commands = parser.add_subparsers(dest="action", metavar="{join,close,launch}")
     commands.required = True
     for name, text in (
-        ("id", "print the incident key and its thread_id"),
         ("join", "print the line that joins this session to the investigation"),
         ("close", "print the line that closes the investigation"),
         ("launch", "send `opened`, then run the command after `--` inside the investigation"),
@@ -109,20 +101,19 @@ def _ledger_module() -> Any:
     return importlib.import_module("ledger" if (here / "ledger.py").is_file() else "mezmo_ledger_hook")
 
 
-def _send_opened(*, config: Any, incident_key: str, ledger: Any, service: Optional[str], thread_id: str) -> None:
+def _send_opened(*, config: Any, incident_key: str, ledger: Any, service: Optional[str]) -> None:
     """Send `opened` on a daemon thread, wait up to the ledger deadline, and save what wasn't sent.
 
     Never raises: a send that fails must not stop the command.
     """
     event: Optional[Dict[str, Any]] = None
-    extra = {"agent": ledger.AGENT, "incident_key": incident_key, "opened_by": "alert", "thread_id": thread_id}
+    extra = {"agent": ledger.AGENT, "incident_key": incident_key, "opened_by": "alert"}
     if service is not None:
         extra["service"] = service
     try:
+        # No entity_id: the ledger service sets it to the investigation it derives from the incident key.
         event = ledger.ledger_envelope(
-            account=config.account,
-            correlation_id=thread_id,
-            entity_id=thread_id,
+            entity_id=None,
             entity_type="investigation",
             event=OPENED_EVENT,
             extra=extra,
@@ -167,7 +158,7 @@ def launch(*, command: Sequence[str], incident_key: str, service: Optional[str] 
         warn(f"could not load the Mezmo ledger beside this file: {str(error) or type(error).__name__}")
         return USAGE_ERROR
     if config is None:
-        warn(f"launch needs {LEDGER_ACCOUNT_ENV} and MEZMO_LEDGER_URL set to safe values; nothing was run")
+        warn("launch needs the Mezmo ledger on, with safe settings (see the plugin's README); nothing was run")
         return USAGE_ERROR
     # Looked up first, so a command that isn't there, or is there but can't be run, gets no `opened`.
     if shutil.which(command[0], mode=os.F_OK) is None:
@@ -176,11 +167,9 @@ def launch(*, command: Sequence[str], incident_key: str, service: Optional[str] 
     if shutil.which(command[0]) is None:
         warn(f"could not run {command[0]}: {os.strerror(errno.EACCES)}")
         return COMMAND_NOT_RUN
-    thread_id = investigation_id(account=config.account, incident_key=incident_key)
-    _send_opened(config=config, incident_key=incident_key, ledger=ledger, service=service, thread_id=thread_id)
+    _send_opened(config=config, incident_key=incident_key, ledger=ledger, service=service)
     environment = dict(os.environ)
     environment[LEDGER_INCIDENT_KEY_ENV] = incident_key
-    environment[LEDGER_INVESTIGATION_ID_ENV] = thread_id
     # exec replaces this process without flushing its buffers.
     sys.stdout.flush()
     sys.stderr.flush()
@@ -227,15 +216,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if command is not None:
         warn(f"{parsed.action} takes no command")
         return USAGE_ERROR
-    account = os.environ.get(LEDGER_ACCOUNT_ENV, "").strip()
-    if not account:
-        warn(f"{LEDGER_ACCOUNT_ENV} is not set")
-        return USAGE_ERROR
-    thread_id = investigation_id(account=account, incident_key=key)
-    if parsed.action == "id":
-        print_line({"incident_key": key, "thread_id": thread_id})
-        return 0
-    line = {"action": "joined" if parsed.action == "join" else "closed", "incident_key": key, "thread_id": thread_id}
+    line = {"action": "joined" if parsed.action == "join" else "closed", "incident_key": key}
     if service is not None:
         line["service"] = service
     print_line(line)

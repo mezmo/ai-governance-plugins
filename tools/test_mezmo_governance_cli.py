@@ -182,6 +182,9 @@ class CliTestCase(unittest.TestCase):
                 "PI_CODING_AGENT_DIR": str(self.tmp / "pi"),
                 "FACTORY_HOME_OVERRIDE": str(self.tmp / "factory"),
                 "MEZMO_GOVERNANCE_TOKEN": CANARY,
+                # The doctor checks the Claude Code plugin's ledger, which defaults to production. Nothing
+                # listens on port 9, so that check stays on this machine.
+                "MEZMO_LEDGER_URL": "http://127.0.0.1:9/v1/audit/events",
             }
         )
 
@@ -1146,7 +1149,7 @@ class SmokeTests(CliTestCase):
             "    log.write(json.dumps(sorted(name for name in os.environ if name.startswith('MEZMO_LEDGER_'))) + '\\n')\n"
             "sys.exit(2)\n"
         )
-        ledger = {"MEZMO_LEDGER_ACCOUNT": "acct", "MEZMO_LEDGER_KEY": "key", "MEZMO_LEDGER_URL": "https://ledger.example.test/v1/audit/events"}
+        ledger = {"MEZMO_LEDGER_KEY": "key", "MEZMO_LEDGER_URL": "https://ledger.example.test/v1/audit/events"}
         for args, env in ((("smoke", "codex"), {}), (("smoke", "--live", "codex"), {"MEZMO_GOVERNANCE_URL": doctor_unreachable()})):
             with self.subTest(args=args):
                 seen.unlink(missing_ok=True)
@@ -1178,7 +1181,6 @@ class SmokeTests(CliTestCase):
                 "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "10",
                 "MEZMO_GOVERNANCE_URL": f"http://127.0.0.1:{server.server_port}{mock_governance.PATH}",
                 # The ledger is on, so a deny loads the ledger script; nothing listens on port 9, so each event is saved.
-                "MEZMO_LEDGER_ACCOUNT": "acct",
                 "MEZMO_LEDGER_SPOOL": str(scratch / "ledger-spool.jsonl"),
                 "MEZMO_LEDGER_URL": "http://127.0.0.1:9/v1/audit/events",
             }
@@ -1306,7 +1308,7 @@ class LiveSmokeTests(CliTestCase):
         scratch = self.tmp / "scratch"
         base = {"MEZMO_GOVERNANCE_URL": "https://example.test/governance/workflow/authorize", "MEZMO_GOVERNANCE_TOKEN": CANARY,
                 "MEZMO_GOVERNANCE_AUDIT_LOG": "/somewhere/audit.jsonl",
-                "MEZMO_LEDGER_ACCOUNT": "acct", "MEZMO_LEDGER_URL": "https://ledger.example.test/v1/audit/events"}
+                "MEZMO_LEDGER_URL": "https://ledger.example.test/v1/audit/events"}
         for limit, want in (("", "15"), ("40", "40")):
             with self.subTest(limit=limit), mock.patch.dict(os.environ, {**base, "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": limit}):
                 env = cli.live_env(scratch)
@@ -1315,6 +1317,8 @@ class LiveSmokeTests(CliTestCase):
                 self.assertEqual(env["MEZMO_GOVERNANCE_TOKEN"], CANARY)
                 # A live smoke asks Mezmo for a decision; it records nothing in the ledger.
                 self.assertEqual([name for name in env if name.startswith("MEZMO_LEDGER_")], [])
+                # Nor does the Claude Code plugin's ledger, which a governance key alone turns on.
+                self.assertEqual(env["CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED"], "false")
 
 
 def doctor_unreachable() -> str:

@@ -18,11 +18,12 @@ https://api.mezmo.com/governance/workflow/authorize
 
 Post-tool hooks only append a local JSONL file. They do not call the
 Governance service. The Claude Code and Codex plugins can also send each
-call's start and result to the Mezmo ledger service, but only when their
-ledger settings are set, which they are not by default. The ledger is a
-separate hook that never blocks a call; for a call governance refuses, the
-governance hook sends the one ledger record itself. Without `MEZMO_LEDGER_KEY`
-the governance token is sent to `MEZMO_LEDGER_URL` (see
+call's start and result to the Mezmo ledger service: Claude Code whenever it
+has a service account token, unless its `ledger_enabled` option is off, and
+Codex once `MEZMO_LEDGER_URL` is set. The ledger is a separate hook that never
+blocks a call; for a call governance refuses, the governance hook sends the one
+ledger record itself. Without `MEZMO_LEDGER_KEY` the governance token is sent
+to the ledger (see
 [claude-code/README.md](../claude-code/README.md#ledger) and
 [codex/README.md](../codex/README.md#ledger)).
 

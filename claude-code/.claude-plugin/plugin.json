@@ -1,7 +1,7 @@
 {
   "name": "mezmo",
   "displayName": "Mezmo",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Check Claude Code's Bash and MCP tool calls with Mezmo Governance, send Claude Code telemetry to Mezmo, and connect Claude to Mezmo MCP.",
   "author": {
     "name": "Mezmo",
@@ -24,18 +24,24 @@
     "governance_access_key": {
       "type": "string",
       "title": "Mezmo Governance service account token",
-      "description": "Token of the service account that the Claude Code agent uses in Mezmo Governance, a standard Mezmo service key. Leave empty to keep governance off. With a key, every Bash and MCP tool call is checked before it runs.",
+      "description": "Token of the service account that the Claude Code agent uses in Mezmo Governance, a standard Mezmo service key. Leave empty to keep governance and the ledger off. With a key, every Bash and MCP tool call is checked before it runs and recorded in the Mezmo ledger.",
       "sensitive": true
     },
-    "governance_url": {
+    "api_url": {
       "type": "string",
-      "title": "Mezmo Governance URL",
-      "description": "Authorize endpoint. Leave empty for https://api.mezmo.com/governance/workflow/authorize."
+      "title": "Mezmo API URL",
+      "description": "Leave empty for https://api.mezmo.com. Governance uses <API URL>/governance/workflow/authorize and the ledger <API URL>/v1/audit/events."
     },
     "governance_enabled": {
       "type": "boolean",
       "title": "Check tool calls with Mezmo Governance",
       "description": "Turn off to let tool calls run without a governance check. Governance from managed settings still applies.",
+      "default": true
+    },
+    "ledger_enabled": {
+      "type": "boolean",
+      "title": "Record tool calls in the Mezmo ledger",
+      "description": "Turn off to stop sending each Bash and MCP tool call to the Mezmo ledger. A ledger URL from managed settings still applies.",
       "default": true
     }
   }

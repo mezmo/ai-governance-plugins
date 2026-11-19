@@ -13,30 +13,40 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 import governance_config as gc  # noqa: E402
 
 KEY = "sts_0123456789abcdef0123456789abcdef"
-OTHER_URL = "https://governance.example.test/governance/workflow/authorize"
+OTHER_API = "https://api.example.test"
+OTHER_URL = "https://api.example.test/governance/workflow/authorize"
+OTHER_LEDGER_URL = "https://api.example.test/v1/audit/events"
 PROD_URL = "https://api.mezmo.com/governance/workflow/authorize"
+PROD_LEDGER_URL = "https://api.mezmo.com/v1/audit/events"
 
 
 class FakeHttp:
-    def __init__(self, status=404, body='{"status":404,"code":"ENOENT","message":"workflow not found"}', error=None):
+    """Governance answers a GET with `status`; the ledger answers a POST with `ledger`."""
+
+    def __init__(self, status=404, body='{"status":404,"code":"ENOENT","message":"workflow not found"}', error=None,
+                 ledger=(202, '{"accepted":0}')):
         self.calls = []
-        self.status, self.body, self.error = status, body, error
+        self.status, self.body, self.error, self.ledger = status, body, error, ledger
 
     def __call__(self, method, url, headers, body=None, timeout=15.0):
         self.calls.append({"method": method, "url": url, "headers": dict(headers), "body": body})
         if self.error:
             raise self.error
-        return self.status, self.body
+        return self.ledger if method == "POST" else (self.status, self.body)
 
 
 class FakeClaude:
     """Stands in for `claude plugin configure`. Like the real one, it keeps a sensitive value
     when given an empty string, and `inputs` carries only non-sensitive values."""
 
-    def __init__(self, installed=True, saved_url=None, key_set=False, enabled=None, refuse=None):
+    def __init__(self, installed=True, saved_url=None, key_set=False, enabled=None, refuse=None, ledger_enabled=None,
+                 legacy_url=None):
         self.calls = []
         self.installed, self.saved_url, self.key_set, self.refuse = installed, saved_url, key_set, refuse
-        self.enabled = enabled  # None: never saved, so the manifest default (on) applies
+        # None: never saved, so the manifest default (on) applies
+        self.enabled, self.ledger_enabled = enabled, ledger_enabled
+        # A governance_url an older release saved, shown only while the CLI still lists it.
+        self.legacy_url = legacy_url
 
     def __call__(self, args, stdin=None):
         self.calls.append({"args": list(args), "stdin": stdin})
@@ -48,22 +58,32 @@ class FakeClaude:
             if self.refuse:
                 return 1, json.dumps({"refused": {"message": self.refuse}})
             values = json.loads(stdin)
-            if "governance_url" in values:
-                self.saved_url = values["governance_url"] or None
+            if "api_url" in values:
+                self.saved_url = values["api_url"] or None
             if values.get("governance_access_key"):
                 self.key_set = True
             if "governance_enabled" in values:
                 self.enabled = values["governance_enabled"] == "true"
+            if "ledger_enabled" in values:
+                self.ledger_enabled = values["ledger_enabled"] == "true"
             return 0, json.dumps({"saved": sorted(values)})
         configured = ((["governance_access_key"] if self.key_set else [])
-                      + (["governance_url"] if self.saved_url else [])
-                      + (["governance_enabled"] if self.enabled is not None else []))
-        inputs = {"governance_enabled": True if self.enabled is None else self.enabled}
+                      + (["api_url"] if self.saved_url else [])
+                      + (["governance_enabled"] if self.enabled is not None else [])
+                      + (["ledger_enabled"] if self.ledger_enabled is not None else [])
+                      + (["governance_url"] if self.legacy_url else []))
+        inputs = {
+            "governance_enabled": True if self.enabled is None else self.enabled,
+            "ledger_enabled": True if self.ledger_enabled is None else self.ledger_enabled,
+        }
         if self.saved_url:
-            inputs["governance_url"] = self.saved_url
+            inputs["api_url"] = self.saved_url
+        if self.legacy_url:
+            inputs["governance_url"] = self.legacy_url
+        names = ("governance_access_key", "api_url", "governance_enabled", "ledger_enabled")
         return 0, json.dumps({
             "configured": configured,
-            "unconfigured": [k for k in ("governance_access_key", "governance_url", "governance_enabled") if k not in configured],
+            "unconfigured": [k for k in names if k not in configured],
             "inputs": inputs,
         })
 
@@ -92,6 +112,40 @@ class CheckTest(unittest.TestCase):
         http = FakeHttp()
         gc.check_access("Bearer " + KEY, OTHER_URL, send=http)
         self.assertEqual(http.calls[0]["headers"]["Authorization"], "Bearer " + KEY)
+
+    def test_the_ledger_takes_an_empty_batch_and_records_nothing(self):
+        http = FakeHttp()
+        result = gc.check_ledger(KEY, OTHER_LEDGER_URL, send=http)
+        self.assertTrue(result.ok, result.detail)
+        self.assertEqual(result.status, 202)
+        (call,) = http.calls
+        self.assertEqual((call["method"], call["url"], call["body"]), ("POST", OTHER_LEDGER_URL, b"[]"))
+        self.assertEqual(call["headers"]["Authorization"], f"Token {KEY}")
+        self.assertEqual(call["headers"]["Content-Type"], "application/json")
+
+    def test_the_ledger_check_fails_on_anything_but_202_with_nothing_accepted(self):
+        for answer, expected in (
+            ((401, '{"code":"EAUTH"}'), "rejected"),
+            ((202, '{"accepted":1}'), "Unexpected"),
+            ((202, "not json"), "Unexpected"),
+            ((404, "{}"), "HTTP 404"),
+        ):
+            with self.subTest(answer=answer):
+                result = gc.check_ledger(KEY, OTHER_LEDGER_URL, send=FakeHttp(ledger=answer))
+                self.assertFalse(result.ok)
+                self.assertIn(expected, result.detail)
+        result = gc.check_ledger(KEY, OTHER_LEDGER_URL, send=FakeHttp(error=OSError("refused")))
+        self.assertFalse(result.ok)
+        self.assertIn("Couldn't reach the Mezmo ledger", result.detail)
+
+    def test_the_api_url_is_the_scheme_and_host_of_any_url_on_it(self):
+        for url in (OTHER_API, OTHER_API + "/", OTHER_URL, f" {OTHER_LEDGER_URL}?x=1 "):
+            with self.subTest(url=url):
+                self.assertEqual(gc.api_base(url), OTHER_API)
+        self.assertEqual(gc.api_base("http://127.0.0.1:8080/governance/workflow/authorize"), "http://127.0.0.1:8080")
+        for url in ("api.example.test", "ftp://api.example.test", ""):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                gc.api_base(url)
 
 
 class CliTest(unittest.TestCase):
@@ -197,7 +251,7 @@ class CliTest(unittest.TestCase):
             http = FakeHttp()
             code, _, err = self.run_cli("check", *args, environ=environ, claude=unavailable, http=http)
             self.assertEqual(code, 0, err)
-            self.assertEqual(len(http.calls), 1)
+            self.assertEqual([call["method"] for call in http.calls], ["GET", "POST"])
         self.settings.write_text(json.dumps({"env": {"MEZMO_GOVERNANCE_TOKEN": KEY}}))
         self.assertEqual(self.run_cli("check", claude=unavailable)[0], 0)
 
@@ -213,16 +267,53 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("/test/claude: version 2.1.301", out)
 
-    def test_configure_checks_then_saves_to_the_plugin(self):
+    def test_configure_checks_both_endpoints_then_saves_to_the_plugin(self):
         claude = FakeClaude()
-        code, out, err = self.run_cli("configure", "--key", KEY, "--url", OTHER_URL, claude=claude)
+        http = FakeHttp()
+        code, out, err = self.run_cli("configure", "--key", KEY, "--api-url", OTHER_API + "/", claude=claude, http=http)
         self.assertEqual(code, 0, err)
+        self.assertEqual([(call["method"], call["url"].split("?")[0]) for call in http.calls],
+                         [("GET", OTHER_URL), ("POST", OTHER_LEDGER_URL)])
         save = claude.calls[-1]
         self.assertEqual(save["args"][:4], ["plugin", "configure", "mezmo@mezmo", "--values-stdin"])
-        self.assertEqual(json.loads(save["stdin"]),
-                         {"governance_access_key": KEY, "governance_url": OTHER_URL, "governance_enabled": "true"})
+        self.assertEqual(json.loads(save["stdin"]), {
+            "governance_access_key": KEY, "api_url": OTHER_API, "governance_enabled": "true", "ledger_enabled": "true",
+        })
         self.assertNotIn(KEY, out + err)
         self.assertIn("sts_…cdef", out)
+        self.assertIn(f"recorded at {OTHER_LEDGER_URL}", out)
+        self.assertIn("ledger_enabled", out)
+        self.assertNotIn("Warning", out)
+
+    def test_configure_saves_when_only_the_ledger_check_fails(self):
+        claude = FakeClaude()
+        code, out, err = self.run_cli("configure", "--key", KEY, claude=claude, http=FakeHttp(ledger=(401, "{}")))
+        self.assertEqual(code, 0, err)
+        self.assertIn("ledger rejected", out)
+        self.assertIn("Warning: the ledger check failed", out)
+        self.assertTrue(claude.key_set)
+
+    def test_configure_moves_an_older_governance_url_option_to_the_api_url(self):
+        self.settings.write_text(json.dumps({"model": "opus", "pluginConfigs": {"mezmo@mezmo": {"options": {
+            "governance_url": OTHER_URL, "other": "kept",
+        }}}}))
+        for claude in (FakeClaude(), FakeClaude(legacy_url=OTHER_URL)):
+            with self.subTest(shown_by_the_cli=bool(claude.legacy_url)):
+                http = FakeHttp()
+                code, out, err = self.run_cli("configure", "--key", KEY, claude=claude, http=http)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(claude.calls[-1]["stdin"])["api_url"], OTHER_API)
+                self.assertTrue(http.calls[0]["url"].startswith(OTHER_URL))
+                self.assertIn(f"to api_url ({OTHER_API})", out)
+                self.assertEqual(json.loads(self.settings.read_text()),
+                                 {"model": "opus", "pluginConfigs": {"mezmo@mezmo": {"options": {"other": "kept"}}}})
+                if claude.legacy_url is None:
+                    self.settings.write_text(json.dumps({"model": "opus", "pluginConfigs": {"mezmo@mezmo": {"options": {
+                        "other": "kept"}}}}))
+        # An API URL given on the command line wins over the older option.
+        claude = FakeClaude(legacy_url=OTHER_URL)
+        self.run_cli("configure", "--key", KEY, "--api-url", "https://api.mezmo.com", claude=claude)
+        self.assertEqual(json.loads(claude.calls[-1]["stdin"])["api_url"], "")
 
     def test_configure_refuses_a_rejected_key(self):
         claude = FakeClaude()
@@ -234,7 +325,7 @@ class CliTest(unittest.TestCase):
     def test_configure_production_url_saves_an_empty_url(self):
         claude = FakeClaude()
         self.run_cli("configure", "--key", KEY, claude=claude)
-        self.assertEqual(json.loads(claude.calls[-1]["stdin"])["governance_url"], "")
+        self.assertEqual(json.loads(claude.calls[-1]["stdin"])["api_url"], "")
 
     def test_configure_when_the_plugin_isnt_installed(self):
         code, _, err = self.run_cli("configure", "--key", KEY, claude=FakeClaude(installed=False))
@@ -242,10 +333,12 @@ class CliTest(unittest.TestCase):
         self.assertIn("--store settings", err)
 
     def test_configure_into_the_settings_file(self):
-        code, out, err = self.run_cli("configure", "--key", KEY, "--url", OTHER_URL, "--store", "settings")
+        code, out, err = self.run_cli("configure", "--key", KEY, "--api-url", OTHER_API, "--store", "settings")
         self.assertEqual(code, 0, err)
         env = json.loads(self.settings.read_text())["env"]
-        self.assertEqual(env, {"MEZMO_GOVERNANCE_URL": OTHER_URL, "MEZMO_GOVERNANCE_ACCESS_KEY": KEY})
+        self.assertEqual(env, {
+            "MEZMO_GOVERNANCE_URL": OTHER_URL, "MEZMO_LEDGER_URL": OTHER_LEDGER_URL, "MEZMO_GOVERNANCE_ACCESS_KEY": KEY,
+        })
         self.assertNotIn(KEY, out + err)
 
     def test_key_from_environment(self):
@@ -260,17 +353,19 @@ class CliTest(unittest.TestCase):
         code, out, err = self.run_cli("remove", claude=claude)
         self.assertEqual(code, 0, err)
         # An empty string can't clear a sensitive option, so the key is overwritten and the switch turned off.
-        self.assertEqual(json.loads(claude.calls[-1]["stdin"]),
-                         {"governance_access_key": "off", "governance_url": "", "governance_enabled": "false"})
+        self.assertEqual(json.loads(claude.calls[-1]["stdin"]), {
+            "governance_access_key": "off", "api_url": "", "governance_enabled": "false", "ledger_enabled": "false",
+        })
         self.assertEqual(json.loads(self.settings.read_text()), {"model": "opus", "env": {"FOO": "1"}})
         code, out, _ = self.run_cli("status", "--json", claude=claude)
         self.assertFalse(json.loads(out)["configured"])
+        self.assertFalse(json.loads(out)["ledger"]["on"])
 
     def test_remove_overwrites_key_even_when_governance_is_disabled(self):
         claude = FakeClaude(key_set=True, enabled=False)
         code, out, _ = self.run_cli("remove", claude=claude)
         self.assertEqual(code, 0)
-        self.assertIn("keychain is overwritten", out)
+        self.assertIn("saved key is overwritten", out)
         self.assertEqual(json.loads(claude.calls[-1]["stdin"])["governance_access_key"], "off")
         # The CLI cannot distinguish a removed placeholder from a saved secret.
         code, out, err = self.run_cli("remove", claude=claude)
@@ -304,7 +399,7 @@ class CliTest(unittest.TestCase):
                      "detail": "shell is not allowed", "by_person": True},
         }))
         code, out, _ = self.run_cli("status", "--json", "--state-dir", str(self.sessions),
-                                    claude=FakeClaude(key_set=True, saved_url=OTHER_URL))
+                                    claude=FakeClaude(key_set=True, saved_url=OTHER_API))
         self.assertEqual(code, 0)
         report = json.loads(out)
         self.assertTrue(report["configured"])
@@ -315,7 +410,7 @@ class CliTest(unittest.TestCase):
         self.assertEqual(report["latest_session"]["pending"], 1)
         self.assertEqual(report["last_result"]["outcome"], "denied")
         code, text, _ = self.run_cli("status", "--state-dir", str(self.sessions),
-                                     claude=FakeClaude(key_set=True, saved_url=OTHER_URL))
+                                     claude=FakeClaude(key_set=True, saved_url=OTHER_API))
         self.assertIn("4 allowed, 1 denied", text)
         self.assertIn("1 waiting for a person", text)
         self.assertIn("decided by a person", text)
@@ -333,6 +428,32 @@ class CliTest(unittest.TestCase):
         self.assertEqual(report["url"], PROD_URL)
         self.assertNotIn(KEY, out)
 
+    def test_status_shows_the_ledger_and_its_retry_file(self):
+        spool = self.dir / "ledger-spool.jsonl"
+        spool.write_text('{"event":{},"url":"x"}\n{"event":{},"url":"x"}\n')
+        environ = {"MEZMO_LEDGER_SPOOL": str(spool)}
+        cases = [
+            # (plugin, environment, on, url)
+            (FakeClaude(key_set=True, saved_url=OTHER_API), {}, True, OTHER_LEDGER_URL),
+            # The ledger has its own switch: governance's leaves it on.
+            (FakeClaude(key_set=True, enabled=False), {}, True, PROD_LEDGER_URL),
+            (FakeClaude(key_set=True, ledger_enabled=False), {}, False, None),
+            (FakeClaude(key_set=True, ledger_enabled=False), {"MEZMO_LEDGER_URL": OTHER_LEDGER_URL}, True, OTHER_LEDGER_URL),
+            (FakeClaude(), {}, False, None),
+            (FakeClaude(), {"MEZMO_GOVERNANCE_TOKEN": KEY}, True, PROD_LEDGER_URL),
+        ]
+        for claude, env, on, url in cases:
+            with self.subTest(env=env, ledger_enabled=claude.ledger_enabled, key_set=claude.key_set):
+                code, out, err = self.run_cli("status", "--json", environ={**environ, **env}, claude=claude)
+                self.assertEqual(code, 0, err)
+                ledger = json.loads(out)["ledger"]
+                self.assertEqual((ledger["on"], ledger["url"], ledger["waiting"]), (on, url, 2))
+                self.assertNotIn("readable_key", ledger)
+                self.assertNotIn(KEY, out)
+        code, out, _ = self.run_cli("status", environ=environ, claude=FakeClaude(key_set=True, ledger_enabled=False))
+        self.assertIn("The Mezmo ledger is off: the plugin's ledger_enabled option is off.", out)
+        self.assertIn("Waiting in the retry file", out)
+
     def test_status_unconfigured(self):
         code, out, _ = self.run_cli("status", claude=FakeClaude(installed=False))
         self.assertEqual(code, 0)
@@ -344,22 +465,36 @@ class CliTest(unittest.TestCase):
         code, out, _ = self.run_cli("check", http=http)
         self.assertEqual(code, 0)
         self.assertTrue(http.calls[0]["url"].startswith(OTHER_URL))
+        # MEZMO_GOVERNANCE_URL names governance only: the ledger URL comes from the API URL option or production.
+        self.assertEqual(http.calls[1]["url"], PROD_LEDGER_URL)
+
+    def test_check_fails_when_the_ledger_does_and_skips_a_ledger_switched_off(self):
+        environ = {"MEZMO_GOVERNANCE_TOKEN": KEY}
+        code, out, _ = self.run_cli("check", environ=environ, http=FakeHttp(ledger=(401, "{}")))
+        self.assertEqual(code, gc.EXIT_REJECTED)
+        self.assertIn(f"FAIL  {PROD_LEDGER_URL}", out)
+        http = FakeHttp(ledger=(401, "{}"))
+        code, out, _ = self.run_cli("check", environ=environ, http=http, claude=FakeClaude(ledger_enabled=False))
+        self.assertEqual(code, 0, out)
+        self.assertIn("skip  the Mezmo ledger is off", out)
+        self.assertEqual([call["method"] for call in http.calls], ["GET"])
 
     def test_check_without_a_readable_key(self):
         code, _, err = self.run_cli("check", claude=FakeClaude(key_set=True))
         self.assertEqual(code, 2)
-        self.assertIn("keychain", err)
+        self.assertIn("sensitive plugin option", err)
 
     def test_managed_merges_into_an_existing_document(self):
         doc = self.dir / "managed.json"
         doc.write_text(json.dumps({"env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "1"}}))
-        code, out, err = self.run_cli("managed", "--key", KEY, "--url", OTHER_URL, "--required", "--output", str(doc))
+        code, out, err = self.run_cli("managed", "--key", KEY, "--api-url", OTHER_API, "--required", "--output", str(doc))
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(doc.read_text())["env"], {
             "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
             "MEZMO_GOVERNANCE_URL": OTHER_URL,
             "MEZMO_GOVERNANCE_ACCESS_KEY": KEY,
             "MEZMO_GOVERNANCE_REQUIRED": "1",
+            "MEZMO_LEDGER_URL": OTHER_LEDGER_URL,
         })
         self.assertNotIn(KEY, out)
 

@@ -35,7 +35,10 @@ HOOK_FILE = "mezmo_governance_hook.py"
 # mezmo-governance plugin, which ran mezmo_governance_hook.py.
 CLAUDE_HOOK_FILE = "governance_hook.py"
 CLAUDE_PLUGINS = ("mezmo@", "mezmo-governance@")
-DEFAULT_URL = "https://api.mezmo.com/governance/workflow/authorize"
+DEFAULT_API_URL = "https://api.mezmo.com"
+DEFAULT_URL = DEFAULT_API_URL + "/governance/workflow/authorize"
+# The Claude Code plugin's ledger: the API URL plus this path, unless MEZMO_LEDGER_URL is set.
+LEDGER_PATH = "/v1/audit/events"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 REQUEST_SECONDS = 15.0
 APP_SERVER_SECONDS = 10.0
@@ -521,9 +524,9 @@ def required(value: Any) -> bool:
 
 
 def claude_options(plugin: str) -> Optional[dict]:
-    """The plugin's saved option names and its governance switch, from `claude plugin configure --json`, or None when unknown.
+    """The plugin's saved option names, API URL and switches, from `claude plugin configure --json`, or None when unknown.
 
-    Its JSON holds no sensitive value: the key stays in the keychain (claude-code/scripts/governance_config.py).
+    Its JSON holds no sensitive value: Claude Code keeps the key out of it (claude-code/scripts/governance_config.py).
     """
     binary = shutil.which("claude")
     if binary is None:
@@ -538,10 +541,82 @@ def claude_options(plugin: str) -> Optional[dict]:
         return None
     if not isinstance(data, dict):
         return None
-    enabled = as_dict(data.get("inputs")).get("governance_enabled", True)
-    if isinstance(enabled, str):
-        enabled = enabled.strip().lower() not in ("0", "false", "no", "off")
-    return {"key": "governance_access_key" in as_list(data.get("configured")), "enabled": bool(enabled)}
+    inputs = as_dict(data.get("inputs"))
+    configured = as_list(data.get("configured"))
+
+    def switch(name: str) -> bool:
+        value = inputs.get(name, True)
+        return value.strip().lower() not in ("0", "false", "no", "off") if isinstance(value, str) else bool(value)
+
+    api_url = inputs.get("api_url") if "api_url" in configured else None
+    return {
+        "key": "governance_access_key" in configured,
+        "enabled": switch("governance_enabled"),
+        "api_url": api_url.strip() if isinstance(api_url, str) and api_url.strip() else None,
+        "ledger_enabled": switch("ledger_enabled"),
+    }
+
+
+def claude_ledger(report: Report, plugin: str, settings: dict) -> None:
+    """Check the plugin's ledger as ledger.py finds it: POST an empty batch, which records nothing.
+
+    The URL is MEZMO_LEDGER_URL, else the plugin's api_url option plus LEDGER_PATH, else production. The key is
+    MEZMO_LEDGER_KEY, else a governance key, from the env of settings.json, then this shell. A key kept as a
+    sensitive plugin option can't be read here, so that check is left to /mezmo:test.
+    """
+    env = as_dict(settings.get("env"))
+
+    def value(*names: str) -> str:
+        for source in (env, os.environ):
+            found = next((str(source.get(name) or "").strip() for name in names if str(source.get(name) or "").strip()), "")
+            if found:
+                return found
+        return ""
+
+    options = claude_options(plugin)
+    url = value("MEZMO_LEDGER_URL")
+    if not url and options is not None and not options["ledger_enabled"]:
+        report.line("ok", "Claude Code ledger", "off: the plugin's ledger_enabled option is off")
+        return
+    url = url or ((options or {}).get("api_url") or DEFAULT_API_URL).rstrip("/") + LEDGER_PATH
+    key = value("MEZMO_LEDGER_KEY") or value(*CLAUDE_KEYS)
+    if not key:
+        if options is not None and options["key"]:
+            report.line(
+                "skip", "Claude Code ledger", f"on, sending to {shown_url(url)}; its key is a sensitive plugin option the doctor cannot read",
+                "run /mezmo:test in Claude Code to check it",
+            )
+        else:
+            report.line("skip", "Claude Code ledger", "off: no key reaches it")
+        return
+    problem = url_problem(url)
+    if problem:
+        report.line("FAIL", "Claude Code ledger", f"{shown_url(url)} {problem}", f"set MEZMO_LEDGER_URL to {DEFAULT_API_URL}{LEDGER_PATH}")
+        return
+    authorization = key if key.lower().startswith(("token ", "bearer ")) else f"Token {key}"
+    headers = {"Accept": "application/json", "Authorization": authorization, "Content-Type": "application/json"}
+    request = Request(url, data=b"[]", headers=headers, method="POST")
+    try:
+        with build_opener(hook.RefuseRedirect).open(request, timeout=REQUEST_SECONDS) as response:
+            status, body = response.status, response.read()
+    except HTTPError as error:
+        status, body = error.code, error.read()
+    except Exception as error:  # noqa: BLE001 - any failure means "not reached"
+        report.line("FAIL", "Claude Code ledger", f"{shown_url(url)} not reached: {hook.error_detail(str(error))}",
+                    "check the API URL and your network")
+        return
+    try:
+        accepted = json.loads(body).get("accepted")
+    except (ValueError, AttributeError):
+        accepted = None
+    if status == 202 and accepted == 0:
+        report.line("ok", "Claude Code ledger", f"{shown_url(url)} accepted an empty batch with this key; nothing was recorded")
+    elif status in (401, 403):
+        report.line("FAIL", "Claude Code ledger", f"{shown_url(url)} rejected the key (HTTP {status})",
+                    "run /mezmo:setup governance with a current service account token")
+    else:
+        report.line("FAIL", "Claude Code ledger", f"{shown_url(url)} answered an empty batch with HTTP {status}, not 202 with accepted 0",
+                    f"check the API URL; production is {DEFAULT_API_URL}")
 
 
 def claude_key(report: Report, plugin: str, settings: dict, path: Path) -> bool:
@@ -597,6 +672,8 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
         key for key in plugins
         if next((s.data["enabledPlugins"][key] for s in managed if key in as_dict(s.data.get("enabledPlugins"))), None) is True
     }
+    # Only an enabled plugin runs its ledger hook, so only that one's ledger is checked.
+    enabled_plugins = []
     for key in plugins:
         install = as_dict((as_list(registry["plugins"][key]) or [None])[0])
         folder = Path(str(install.get("installPath") or ""))
@@ -604,6 +681,7 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
         decider = next((s for s in sources if key in as_dict(s.data.get("enabledPlugins"))), None)
         enabled = decider is not None and decider.data["enabledPlugins"][key] is True
         if enabled:
+            enabled_plugins.append(key)
             report.line("ok", "Claude Code plugin", f"{key} is installed and enabled")
         elif decider is not None and decider.path != root / "settings.json":
             report.line(
@@ -654,6 +732,8 @@ def check_claude_code(report: Report, version: Optional[tuple]) -> Optional[list
             )
     if not plugins and not found:
         return None
+    if enabled_plugins:
+        claude_ledger(report, enabled_plugins[0], settings)
     for source in sources:
         if source.data.get("disableAllHooks") is not True:
             continue
@@ -1463,6 +1543,8 @@ def check_smokes(report: Report, smokes: list) -> None:
             # The Claude Code plugin keeps session state for its status display and
             # skips it when it cannot write; no folder can exist under /dev/null.
             "MEZMO_GOVERNANCE_STATE_DIR": os.devnull + "/mezmo-governance",
+            # The Claude Code plugin's ledger is on wherever governance has a key; a smoke call is not one to record.
+            "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED": "false",
         }
     )
     # Each agent's own pair: MEZMO_GOVERNANCE_HOOK can give every agent the same script, which the smoke runs once.

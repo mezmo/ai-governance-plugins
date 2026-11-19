@@ -1,6 +1,6 @@
 """Tests for scripts/ledger_investigation.py, the CLI that joins, closes and launches investigations.
 
-`id`, `join` and `close` run in this process with a cleared environment. `launch` execs its
+`join` and `close` run in this process with a cleared environment. `launch` execs its
 command, so it runs as a script against an audit-service defined here, with the retry file and
 session state in a temp folder and no setting of the developer's own.
 """
@@ -24,11 +24,8 @@ sys.path.insert(0, str(SCRIPTS))
 
 import ledger_investigation  # noqa: E402
 
-ACCOUNT = "test-acct"
-# The epic's check value: account test-acct and this incident key.
 INCIDENT_KEY = "pagerduty:Q34FCCWSTU9OI2"
-CHECK_THREAD_ID = "ab2763da-3eea-5b82-a1bf-7922641cdf6c"
-# Prints the two variables launch sets, as the command sees them.
+# Prints the incident key launch sets, and the investigation id older releases set, as the command sees them.
 PRINT_ENV = (
     "import json, os; print(json.dumps({name: os.environ.get(name) for name in "
     "('MEZMO_LEDGER_INCIDENT_KEY', 'MEZMO_LEDGER_INVESTIGATION_ID')}))"
@@ -69,10 +66,10 @@ def serve(test: unittest.TestCase, recorder: Recorder) -> str:
 
 
 class PrintTests(unittest.TestCase):
-    """`id`, `join` and `close`: one line of JSON, and no I/O beyond it."""
+    """`join` and `close`: one line of JSON, and no I/O beyond it. No setting is needed."""
 
     def setUp(self) -> None:
-        environment = patch.dict(os.environ, {"MEZMO_LEDGER_ACCOUNT": ACCOUNT}, clear=True)
+        environment = patch.dict(os.environ, {}, clear=True)
         environment.start()
         self.addCleanup(environment.stop)
 
@@ -81,10 +78,10 @@ class PrintTests(unittest.TestCase):
             code = ledger_investigation.main(list(argv))
         return code, stdout.getvalue(), stderr.getvalue()
 
-    def test_id_prints_the_pinned_thread_id(self) -> None:
-        code, stdout, stderr = self.run_main("id", "--incident-key", INCIDENT_KEY)
-        self.assertEqual((code, stderr), (0, ""))
-        self.assertEqual(stdout, '{"incident_key":"pagerduty:Q34FCCWSTU9OI2","thread_id":"%s"}\n' % CHECK_THREAD_ID)
+    def test_there_is_no_id_subcommand(self) -> None:
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
+            ledger_investigation.main(["id", "--incident-key", INCIDENT_KEY])
+        self.assertEqual(raised.exception.code, 2)
 
     def test_join_and_close_print_their_one_line(self) -> None:
         for command, action in (("close", "closed"), ("join", "joined")):
@@ -92,18 +89,12 @@ class PrintTests(unittest.TestCase):
                 code, stdout, stderr = self.run_main(command, "--incident-key", INCIDENT_KEY)
                 self.assertEqual((code, stderr), (0, ""))
                 self.assertEqual(stdout.count("\n"), 1)
-                self.assertEqual(
-                    json.loads(stdout), {"action": action, "incident_key": INCIDENT_KEY, "thread_id": CHECK_THREAD_ID}
-                )
+                self.assertEqual(json.loads(stdout), {"action": action, "incident_key": INCIDENT_KEY})
 
     def test_join_prints_the_service_it_is_given(self) -> None:
         code, stdout, stderr = self.run_main("join", "--incident-key", INCIDENT_KEY, "--service", " checkout ")
         self.assertEqual((code, stderr), (0, ""))
-        self.assertEqual(
-            stdout,
-            '{"action":"joined","incident_key":"%s","service":"checkout","thread_id":"%s"}\n'
-            % (INCIDENT_KEY, CHECK_THREAD_ID),
-        )
+        self.assertEqual(stdout, '{"action":"joined","incident_key":"%s","service":"checkout"}\n' % INCIDENT_KEY)
 
     def test_a_service_that_is_not_a_dns_label_is_refused(self) -> None:
         for service in ("Checkout Production", "checkout/prod", "Checkout", "123", "", "checkout-", "a" * 64):
@@ -111,7 +102,7 @@ class PrintTests(unittest.TestCase):
                 code, stdout, stderr = self.run_main("join", "--incident-key", INCIDENT_KEY, "--service", service)
                 self.assertEqual((code, stdout), (2, ""))
                 self.assertIn("service must be a DNS label", stderr)
-        for command in ("id", "close"):
+        for command in ("close",):
             with self.subTest(command=command), redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
                 ledger_investigation.main([command, "--incident-key", INCIDENT_KEY, "--service", "checkout"])
             self.assertEqual(raised.exception.code, 2)
@@ -119,13 +110,13 @@ class PrintTests(unittest.TestCase):
     def test_a_key_that_is_not_source_colon_id_is_refused(self) -> None:
         for key in ("PagerDuty:Q34FCCWSTU9OI2", "github:123", "jira", "jira:", "jira:AB 12", "slack:C1\tT2"):
             with self.subTest(key=key):
-                code, stdout, stderr = self.run_main("id", "--incident-key", key)
+                code, stdout, stderr = self.run_main("join", "--incident-key", key)
                 self.assertEqual((code, stdout), (2, ""))
                 self.assertIn("incident key must be <source>:<id>", stderr)
         with self.subTest(key="surrounding whitespace"):
-            code, stdout, _ = self.run_main("id", "--incident-key", f"  {INCIDENT_KEY}\n")
+            code, stdout, _ = self.run_main("join", "--incident-key", f"  {INCIDENT_KEY}\n")
             self.assertEqual(code, 0)
-            self.assertEqual(json.loads(stdout), {"incident_key": INCIDENT_KEY, "thread_id": CHECK_THREAD_ID})
+            self.assertEqual(json.loads(stdout), {"action": "joined", "incident_key": INCIDENT_KEY})
 
 
 class LaunchTests(unittest.TestCase):
@@ -149,7 +140,6 @@ class LaunchTests(unittest.TestCase):
             "HOME": str(self.dir),
             "MEZMO_GOVERNANCE_AUDIT_LOG": str(self.dir / "audit.jsonl"),
             "MEZMO_GOVERNANCE_STATE_DIR": str(self.dir / "sessions"),
-            "MEZMO_LEDGER_ACCOUNT": ACCOUNT,
             "MEZMO_LEDGER_SPOOL": str(self.spool),
             "MEZMO_LEDGER_URL": serve(self, self.recorder),
             "NO_PROXY": "*",
@@ -174,25 +164,22 @@ class LaunchTests(unittest.TestCase):
     def events(self) -> List[Dict[str, Any]]:
         return [event for request in self.recorder.requests for event in request["body"]]
 
-    def test_launch_sends_opened_and_sets_both_variables_for_the_command(self) -> None:
+    def test_launch_sends_opened_and_sets_only_the_incident_key_for_the_command(self) -> None:
         result = self.launch("launch", "--incident-key", INCIDENT_KEY, "--", sys.executable, "-c", PRINT_ENV)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            json.loads(result.stdout),
-            {"MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY, "MEZMO_LEDGER_INVESTIGATION_ID": CHECK_THREAD_ID},
+            json.loads(result.stdout), {"MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY, "MEZMO_LEDGER_INVESTIGATION_ID": None}
         )
         (opened,) = self.events()
-        self.assertEqual(opened["actor"], {"account": ACCOUNT, "pk": "claude_code:launcher", "type": "agent"})
+        # No account and no correlation_id: the ledger service sets them from the key and the incident key.
+        self.assertEqual(opened["actor"], {"pk": "claude_code:launcher", "type": "agent"})
+        self.assertNotIn("correlation_id", opened)
         self.assertEqual(opened["application"]["name"], "mezmo-claude-code-plugin")
-        self.assertEqual(
-            (opened["correlation_id"], opened["entity_id"], opened["entity_type"], opened["event"]),
-            (CHECK_THREAD_ID, CHECK_THREAD_ID, "investigation", "agent.investigation.opened"),
-        )
+        # Nor an entity_id: the ledger service sets it to the investigation it derives from the incident key.
+        self.assertNotIn("entity_id", opened)
+        self.assertEqual((opened["entity_type"], opened["event"]), ("investigation", "agent.investigation.opened"))
         # Whole, with no session_id and, since git reports no email here, no person_email.
-        self.assertEqual(
-            opened["extra"],
-            {"agent": "claude_code", "incident_key": INCIDENT_KEY, "opened_by": "alert", "thread_id": CHECK_THREAD_ID},
-        )
+        self.assertEqual(opened["extra"], {"agent": "claude_code", "incident_key": INCIDENT_KEY, "opened_by": "alert"})
         self.assertFalse(self.spool.exists())
 
     def test_launch_sends_the_service_on_opened(self) -> None:
@@ -215,8 +202,7 @@ class LaunchTests(unittest.TestCase):
             ("no command", ["launch", "--incident-key", INCIDENT_KEY], {}, 2),
             ("an empty command", ["launch", "--incident-key", INCIDENT_KEY, "--"], {}, 2),
             ("no key argument", ["launch", *self.touch()], {}, 2),
-            ("no account", ["launch", "--incident-key", INCIDENT_KEY, *self.touch()], {"MEZMO_LEDGER_ACCOUNT": ""}, 2),
-            ("no URL", ["launch", "--incident-key", INCIDENT_KEY, *self.touch()], {"MEZMO_LEDGER_URL": ""}, 2),
+            ("no URL and no key", ["launch", "--incident-key", INCIDENT_KEY, *self.touch()], {"MEZMO_LEDGER_URL": ""}, 2),
             ("a command that does not exist", ["launch", "--incident-key", INCIDENT_KEY, *missing], {}, 127),
             ("an abbreviated key argument", ["join", "--incident", INCIDENT_KEY], {}, 2),
         ):

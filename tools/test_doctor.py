@@ -46,7 +46,8 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization")
         request = {"method": self.command, "path": self.path, "auth": auth, "body": body}
         self.server.requests.append(request)
-        answer = self.server.answers.get((self.command, auth is not None), (500, {}))
+        kind = "LEDGER" if self.path.startswith("/v1/audit/events") else self.command
+        answer = self.server.answers.get((kind, auth is not None), (500, {}))
         status, payload = answer(request) if callable(answer) else answer
         data = json.dumps(payload).encode()
         self.send_response(status)
@@ -72,6 +73,8 @@ class StubMezmo(ThreadingHTTPServer):
             ("GET", False): (401, {"code": "EAUTH", "message": "Unauthorized"}),
             ("GET", True): (404, {"code": "ENOENT", "message": "workflow not found"}),
             ("POST", True): (200, {"approved": True}),
+            # The ledger's answer to an empty batch.
+            ("LEDGER", True): (202, {"accepted": 0}),
             **(answers or {}),
         }
         threading.Thread(target=self.serve_forever, daemon=True).start()
@@ -79,6 +82,10 @@ class StubMezmo(ThreadingHTTPServer):
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.server_address[1]}/governance/workflow/authorize"
+
+    @property
+    def ledger_url(self) -> str:
+        return f"http://127.0.0.1:{self.server_address[1]}/v1/audit/events"
 
     def close(self) -> None:
         self.shutdown()
@@ -161,6 +168,8 @@ class DoctorTestCase(unittest.TestCase):
                 "NO_PROXY": "*",
                 "MEZMO_GOVERNANCE_URL": self.stub.url,
                 "MEZMO_GOVERNANCE_TOKEN": CANARY,
+                # The Claude Code plugin's ledger defaults to production; keep its check on the stub.
+                "MEZMO_LEDGER_URL": self.stub.ledger_url,
             }
         )
         for key, value in env.items():
@@ -384,9 +393,12 @@ class ClaudeCodeTests(DoctorTestCase):
         self.write(".claude/settings.json", {"enabledPlugins": {f"{name}@mezmo": enabled}})
         return folder
 
-    def fake_claude(self, key_set: bool = True, enabled: bool = True) -> None:
+    def fake_claude(self, key_set: bool = True, enabled: bool = True, ledger_enabled: bool = True) -> None:
         """A claude whose `plugin configure --json` answers as the real one: option names, never the key."""
-        options = {"configured": ["governance_access_key"] if key_set else [], "inputs": {"governance_enabled": enabled}}
+        options = {
+            "configured": ["governance_access_key"] if key_set else [],
+            "inputs": {"governance_enabled": enabled, "ledger_enabled": ledger_enabled},
+        }
         fake = self.bin / "claude"
         fake.write_text(
             "#!/bin/sh\n"
@@ -431,6 +443,36 @@ class ClaudeCodeTests(DoctorTestCase):
                 if status != "ok":
                     self.assertIn('"MEZMO_GOVERNANCE_REQUIRED": "1"', line)
                     self.assertIn("Dock", line)
+
+    def test_the_plugins_ledger_gets_an_empty_batch(self) -> None:
+        # (plugin options, environment, ledger answer, status, words)
+        cases = [
+            ({}, {}, None, "ok", "accepted an empty batch"),
+            ({}, {}, (401, {"code": "EAUTH"}), "FAIL", "rejected the key (HTTP 401)"),
+            ({}, {}, (404, {}), "FAIL", "HTTP 404, not 202"),
+            ({"ledger_enabled": False}, {"MEZMO_LEDGER_URL": None}, None, "ok", "ledger_enabled option is off"),
+            ({}, {"MEZMO_GOVERNANCE_TOKEN": None}, None, "skip", "sensitive plugin option"),
+            ({"key_set": False}, {"MEZMO_GOVERNANCE_TOKEN": None}, None, "skip", "no key reaches it"),
+        ]
+        for options, env, answer, status, words in cases:
+            with self.subTest(options=options, env=env, answer=answer):
+                shutil.rmtree(self.home / ".claude", ignore_errors=True)
+                self.stub.requests.clear()
+                self.stub.answers[("LEDGER", True)] = answer or (202, {"accepted": 0})
+                self.fake_claude(**options)
+                self.install_plugin()
+
+                result = self.doctor(**env)
+
+                line = self.assertStatus(result, "Claude Code ledger", status)
+                self.assertIn(words, line)
+                self.assertNotIn(CANARY, result.stdout)
+                ledger = [request for request in self.stub.requests if request["path"] == "/v1/audit/events"]
+                if status in ("ok", "FAIL") and "option is off" not in words:
+                    self.assertEqual([(request["method"], request["body"]) for request in ledger], [("POST", [])])
+                    self.assertEqual(ledger[0]["auth"], f"Token {CANARY}")
+                else:
+                    self.assertEqual(ledger, [])
 
     def test_an_agent_without_the_plugin_warns(self) -> None:
         self.agent("claude", "2.1.301 (Claude Code)")

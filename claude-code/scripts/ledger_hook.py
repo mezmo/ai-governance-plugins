@@ -8,7 +8,8 @@ the two in parallel:
   PermissionDenied, auto mode's block, sends `not_run`. A call governance refuses gets its
   `not_run` from governance_hook.py (ledger.record_governance_refusal), because no hook runs
   after a deny.
-- Off until MEZMO_LEDGER_ACCOUNT and MEZMO_LEDGER_URL are both set: until then it exits at once.
+- Off while ledger.load_ledger_config finds no key, or the ledger_enabled option is off: then it
+  exits at once.
 - A Bash call that ran ledger_investigation.py's join or close puts the session in that
   investigation, or takes it out, in the session state, and sends `joined` or `closed`.
 - A Mezmo Memory brief or Insights read that ran adds its references to the session state, so
@@ -83,14 +84,14 @@ def _new_event(*, config: ledger.LedgerConfig, hook_input: Mapping[str, Any]) ->
         return None
 
 
-def _state_thread_id(*, hook_input: Mapping[str, Any]) -> Any:
-    """The thread_id of the investigation in this session's state, or None. Never raises.
+def _state_incident_key(*, hook_input: Mapping[str, Any]) -> Any:
+    """The incident key of the investigation in this session's state, or None. Never raises.
 
     Read from the state alone: ledger_context would fall back to the environment's investigation.
     """
     try:
         state = json.loads(session_state_path(hook_input["session_id"].strip()).read_text(encoding="utf-8"))
-        return state["investigation"]["thread_id"]
+        return state["investigation"]["incident_key"]
     except Exception:
         return None
 
@@ -113,12 +114,7 @@ def _join(
     Never raises.
     """
     try:
-        thread_id = ledger.investigation_thread_id(account=config.account, incident_key=incident_key)
-        investigation = {
-            "incident_key": incident_key,
-            "joined_at": datetime.now(timezone.utc).isoformat(),
-            "thread_id": thread_id,
-        }
+        investigation = {"incident_key": incident_key, "joined_at": datetime.now(timezone.utc).isoformat()}
         if service is not None:
             investigation["service"] = service
         update_session_state(
@@ -126,7 +122,7 @@ def _join(
             lambda state: state.__setitem__("investigation", investigation),
             lock_timeout=_lock_timeout(deadline=deadline),
         )
-        if _state_thread_id(hook_input=hook_input) != thread_id:
+        if _state_incident_key(hook_input=hook_input) != incident_key:
             ledger.ledger_warn(message=f"Mezmo ledger could not join {incident_key}: the session state was not written")
             return None
         return ledger.investigation_event(
@@ -135,7 +131,6 @@ def _join(
             hook_input=hook_input,
             incident_key=incident_key,
             service=service,
-            thread_id=thread_id,
         )
     except Exception as error:
         ledger.ledger_warn(message=f"Mezmo ledger could not join {incident_key}: {str(error) or type(error).__name__}")
@@ -151,20 +146,19 @@ def _close(
     """
     closed: Optional[Dict[str, Any]] = None
     try:
-        thread_id = ledger.investigation_thread_id(account=config.account, incident_key=incident_key)
         closed = ledger.investigation_event(
-            action="closed", config=config, hook_input=hook_input, incident_key=incident_key, thread_id=thread_id
+            action="closed", config=config, hook_input=hook_input, incident_key=incident_key
         )
 
         def leave(state: Dict[str, Any]) -> None:
             investigation = state.get("investigation")
-            if isinstance(investigation, dict) and investigation.get("thread_id") == thread_id:
+            if isinstance(investigation, dict) and investigation.get("incident_key") == incident_key:
                 del state["investigation"]
 
         # No write for another investigation, so a close can't create a state file.
-        if _state_thread_id(hook_input=hook_input) == thread_id:
+        if _state_incident_key(hook_input=hook_input) == incident_key:
             update_session_state(hook_input, leave, lock_timeout=_lock_timeout(deadline=deadline))
-            if _state_thread_id(hook_input=hook_input) == thread_id:
+            if _state_incident_key(hook_input=hook_input) == incident_key:
                 ledger.ledger_warn(message=f"Mezmo ledger could not close {incident_key} in the session state")
     except Exception as error:
         ledger.ledger_warn(message=f"Mezmo ledger could not close {incident_key}: {str(error) or type(error).__name__}")

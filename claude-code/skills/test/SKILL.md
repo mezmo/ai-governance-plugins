@@ -1,6 +1,6 @@
 ---
 name: test
-description: Check the Mezmo setup for Claude Code. Shows the Mezmo Governance configuration with the governance hook's last result, the telemetry settings with a test of the ingestion key against Mezmo's OpenTelemetry endpoint, and whether Claude Code connects to Mezmo's MCP server. Use when the user asks why a tool call was blocked by Mezmo Governance, whether Mezmo governance, telemetry or MCP works, or why Claude data is missing in Mezmo.
+description: Check the Mezmo setup for Claude Code. Shows the Mezmo Governance configuration with the governance hook's last result, whether the Mezmo ledger is on with a check of its URL and records waiting to be resent, the telemetry settings with a test of the ingestion key against Mezmo's OpenTelemetry endpoint, and whether Claude Code connects to Mezmo's MCP server. Use when the user asks why a tool call was blocked by Mezmo Governance, whether Mezmo governance, telemetry or MCP works, or why Claude data is missing in Mezmo.
 argument-hint: "[--check-only] [--signals traces logs metrics|--all-signals]"
 allowed-tools:
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" status*)
@@ -17,25 +17,25 @@ Arguments: $ARGUMENTS
 
 ## Governance
 
-1. Show the configuration, the latest session's counts and the hook's last result:
+1. Show the configuration, the latest session's counts, the hook's last result and the ledger:
 
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" status
    ```
 
-2. If the service account token comes from settings or the environment, check it. This asks the service about a random decision and records nothing:
+2. If the service account token comes from settings or the environment, check it. This asks Mezmo Governance about a random decision and sends the ledger an empty batch (`POST []`, answered `202` with `{"accepted": 0}`), and records nothing in either:
 
    ```bash
    python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" check
    ```
 
-   A key kept in the system keychain can't be read back. In that case the last result shows whether the hook is working, or the user can supply a private `--key-file` to check a token directly. Never put token text in Bash arguments. Follow setup's private-file procedure: create with `mezmo_common.py create-key-file`, fill via local user entry or Write (not Bash), and pass `--key-file "<KEY_FILE>" --delete-key-file`. If interrupted or parsing/cleanup fails, use `mezmo_common.py delete-key-file "<KEY_FILE>"`. File input protects Bash arguments, not past chat or all filesystem/process exposure.
+   A key saved as a sensitive plugin option (in the macOS Keychain, or `~/.claude/.credentials.json`) can't be read back. In that case the last result shows whether the hook is working, or the user can supply a private `--key-file` to check a token directly. Never put token text in Bash arguments. Follow setup's private-file procedure: create with `mezmo_common.py create-key-file`, fill via local user entry or Write (not Bash), and pass `--key-file "<KEY_FILE>" --delete-key-file`. If interrupted or parsing/cleanup fails, use `mezmo_common.py delete-key-file "<KEY_FILE>"`. File input protects Bash arguments, not past chat or all filesystem/process exposure.
 
 3. Explain the results using this table:
 
    | What you see | What to tell the user |
    | --- | --- |
-   | Plugin configuration unavailable / state unknown | Report available settings and session results, but do not claim governance is off. Repair Claude/keychain access; setup remains strict. |
+   | Plugin configuration unavailable / state unknown | Report available settings and session results, but do not claim governance is off. Repair Claude Code's access to its plugin options; setup remains strict. |
    | Governance is off | Bash and MCP tool calls run without a check. Run `/mezmo:setup governance` to turn it on. |
    | Off right after the plugin was reinstalled or its marketplace changed | Reinstalling deletes the saved service account token. Run `/mezmo:setup governance` again. If tool calls are blocked with `HTTP 401` meanwhile, run `/reload-plugins` or start a new session first. |
    | Required but not configured | Every Bash and MCP tool call is blocked until governance is configured. Ask their administrator for the service account token. |
@@ -44,6 +44,19 @@ Arguments: $ARGUMENTS
    | `approval still pending` | The policy sent the call to a person, and nobody decided in time. The decision is in Mezmo Governance. Approving it there lets the same call through when Claude retries it. |
    | `argument name 'max-results' isn't accepted` | The service only accepts plain identifiers as argument names. MCP tool calls with such names are blocked until the service accepts them. |
    | `Mezmo Governance is unavailable` | The machine can't reach the authorize URL. Check the URL, proxy, VPN or firewall. |
+
+## Ledger
+
+`status` above ends with the ledger: on or off and why, the URL it sends to, and how many records wait in its retry file. `check` sends the ledger the empty batch. Explain the results using this table:
+
+| What you see | What to tell the user |
+| --- | --- |
+| On, and the check says the ledger accepted the token | Each Bash and MCP tool call is recorded in the Mezmo ledger under the token's account. |
+| Off: no service account token | The ledger uses the governance token. Run `/mezmo:setup governance`. |
+| Off: the `ledger_enabled` option is off | The user turned it off. `/plugin configure mezmo@mezmo` turns it back on. |
+| `rejected the service account token (HTTP 401)` | Rerun `/mezmo:setup governance` with a current token. Records wait in the retry file and are resent once the token works. |
+| `Unexpected answer` or `HTTP 404` | The API URL has no ledger. Check the API URL in `/plugin configure mezmo@mezmo`. |
+| Records waiting in the retry file | The ledger was unreachable or refused them. Later tool calls resend them, up to 10 at a time; the file keeps at most 200. |
 
 ## Telemetry
 

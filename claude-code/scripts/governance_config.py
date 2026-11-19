@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Configure Mezmo Governance for the mezmo plugin's tool-call hook.
+"""Configure Mezmo Governance and the Mezmo ledger for the mezmo plugin's tool-call hooks.
 
-The hook (governance_hook.py) reads MEZMO_GOVERNANCE_* environment variables first, then
-the plugin's options, which keep the service account token in the system keychain.
+The hooks (governance_hook.py, ledger_hook.py) read MEZMO_GOVERNANCE_* and MEZMO_LEDGER_*
+environment variables first, then the plugin's options: one Mezmo API URL, from which both
+endpoints are derived, and the service account token, which Claude Code keeps as a sensitive
+option (the macOS Keychain, else ~/.claude/.credentials.json).
 
-  configure  check the service account token, then save it (plugin options, or the settings file)
+  configure  check the token against governance and the ledger, then save it (plugin options, or the settings file)
   remove     clear the plugin options and the settings-file variables
-  status     where the configuration comes from, and the hook's last result
-  check      ask the service whether it accepts the service account token; records nothing
+  status     where the configuration comes from, the hook's last result, and the ledger
+  check      ask governance and the ledger whether they accept the token; records nothing
   managed    add the variables to a managed-settings document
 """
 
@@ -20,6 +22,7 @@ import os
 import pathlib
 import re
 import sys
+import urllib.parse
 import uuid
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -28,22 +31,38 @@ import mezmo_common as mc
 
 run_claude = mc.run_claude
 
-DEFAULT_URL = "https://api.mezmo.com/governance/workflow/authorize"
+DEFAULT_API_URL = "https://api.mezmo.com"
+GOVERNANCE_PATH = "/governance/workflow/authorize"
+LEDGER_PATH = "/v1/audit/events"
+DEFAULT_URL = DEFAULT_API_URL + GOVERNANCE_PATH
+DEFAULT_LEDGER_URL = DEFAULT_API_URL + LEDGER_PATH
 PLUGIN_ID = "mezmo@mezmo"
-URL_OPTION = "governance_url"
+API_URL_OPTION = "api_url"
+# The option releases before 0.6.0 kept the full authorize URL in. configure moves it to API_URL_OPTION.
+LEGACY_URL_OPTION = "governance_url"
 KEY_OPTION = "governance_access_key"
 ENABLED_OPTION = "governance_enabled"
+LEDGER_ENABLED_OPTION = "ledger_enabled"
 # Claude Code keeps a sensitive option's value when given "", so remove overwrites the key
 # with this placeholder, which governance_hook treats as unset, and turns the switch off.
 REMOVED_KEY = "off"
 URL_ENV = "MEZMO_GOVERNANCE_URL"
 KEY_ENVS = ("MEZMO_GOVERNANCE_ACCESS_KEY", "MEZMO_GOVERNANCE_TOKEN")
 REQUIRED_ENV = "MEZMO_GOVERNANCE_REQUIRED"
-SETTINGS_KEYS = (URL_ENV,) + KEY_ENVS + (REQUIRED_ENV,)
+LEDGER_URL_ENV = "MEZMO_LEDGER_URL"
+LEDGER_KEY_ENV = "MEZMO_LEDGER_KEY"
+LEDGER_SPOOL_ENV = "MEZMO_LEDGER_SPOOL"
+SETTINGS_KEYS = (URL_ENV,) + KEY_ENVS + (REQUIRED_ENV, LEDGER_URL_ENV, LEDGER_KEY_ENV)
+FALSE_VALUES = ("0", "false", "no", "off")
 # Written by governance_hook.py, one file per Claude Code session.
 DEFAULT_STATE_DIR = pathlib.Path.home() / ".mezmo" / "governance" / "sessions"
+# Where ledger.py keeps the events it could not send yet.
+DEFAULT_LEDGER_SPOOL = pathlib.Path.home() / ".mezmo" / "ledger-spool.jsonl"
 
 EXIT_ERROR, EXIT_USAGE, EXIT_REJECTED, EXIT_NOT_INSTALLED, EXIT_UNSUPPORTED = 1, 2, 3, 4, 5
+
+# What status says of a key kept as a sensitive plugin option, which no script can read back.
+OPTION_KEY = "(a sensitive plugin option: in the macOS Keychain, else ~/.claude/.credentials.json)"
 
 Transport = Callable[..., Tuple[int, str]]
 ClaudeRunner = Callable[[Sequence[str], Optional[str]], Tuple[int, str]]
@@ -89,6 +108,45 @@ def authorization(key: str) -> str:
     return key if key.lower().startswith(("token ", "bearer ")) else f"Token {key}"
 
 
+def api_base(url: str) -> str:
+    """`url` without its path, query and trailing slash: `https://api.mezmo.com` from any URL on it.
+
+    Raises ValueError when `url` has no http(s) scheme and host.
+    """
+    parsed = urllib.parse.urlparse(url.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError(f"the Mezmo API URL must be an http(s) URL, such as {DEFAULT_API_URL}")
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def governance_url(api_url: str) -> str:
+    return api_url.rstrip("/") + GOVERNANCE_PATH
+
+
+def ledger_url(api_url: str) -> str:
+    return api_url.rstrip("/") + LEDGER_PATH
+
+
+def check_ledger(key: Optional[str], url: str, send: Transport = mc.http_request) -> CheckResult:
+    """POST an empty batch. 202 with {"accepted": 0} means the ledger takes the key; nothing is recorded."""
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = authorization(key)
+    try:
+        status, body = send("POST", url, headers, b"[]", 20.0)
+    except OSError as err:
+        return CheckResult(False, None, f"Couldn't reach the Mezmo ledger at {url}: {err}")
+    try:
+        accepted = json.loads(body).get("accepted")
+    except (ValueError, AttributeError):
+        accepted = None
+    if status == 202 and accepted == 0:
+        return CheckResult(True, status, "The Mezmo ledger accepted the service account token. Nothing was recorded.")
+    if status in (401, 403):
+        return CheckResult(False, status, f"The Mezmo ledger rejected the service account token (HTTP {status}).")
+    return CheckResult(False, status, f"Unexpected answer from the Mezmo ledger (HTTP {status}): {body.strip()[:200]}")
+
+
 def check_access(key: str, url: str, send: Transport = mc.http_request) -> CheckResult:
     """GET the status of a random decision. 404 means the service accepted the key."""
     probe = f"{url}{'&' if '?' in url else '?'}decision_id={uuid.uuid4()}"
@@ -107,7 +165,8 @@ def check_access(key: str, url: str, send: Transport = mc.http_request) -> Check
 
 
 def plugin_options(claude: ClaudeRunner, plugin_id: str) -> Optional[Dict[str, Any]]:
-    """{'key_set', 'enabled', 'url'} from `claude plugin configure --json`, or None if not installed."""
+    """{'key_set', 'enabled', 'api_url', 'ledger_enabled', 'legacy_url'} from `claude plugin configure --json`,
+    or None if not installed. `legacy_url` is a governance_url an older release saved, when the CLI still shows it."""
     code, output = claude(["plugin", "configure", plugin_id, "--json"], None)
     if code != 0:
         if "No installed plugin" in output:
@@ -125,11 +184,22 @@ def plugin_options(claude: ClaudeRunner, plugin_id: str) -> Optional[Dict[str, A
     inputs = data.get("inputs") or {}
     if not isinstance(configured, list) or not isinstance(inputs, dict):
         raise RuntimeError("Claude Code returned invalid plugin configuration fields.")
-    url = inputs.get(URL_OPTION) if URL_OPTION in configured else None
-    enabled = inputs.get(ENABLED_OPTION, True)
-    if isinstance(enabled, str):
-        enabled = enabled.strip().lower() not in ("0", "false", "no", "off")
-    return {"key_set": KEY_OPTION in configured, "enabled": bool(enabled), "url": url or None}
+
+    def switch(name: str) -> bool:
+        value = inputs.get(name, True)
+        return value.strip().lower() not in FALSE_VALUES if isinstance(value, str) else bool(value)
+
+    def text(name: str) -> Optional[str]:
+        value = inputs.get(name) if name in configured else None
+        return value.strip() or None if isinstance(value, str) else None
+
+    return {
+        "key_set": KEY_OPTION in configured,
+        "enabled": switch(ENABLED_OPTION),
+        "api_url": text(API_URL_OPTION),
+        "ledger_enabled": switch(LEDGER_ENABLED_OPTION),
+        "legacy_url": text(LEGACY_URL_OPTION),
+    }
 
 
 def available_plugin_options(claude: ClaudeRunner, plugin_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -188,21 +258,85 @@ def default_managed_files(platform: str = sys.platform) -> List[pathlib.Path]:
     return [f for f in files if f.is_file()]
 
 
+def _option_api_url(options: Optional[Mapping[str, Any]]) -> str:
+    return (options or {}).get("api_url") or DEFAULT_API_URL
+
+
+def _first(sources: Sequence[Tuple[str, Mapping[str, str]]], names: Sequence[str]) -> Optional[Tuple[str, str]]:
+    """(source, value) of the first of `names` set in the highest source that sets one, else None."""
+    for source, values in sources:
+        for name in names:
+            if values.get(name):
+                return source, values[name]
+    return None
+
+
 def resolve(sources: Sequence[Tuple[str, Mapping[str, str]]], options: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     """What the hook will use: the first source with a key wins, as in governance_hook.load_config."""
     report: Dict[str, Any] = {"configured": False, "source": None, "url": None, "key": "(not set)", "readable_key": None}
-    for name, values in sources:
-        key = next((values[k] for k in KEY_ENVS if k in values), None)
-        if key:
-            url = next((v.get(URL_ENV) for _, v in sources if v.get(URL_ENV)), None)
-            url = url or (options or {}).get("url") or DEFAULT_URL
-            report.update(configured=True, source=name, url=url, key=mc.mask(key), readable_key=key)
-            return report
+    url = (_first(sources, (URL_ENV,)) or (None, None))[1] or governance_url(_option_api_url(options))
+    found = _first(sources, KEY_ENVS)
+    if found:
+        report.update(configured=True, source=found[0], url=url, key=mc.mask(found[1]), readable_key=found[1])
+        return report
     report["switched_off"] = bool(options and options.get("key_set") and not options.get("enabled"))
     if options and options.get("key_set") and options.get("enabled"):
-        url = next((v.get(URL_ENV) for _, v in sources if v.get(URL_ENV)), None) or options.get("url") or DEFAULT_URL
-        report.update(configured=True, source="plugin options", url=url, key="(in the system keychain)")
+        report.update(configured=True, source="plugin options", url=url, key=OPTION_KEY)
     return report
+
+
+def ledger_report(
+    sources: Sequence[Tuple[str, Mapping[str, str]]], options: Optional[Mapping[str, Any]], environ: Mapping[str, str]
+) -> Dict[str, Any]:
+    """What ledger.load_ledger_config will use, and how many records wait in the retry file."""
+    report: Dict[str, Any] = {
+        "on": False, "why": None, "url": None, "key": "(not set)", "source": None, "readable_key": None,
+        "switched_off": False,
+    }
+    spool = pathlib.Path(environ.get(LEDGER_SPOOL_ENV) or DEFAULT_LEDGER_SPOOL).expanduser()
+    try:
+        report["waiting"] = sum(1 for line in spool.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip())
+    except OSError:
+        report["waiting"] = 0
+    report["retry_file"] = str(spool)
+    url = _first(sources, (LEDGER_URL_ENV,))
+    if url is None and options is not None and not options.get("ledger_enabled", True):
+        report.update(why="the plugin's ledger_enabled option is off", switched_off=True)
+        return report
+    found = _first(sources, (LEDGER_KEY_ENV,)) or _first(sources, KEY_ENVS)
+    if found:
+        report.update(source=found[0], key=mc.mask(found[1]), readable_key=found[1])
+    elif options and options.get("key_set"):
+        report.update(source="plugin options", key=OPTION_KEY)
+    elif url is None:
+        report["why"] = "no service account token is configured"
+        return report
+    report.update(on=True, url=url[1] if url else ledger_url(_option_api_url(options)))
+    report["why"] = f"{LEDGER_URL_ENV} from {url[0]}" if url else "a service account token is configured"
+    return report
+
+
+def _saved_options(settings: Mapping[str, Any], plugin_id: str) -> Optional[Dict[str, Any]]:
+    """The plugin's non-sensitive options in the settings file's pluginConfigs, or None."""
+    configs = settings.get("pluginConfigs")
+    plugin = configs.get(plugin_id) if isinstance(configs, dict) else None
+    options = plugin.get("options") if isinstance(plugin, dict) else None
+    return options if isinstance(options, dict) else None
+
+
+def legacy_url_option(settings: Mapping[str, Any], plugin_id: str) -> Optional[str]:
+    """The governance_url option an older release saved in the settings file, or None."""
+    value = (_saved_options(settings, plugin_id) or {}).get(LEGACY_URL_OPTION)
+    return value.strip() or None if isinstance(value, str) else None
+
+
+def drop_legacy_url_option(settings_file: pathlib.Path, plugin_id: str) -> None:
+    """Remove the governance_url option from the settings file, when it is there."""
+    settings = cco.read_settings(settings_file)
+    options = _saved_options(settings, plugin_id)
+    if options is not None and LEGACY_URL_OPTION in options:
+        del options[LEGACY_URL_OPTION]
+        cco.write_settings(settings_file, settings)
 
 
 def is_required(sources: Sequence[Tuple[str, Mapping[str, str]]]) -> Optional[str]:
@@ -229,7 +363,7 @@ def latest_session(state_dir: pathlib.Path) -> Optional[Dict[str, Any]]:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="governance_config.py", description="Configure Mezmo Governance for Claude Code.")
+    parser = argparse.ArgumentParser(prog="governance_config.py", description="Configure Mezmo Governance and the ledger for Claude Code.")
     parser.add_argument("--settings-file", type=pathlib.Path,
                         help="User settings file (default: $CLAUDE_CONFIG_DIR/settings.json or ~/.claude/settings.json)")
     parser.add_argument("--plugin-id", default=PLUGIN_ID, help=f"Installed plugin id (default: {PLUGIN_ID})")
@@ -238,11 +372,12 @@ def _build_parser() -> argparse.ArgumentParser:
     pre = sub.add_parser("preflight", help="Check prerequisites without reading or sending a token")
     pre.add_argument("--store", choices=("plugin", "settings"), default="plugin")
 
+    api_help = f"Mezmo API URL (default: {DEFAULT_API_URL})"
     configure = sub.add_parser("configure", help="Check the service account token, then save it")
     mc.add_key_arguments(configure, "Service account token (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
-    configure.add_argument("--url", default=DEFAULT_URL, help=f"Authorize URL (default: {DEFAULT_URL})")
+    configure.add_argument("--api-url", help=f"{api_help[:-1]}, or the API URL of a governance_url an older release saved)")
     configure.add_argument("--store", choices=("plugin", "settings"), default="plugin",
-                           help="plugin: plugin options, key in the system keychain (default); settings: the settings file's env")
+                           help="plugin: plugin options, key kept as a sensitive option (default); settings: the settings file's env")
     configure.add_argument("--skip-check", action="store_true", help="Save without checking the key first")
 
     sub.add_parser("remove", help="Clear the plugin options and the settings-file variables")
@@ -252,13 +387,13 @@ def _build_parser() -> argparse.ArgumentParser:
     status.add_argument("--state-dir", type=pathlib.Path,
                         help="Where the hook keeps session status files (default: ~/.mezmo/governance/sessions)")
 
-    check = sub.add_parser("check", help="Check the service account token against the service; records nothing")
+    check = sub.add_parser("check", help="Check the service account token against governance and the ledger; records nothing")
     mc.add_key_arguments(check, "Service account token to check (default: the configured one, when readable)")
-    check.add_argument("--url", help="Authorize URL (default: the configured one)")
+    check.add_argument("--api-url", help="Mezmo API URL (default: the configured URLs)")
 
     managed = sub.add_parser("managed", help="Add the variables to a managed-settings document")
     mc.add_key_arguments(managed, "Service account token (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
-    managed.add_argument("--url", default=DEFAULT_URL)
+    managed.add_argument("--api-url", default=DEFAULT_API_URL, help=api_help)
     managed.add_argument("--required", action="store_true", help="Deny every Bash and MCP tool call when governance isn't configured")
     managed.add_argument("--output", type=pathlib.Path, help="Write, or merge into, this file instead of printing")
     return parser
@@ -290,40 +425,57 @@ def main(
             if not key:
                 print("Error: no service account token. Pass --key or set MEZMO_GOVERNANCE_ACCESS_KEY.", file=sys.stderr)
                 return EXIT_USAGE
+            options = plugin_options(claude, args.plugin_id) if args.store == "plugin" else None
+            legacy = (options or {}).get("legacy_url") or legacy_url_option(cco.read_settings(settings_file), args.plugin_id)
+            api = api_base(args.api_url or legacy or DEFAULT_API_URL)
+            url, ledger = governance_url(api), ledger_url(api)
+            ledger_result = None
             if not args.skip_check:
-                result = check_access(key, args.url, send)
+                result = check_access(key, url, send)
                 if not result.ok:
                     print(f"Not saved. {result.detail}", file=sys.stderr)
                     return EXIT_REJECTED
                 print(result.detail)
+                ledger_result = check_ledger(key, ledger, send)
+                print(ledger_result.detail)
             if args.store == "plugin":
                 try:
                     save_plugin_options(claude, args.plugin_id, {
                         KEY_OPTION: key,
-                        URL_OPTION: "" if args.url == DEFAULT_URL else args.url,
+                        API_URL_OPTION: "" if api == DEFAULT_API_URL else api,
                         ENABLED_OPTION: "true",
+                        LEDGER_ENABLED_OPTION: "true",
                     })
                 except NotInstalled:
                     print(
                         f"The plugin {args.plugin_id} isn't installed, so its options can't be saved. Install it "
-                        "(claude plugin install mezmo@mezmo), or run again with --store settings to keep the key "
-                        "in the settings file's env instead.",
+                        "(/plugin install mezmo@mezmo inside Claude Code), or run again with --store settings to keep "
+                        "the key in the settings file's env instead.",
                         file=sys.stderr,
                     )
                     return EXIT_NOT_INSTALLED
-                where = "plugin options; the key is in the system keychain"
+                drop_legacy_url_option(settings_file, args.plugin_id)
+                if legacy and not args.api_url:
+                    print(f"Moved the governance_url option ({legacy}) to api_url ({api}).")
+                where = f"plugin options; the key is {OPTION_KEY[1:-1]}"
             else:
                 settings = cco.read_settings(settings_file)
                 env = dict(settings.get("env") or {})
-                for name in (URL_ENV,) + KEY_ENVS:
+                for name in (URL_ENV, LEDGER_URL_ENV) + KEY_ENVS:
                     env.pop(name, None)
-                if args.url != DEFAULT_URL:
-                    env[URL_ENV] = args.url
+                if api != DEFAULT_API_URL:
+                    env[URL_ENV] = url
+                    env[LEDGER_URL_ENV] = ledger
                 env[KEY_ENVS[0]] = key
                 cco.write_settings(settings_file, {**settings, "env": env})
                 where = f"the env block of {settings_file}"
-            print(f"Saved Mezmo Governance service account token {mc.mask(key)} for {args.url} in {where}.")
-            print("Every Bash and MCP tool call is now checked with Mezmo Governance. Start a new Claude Code session to apply it.")
+            print(f"Saved Mezmo service account token {mc.mask(key)} for {api} in {where}.")
+            print(f"Mezmo Governance is on: every Bash and MCP tool call is checked at {url} before it runs.")
+            print(f"The Mezmo ledger is on: every Bash and MCP tool call is recorded at {ledger}. "
+                  "Set the plugin's ledger_enabled option to false to turn it off.")
+            if ledger_result is not None and not ledger_result.ok:
+                print("Warning: the ledger check failed, so records wait in the retry file until the ledger takes them.")
+            print("Start a new Claude Code session to apply it.")
             return 0
 
         if args.command == "remove":
@@ -331,12 +483,12 @@ def main(
             options, plugin_error = available_plugin_options(claude, args.plugin_id)
             # A disabled plugin can still hold a real token. The CLI hides sensitive
             # values, so always overwrite a configured key, even on repeated removal.
-            if options and (options["key_set"] or options["url"]):
+            if options and (options["key_set"] or options["api_url"]):
                 try:
                     save_plugin_options(claude, args.plugin_id, {
-                        KEY_OPTION: REMOVED_KEY, URL_OPTION: "", ENABLED_OPTION: "false",
+                        KEY_OPTION: REMOVED_KEY, API_URL_OPTION: "", ENABLED_OPTION: "false", LEDGER_ENABLED_OPTION: "false",
                     })
-                    removed.append(f"the {args.plugin_id} plugin options (the key in the keychain is overwritten)")
+                    removed.append(f"the {args.plugin_id} plugin options (the saved key is overwritten)")
                 except (RuntimeError, OSError, NotInstalled):
                     plugin_error = "Could not clear the plugin configuration; its saved token may remain."
             settings = cco.read_settings(settings_file)
@@ -379,6 +531,9 @@ def main(
                 "pending": len(session.get("pending") or {}),
             }
             report["last_result"] = (session or {}).get("last")
+            ledger = ledger_report(sources, options, environ)
+            ledger.pop("readable_key")
+            report["ledger"] = ledger
             if args.json:
                 print(json.dumps(report, indent=2))
                 return 0
@@ -413,6 +568,13 @@ def main(
                 detail = f": {last['detail']}" if last.get("detail") else ""
                 who = " (decided by a person)" if last.get("by_person") else ""
                 print(f"  Last check: {last.get('ts')} {last.get('tool')} {last.get('outcome')}{who}{detail}")
+            if ledger["on"]:
+                print(f"The Mezmo ledger is on ({ledger['why']}): every Bash and MCP tool call is recorded.")
+                print(f"  URL:        {ledger['url']}")
+                print(f"  Service account token: {ledger['key']}, from {ledger['source']}")
+            else:
+                print(f"The Mezmo ledger is off: {ledger['why']}.")
+            print(f"  Waiting in the retry file ({ledger['retry_file']}): {ledger['waiting']}")
             return 0
 
         if args.command == "check":
@@ -424,15 +586,24 @@ def main(
                 if plugin_error:
                     print(f"Cannot check the token: {plugin_error} Supply --key-file or a configured environment token.", file=sys.stderr)
                     return EXIT_ERROR
-                where = ("The service account token is in the system keychain, where this script can't read it. Use --key-file to "
-                         "check it, or see the hook's last result in status." if report["configured"]
+                where = ("The service account token is a sensitive plugin option, which this script can't read. Use "
+                         "--key-file to check it, or see the hook's last result in status." if report["configured"]
                          else "Mezmo Governance isn't configured.")
                 print(f"Error: {where}", file=sys.stderr)
                 return EXIT_USAGE
-            url = args.url or report["url"] or DEFAULT_URL
+            api = api_base(args.api_url) if args.api_url else None
+            url = governance_url(api) if api else report["url"] or DEFAULT_URL
             result = check_access(key, url, send)
             print(f"{'ok  ' if result.ok else 'FAIL'}  {url}  key {mc.mask(key)}  {result.detail}")
-            return 0 if result.ok else EXIT_REJECTED
+            ledger = ledger_report(sources, options, environ)
+            if ledger["switched_off"] and not api:
+                print(f"skip  the Mezmo ledger is off: {ledger['why']}")
+                return 0 if result.ok else EXIT_REJECTED
+            ledger_key = _key_from(mc.key_argument(args), {}) or ledger["readable_key"] or key
+            ledger_target = ledger_url(api) if api else ledger["url"] or ledger_url(_option_api_url(options))
+            ledger_result = check_ledger(ledger_key, ledger_target, send)
+            print(f"{'ok  ' if ledger_result.ok else 'FAIL'}  {ledger_target}  key {mc.mask(ledger_key)}  {ledger_result.detail}")
+            return 0 if result.ok and ledger_result.ok else EXIT_REJECTED
 
         if args.command == "managed":
             if args.key_file and not args.output:
@@ -441,7 +612,8 @@ def main(
             if not key:
                 print("Error: no service account token. Pass --key or set MEZMO_GOVERNANCE_ACCESS_KEY.", file=sys.stderr)
                 return EXIT_USAGE
-            env = {URL_ENV: args.url, KEY_ENVS[0]: key}
+            api = api_base(args.api_url)
+            env = {URL_ENV: governance_url(api), KEY_ENVS[0]: key, LEDGER_URL_ENV: ledger_url(api)}
             if args.required:
                 env[REQUIRED_ENV] = "1"
             if not args.output:
@@ -455,7 +627,7 @@ def main(
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
             os.chmod(args.output, 0o600)
-            print(f"Added Mezmo Governance ({mc.mask(key)}) to {args.output}. It contains the service account token; handle it like a secret.")
+            print(f"Added Mezmo Governance and the Mezmo ledger ({mc.mask(key)}) to {args.output}. It contains the service account token; handle it like a secret.")
             return 0
     except UnsupportedRuntime as err:
         print(f"Setup stopped: {err} No token was checked or saved.", file=sys.stderr)

@@ -42,11 +42,11 @@ GOVERNANCE_VARS = (
     "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS",
     "MEZMO_GOVERNANCE_AUDIT_LOG",
     "MEZMO_GOVERNANCE_STATE_DIR",
-    "CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL",
+    "CLAUDE_PLUGIN_OPTION_API_URL",
     "CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY",
     "CLAUDE_PLUGIN_OPTION_GOVERNANCE_ENABLED",
+    "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED",
     "CLAUDE_PLUGIN_DATA",
-    "MEZMO_LEDGER_ACCOUNT",
     "MEZMO_LEDGER_INCIDENT_KEY",
     "MEZMO_LEDGER_INVESTIGATION_ID",
     "MEZMO_LEDGER_KEY",
@@ -64,6 +64,8 @@ def environment(**values: str) -> Dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k not in GOVERNANCE_VARS}
     env["MEZMO_GOVERNANCE_STATE_DIR"] = os.path.join(SCRATCH.name, "sessions")
     env["MEZMO_GOVERNANCE_AUDIT_LOG"] = os.path.join(SCRATCH.name, "audit.jsonl")
+    # The ledger is on wherever governance has a key; these tests are about governance alone.
+    env["CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED"] = "false"
     env.update(values)
     return env
 
@@ -366,15 +368,21 @@ class ConfigurationTests(unittest.TestCase):
             self.assertEqual(hook.authorization_header(key=hook.required_config().access_key), "Token sts_opt")
         self.assertEqual(http.calls[0][1], "https://api.mezmo.com/governance/workflow/authorize")
 
-    def test_plugin_option_url(self) -> None:
+    def test_the_authorize_url_is_derived_from_the_api_url_option(self) -> None:
+        for api_url in ("https://api.example.test", "https://api.example.test/", " https://api.example.test "):
+            values = {"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "sts_opt", "CLAUDE_PLUGIN_OPTION_API_URL": api_url}
+            with self.subTest(api_url=api_url), patch.dict(os.environ, environment(**values), clear=True):
+                self.assertEqual(hook.load_config().url, "https://api.example.test/governance/workflow/authorize")
+
+    def test_an_older_governance_url_option_is_not_read(self) -> None:
         values = {"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "sts_opt",
-                  "CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL": "https://governance.example.test/governance/workflow/authorize"}
+                  "CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL": "https://old.example.test/governance/workflow/authorize"}
         with patch.dict(os.environ, environment(**values), clear=True):
-            self.assertEqual(hook.load_config().url, values["CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL"])
+            self.assertEqual(hook.load_config().url, hook.DEFAULT_URL)
 
     def test_environment_wins_over_plugin_options(self) -> None:
         values = {"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "sts_opt",
-                  "CLAUDE_PLUGIN_OPTION_GOVERNANCE_URL": "https://opt.example.test/authorize",
+                  "CLAUDE_PLUGIN_OPTION_API_URL": "https://opt.example.test",
                   "MEZMO_GOVERNANCE_ACCESS_KEY": "sts_env",
                   "MEZMO_GOVERNANCE_URL": "https://env.example.test/authorize"}
         with patch.dict(os.environ, environment(**values), clear=True):

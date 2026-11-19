@@ -21,7 +21,7 @@ Unless the arguments already say, ask what to remove: governance, telemetry, MCP
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" remove
 ```
 
-This clears the plugin's governance options, including the key in the system keychain, and removes any `MEZMO_GOVERNANCE_*` variables from the user settings file. If the script reports that managed settings or the environment still set governance, only whoever set those can remove them.
+This clears the plugin's governance options, overwriting the saved key (a sensitive plugin option, in the macOS Keychain or `~/.claude/.credentials.json`) and turning governance and the ledger off, and removes any `MEZMO_GOVERNANCE_*`, `MEZMO_LEDGER_URL` and `MEZMO_LEDGER_KEY` variables from the user settings file. If the script reports that managed settings or the environment still set governance, only whoever set those can remove them.
 
 ## Telemetry
 
@@ -51,4 +51,4 @@ This removes the user-scope `mezmo` MCP server, and its service key with it. Exi
 - Uninstalling the plugin doesn't remove the telemetry settings or the MCP server. That's why this command exists.
 - Settings deployed through managed settings have to be removed by the administrator.
 
-If governance removal reports incomplete cleanup, explain which settings were removed and that the plugin token may remain. Do not claim governance is fully removed. Retry after Claude/keychain access is restored.
+If governance removal reports incomplete cleanup, explain which settings were removed and that the plugin token may remain. Do not claim governance is fully removed. Retry once Claude Code can read and write its plugin options again.

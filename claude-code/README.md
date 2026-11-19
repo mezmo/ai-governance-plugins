@@ -12,6 +12,26 @@ work on pipelines. All three are independent, so you can turn on any of them.
 A small status display in the prompt footer tells you whether governance and telemetry are
 working.
 
+## Getting started
+
+1. **Install** from inside Claude Code:
+
+   ```text
+   /plugin marketplace add mezmo/ai-governance-plugins
+   /plugin install mezmo@mezmo
+   ```
+
+   Installing from inside Claude Code opens the plugin's options dialog, where you can enter the
+   service account token and the Mezmo API URL (empty means `https://api.mezmo.com`).
+   `/plugin configure mezmo@mezmo` reopens it. The shell's `claude plugin install` never prompts,
+   so after it run step 2.
+2. **Set up governance**: `/mezmo:setup governance`. It asks for the API URL and the service
+   account token, checks both Mezmo Governance and the [ledger](#ledger) without recording
+   anything, and saves them as plugin options. One token and one URL turn on both.
+3. **Check it**: start a new session and run `/mezmo:test`.
+4. **Investigate**: `/mezmo:investigate <incident>` files the session's tool calls under the
+   incident's [investigation](#investigations).
+
 ## Fail behavior
 
 Until the plugin has a key, it lets every call run and sends nothing to Governance;
@@ -35,6 +55,8 @@ Tested version: Claude Code 2.1.301 with this plugin, run live against
 `tools/mock_governance.py`: `Bash` was denied and `Read` was approved, and a
 hook crash blocked the call.
 
+From inside Claude Code, as in [Getting started](#getting-started), or from a shell:
+
 ```bash
 claude plugin marketplace add mezmo/ai-governance-plugins
 ```
@@ -42,6 +64,9 @@ claude plugin marketplace add mezmo/ai-governance-plugins
 ```bash
 claude plugin install mezmo@mezmo
 ```
+
+The shell install never asks for the plugin's options, so run `/mezmo:setup governance` (or
+`claude plugin configure mezmo@mezmo`) afterwards.
 
 Or, from a clone of this repository, run `./mezmo-governance install claude-code`
 (add `--dry-run` to see the change first). It removes the older
@@ -57,7 +82,7 @@ Then run `/mezmo:setup` in Claude Code and start a new session. Claude Code read
 when a session starts, so the session you ran setup in carries on as before.
 
 Removing the marketplace, or uninstalling the plugin, deletes its saved settings, including the
-governance service account token in the keychain. That includes moving the plugin to another marketplace.
+service account token. That includes moving the plugin to another marketplace.
 Afterwards, run `/reload-plugins` or start a new session, then run `/mezmo:setup governance`
 again. Telemetry settings live in `~/.claude/settings.json` and the MCP server in
 `~/.claude.json`, so they aren't affected.
@@ -100,7 +125,9 @@ before testing. The checker does not set them up for you.
 To check the setup from the repository root, run `./mezmo-governance doctor claude-code` and
 `./mezmo-governance smoke claude-code`. `doctor` reads `MEZMO_GOVERNANCE_URL` and
 `MEZMO_GOVERNANCE_TOKEN` from the shell, not the key that setup saved, so export them first.
-It also checks that a key reaches the hook, since without one the plugin lets every call run.
+It also checks that a key reaches the hook, since without one the plugin lets every call run,
+and sends the [ledger](#ledger) an empty batch with a key it can read (from `settings.json` or the
+shell), which records nothing.
 That passes when `claude plugin configure` shows a saved key with governance on, or when
 `settings.json` has a key or `MEZMO_GOVERNANCE_REQUIRED=1` under `env`. A key or that variable
 only in your shell gets a warning: Claude Code started from the Dock or another app may not see it.
@@ -127,7 +154,7 @@ child-process arguments such as `claude mcp add`. Prefer filling the file yourse
 token should stay out of the conversation. Existing `--key` and environment options remain
 available, but do not put literal keys in governed Bash calls.
 
-If plugin/keychain access fails, `status` reports the plugin state as unknown while showing
+If reading the plugin options fails, `status` reports the plugin state as unknown while showing
 readable settings. `check` can still validate a supplied or readable token. `remove` cleans
 settings and reports incomplete removal if it cannot also clear the plugin token.
 
@@ -150,19 +177,23 @@ as Read, Edit and Write, don't go to Mezmo. Neither do the MCP servers the Claud
 for its own task list, panes and sessions (`ccd_turn`, `ccd_session` and the like).
 
 Governance stays off until you give it a key. Until then the hook lets every call through and
-sends nothing to Governance ([ledger](#ledger) sending, if on, still records the calls). Register
-an agent for Claude Code in Mezmo Governance, give it a service account with Governance
-permissions, and attach a policy. Then run `/mezmo:setup governance` with that service account's
-token, a standard Mezmo service key (see
+sends nothing to Governance. Register an agent for Claude Code in Mezmo Governance, give it a
+service account with Governance permissions, and attach a policy. Then run
+`/mezmo:setup governance` with that service account's token, a standard Mezmo service key (see
 [Connect to Mezmo](../README.md#connect-to-mezmo)). Setup checks the key without recording a
-decision, then saves it as a plugin option, so it lives in the system keychain rather than in a
-settings file.
+decision, then saves it as a sensitive plugin option. Claude Code keeps a sensitive option in the
+macOS Keychain. If the Keychain refuses the write, and on Linux and Windows, it is in
+`~/.claude/.credentials.json`, readable only by you. Either way it stays out of `settings.json`.
 
 | Setting | Plugin option | Environment variable (wins) | Default |
 | --- | --- | --- | --- |
-| Authorize URL | `governance_url` | `MEZMO_GOVERNANCE_URL` | `https://api.mezmo.com/governance/workflow/authorize` |
-| Service account token | `governance_access_key` | `MEZMO_GOVERNANCE_ACCESS_KEY` or `MEZMO_GOVERNANCE_TOKEN` | none, so governance is off |
+| Mezmo API URL | `api_url` | `MEZMO_GOVERNANCE_URL` sets the full authorize URL | `https://api.mezmo.com`, so `https://api.mezmo.com/governance/workflow/authorize` |
+| Service account token | `governance_access_key` | `MEZMO_GOVERNANCE_ACCESS_KEY` or `MEZMO_GOVERNANCE_TOKEN` | none, so governance and the ledger are off |
+| Governance on | `governance_enabled` | | on |
 | Required | | `MEZMO_GOVERNANCE_REQUIRED=1` | off |
+
+Releases before 0.6.0 kept the full authorize URL in a `governance_url` option. The hooks no
+longer read it: run `/mezmo:setup governance`, which moves it to `api_url`, dropping its path.
 
 The service only accepts plain identifiers as argument names, so an MCP tool with an argument
 such as `max-results` gets blocked, and the message says which argument.
@@ -246,9 +277,12 @@ the audit log, and `/mezmo` shows the count. Governance doesn't hear about these
 
 ## Ledger
 
-The ledger keeps a record of the tool calls Claude Code makes. It's off by default. When it's
-on, Mezmo gets one record when each Bash and MCP tool call is requested and one when it ends. It
-works with or without governance.
+The ledger keeps a record of the tool calls Claude Code makes: Mezmo gets one record when each
+Bash and MCP tool call is requested and one when it ends. It is on whenever the plugin has a
+service account token, and sends to `<API URL>/v1/audit/events` with that token. The ledger
+service takes the account from the token, so there is no account to set. Turn it off with the
+`ledger_enabled` plugin option (`/plugin configure mezmo@mezmo`). It also works with governance
+switched off.
 
 The ledger has its own hook script, `scripts/ledger_hook.py`, which Claude Code runs beside the
 governance hook, in parallel with it. When governance refuses a call, Claude Code runs no other
@@ -277,22 +311,24 @@ Each record also names the service and environment the call touched, such as `ch
 Bash call or from an MCP tool's name and arguments, with `prod` when no namespace or environment
 is given.
 
-Turn it on by setting `MEZMO_LEDGER_ACCOUNT` and `MEZMO_LEDGER_URL`:
+`/mezmo:test` shows whether the ledger is on and why, the URL it sends to, an empty-batch check
+of the key (`POST []`, answered `202` with `{"accepted": 0}`, which records nothing) and how many
+records wait in the retry file.
+
+### Overrides
+
+Environment variables win over the plugin options, which win over the defaults:
 
 | Variable | Purpose |
 | --- | --- |
-| `MEZMO_LEDGER_ACCOUNT` | Your Mezmo account id. Required |
-| `MEZMO_LEDGER_INCIDENT_KEY` | Incident the session is working on, such as `pagerduty:<incident id>`. Optional |
-| `MEZMO_LEDGER_INVESTIGATION_ID` | Investigation the session belongs to. Optional |
-| `MEZMO_LEDGER_KEY` | Mezmo service key. Optional, defaults to the governance key |
-| `MEZMO_LEDGER_SPOOL` | Retry file. Optional, defaults to `~/.mezmo/ledger-spool.jsonl` |
-| `MEZMO_LEDGER_URL` | Ledger events URL. Required |
+| `MEZMO_LEDGER_URL` | Ledger events URL. Defaults to the API URL plus `/v1/audit/events`. When set, the ledger is on even with `ledger_enabled` off, as from managed settings |
+| `MEZMO_LEDGER_KEY` | Mezmo service key. Defaults to the governance key: `MEZMO_GOVERNANCE_ACCESS_KEY`, `MEZMO_GOVERNANCE_TOKEN`, then the plugin option |
+| `MEZMO_LEDGER_INCIDENT_KEY` | Incident the session is working on, such as `pagerduty:<incident id>` |
+| `MEZMO_LEDGER_SPOOL` | Retry file. Defaults to `~/.mezmo/ledger-spool.jsonl` |
 
-`MEZMO_LEDGER_ACCOUNT` must be the account the key belongs to. If it isn't, the ledger answers 400
-and the records are dropped. The key is sent as `Authorization: Token <key>`, or as given when it
-starts with `Token ` or `Bearer `. Setting `MEZMO_LEDGER_KEY` doesn't turn governance on. Without
-it, the governance key is sent to `MEZMO_LEDGER_URL`. The URL must use `https`, or `http` to this
-machine only. For Mezmo, use `https://<Mezmo API host>/v1/audit/events`.
+The key is sent as `Authorization: Token <key>`, or as given when it starts with `Token ` or
+`Bearer `. Setting `MEZMO_LEDGER_KEY` doesn't turn governance on. A `MEZMO_LEDGER_URL` with no key
+sends no `Authorization` header. The URL must use `https`, or `http` to this machine only.
 
 The ledger never blocks a tool call or changes a governance decision, because its hook always
 exits successfully. If the ledger is slow or unreachable, the ledger hook stops waiting after 3
@@ -307,10 +343,10 @@ discard what's waiting.
 ### Investigations
 
 Agents working on the same incident file their tool calls under one investigation, so each can
-read what the others already did before it acts. The investigation's id is worked out from your
-`MEZMO_LEDGER_ACCOUNT` and the incident's key, `pagerduty:<incident id>`, `jira:<issue key>` or
-`slack:<channel id>`, so every agent that starts from the same key lands in the same one. While a
-session is in an investigation, each of its records carries the investigation's id and the key.
+read what the others already did before it acts. Each record of a session in an investigation
+carries the incident's key, `pagerduty:<incident id>`, `jira:<issue key>` or `slack:<channel id>`,
+and the ledger service files it under the investigation it works out from that key and the
+token's account, so every agent of the account that starts from the same key lands in the same one.
 
 | Event | When |
 | --- | --- |
@@ -339,10 +375,10 @@ python3 scripts/ledger_investigation.py launch --incident-key <key> [--service <
 ```
 
 It sends `opened` with `opened_by: "alert"` and the service when given, then runs the command with
-`MEZMO_LEDGER_INCIDENT_KEY` and `MEZMO_LEDGER_INVESTIGATION_ID` set, so a `claude -p` it starts
-files every call under the investigation. Its exit code is the command's. Export
-`MEZMO_LEDGER_KEY` in the shell you run it from: the fallback to the governance key only exists
-inside Claude Code, so without it `opened` is refused and waits in the retry file.
+`MEZMO_LEDGER_INCIDENT_KEY` set, so a `claude -p` it starts files every call under the
+investigation. Its exit code is the command's. Plugin options reach only Claude Code's hooks, so
+export `MEZMO_LEDGER_KEY` (or `MEZMO_GOVERNANCE_ACCESS_KEY`) in the shell you run it from, and
+`MEZMO_LEDGER_URL` for an API other than production. Without a key it runs nothing.
 
 ### References
 
@@ -452,8 +488,9 @@ read. It never writes tool arguments there.
 
 ## Rolling out to an organization
 
-Pick "My organization" in `/mezmo:setup`. It writes one managed-settings file with the governance
-and telemetry variables, plus `MEZMO_GOVERNANCE_REQUIRED=1` if you want every Bash and MCP tool
+Pick "My organization" in `/mezmo:setup`. It writes one managed-settings file with the governance,
+ledger and telemetry variables (`MEZMO_GOVERNANCE_URL` and `MEZMO_LEDGER_URL`, both from the API
+URL, and the token; managed settings can't fill in a plugin's options), plus `MEZMO_GOVERNANCE_REQUIRED=1` if you want every Bash and MCP tool
 call blocked on machines where governance isn't set up. The file holds your keys, so treat it like a secret.
 Deploy it one of three ways:
 
@@ -476,6 +513,7 @@ Governance also needs the plugin installed on each machine. Add `extraKnownMarke
 | Every call blocked, and governance isn't set up | Your organization set `MEZMO_GOVERNANCE_REQUIRED=1`. Ask them for the service account token |
 | Every call blocked with `HTTP 401` right after reinstalling the plugin | The running session still has the old plugin's settings. Run `/reload-plugins` or start a new session, then `/mezmo:setup governance` |
 | Governance is off after reinstalling the plugin | Reinstalling deleted the saved service account token. Run `/mezmo:setup governance` again |
+| `/mezmo:test` shows records waiting in the ledger's retry file | The ledger was unreachable or refused the token. They are resent on later tool calls once the check passes |
 | Telemetry checks pass, but nothing shows up in Mezmo | Start a new session, make sure a pipeline has an OpenTelemetry source, and give metrics a minute |
 | Telemetry setup reports conflicting settings | Your settings already send OpenTelemetry somewhere else. Claude Code only exports to one endpoint |
 | The `mezmo` MCP server fails to connect with `401` | Mezmo rejected the service key. Run `/mezmo:setup mcp` with a current key and replace the server |

@@ -806,7 +806,6 @@ class PythonFloorTests(unittest.TestCase):
                 "MEZMO_GOVERNANCE_STATE_DIR": str(Path(tmp) / "codex-sessions"),
                 "MEZMO_GOVERNANCE_TOKEN": "sts_test",
                 "MEZMO_GOVERNANCE_URL": f"{closed}/governance/workflow/authorize",
-                "MEZMO_LEDGER_ACCOUNT": "test-acct",
                 "MEZMO_LEDGER_SPOOL": str(spool),
                 "MEZMO_LEDGER_URL": f"{closed}/v1/events",
                 "NO_PROXY": "*",

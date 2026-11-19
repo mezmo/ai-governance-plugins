@@ -319,13 +319,12 @@ Each record also names the service and environment the call touched, such as
 worked out from the kubectl commands in a Bash call or from an MCP tool's name
 and arguments, with `prod` when no namespace or environment is given.
 
-Turn it on by setting `MEZMO_LEDGER_ACCOUNT` and `MEZMO_LEDGER_URL`:
+Turn it on by setting `MEZMO_LEDGER_URL`. The ledger service takes the
+account from the key, so there is no account to set:
 
 | Variable | Purpose |
 | --- | --- |
-| `MEZMO_LEDGER_ACCOUNT` | Your Mezmo account id. Required |
 | `MEZMO_LEDGER_INCIDENT_KEY` | Incident the session is working on, such as `pagerduty:<incident id>`. Optional |
-| `MEZMO_LEDGER_INVESTIGATION_ID` | Investigation the session belongs to. Optional |
 | `MEZMO_LEDGER_KEY` | Mezmo service key. Optional, defaults to `MEZMO_GOVERNANCE_TOKEN` |
 | `MEZMO_LEDGER_SPOOL` | Retry file. Optional, defaults to `~/.mezmo/ledger-spool.jsonl` |
 | `MEZMO_LEDGER_URL` | Ledger events URL. Required |
@@ -337,9 +336,7 @@ Without `MEZMO_LEDGER_KEY`, the governance token is sent to
 no user name or password. For Mezmo, use
 `https://<Mezmo API host>/v1/audit/events`.
 
-`MEZMO_LEDGER_ACCOUNT` must be the account the key belongs to. If it is not,
-the service answers 400 and the records are dropped. Records it refuses with
-a 403 are dropped too. Records it refuses with a 401 are kept for retry,
+Records the service refuses with a 400 or 403 are dropped. Records it refuses with a 401 are kept for retry,
 because a fixed key will let them through.
 
 The ledger hook never blocks a tool call or changes a governance decision: it
@@ -370,10 +367,11 @@ the hook, or for input the hook cannot read.
 ### Investigations
 
 Agents working the same incident can share one investigation. Their records
-carry the same `thread_id`, so a second agent can read what the first did,
-with the `get_ledger_investigation` MCP tool, before it acts. The `thread_id`
-is worked out from `MEZMO_LEDGER_ACCOUNT` and the incident key, so every
-session on the account that uses the same key gets the same one.
+carry the same incident key, and the ledger service files them under the
+investigation it works out from that key and the key's account, so a second
+agent can read what the first did, with the `get_ledger_investigation` MCP
+tool, before it acts. Every session on the account that uses the same incident
+key lands in the same one.
 
 | Event | When |
 | --- | --- |
@@ -381,24 +379,22 @@ session on the account that uses the same key gets the same one.
 | `agent.investigation.joined` | The session ran `ledger_investigation.py join` |
 | `agent.investigation.opened` | `ledger_investigation.py launch` started a command for an alert |
 
-Each carries the incident key and the `thread_id`. `joined` and `closed` also
+Each carries the incident key. `joined` and `closed` also
 carry the session id, and `opened` carries `opened_by: "alert"`. `joined` and
 `opened` carry `service` when the command gave `--service`: the deployment or
 app the incident is about, such as `checkout`, as a DNS label.
 
 An incident key is `<source>:<id>`, with source `jira`, `pagerduty` or
 `slack`, such as `pagerduty:Q34FCCWSTU9OI2`. The CLI,
-`ledger_investigation.py`, has four commands:
+`ledger_investigation.py`, has three commands:
 
 | Command | What it does |
 | --- | --- |
-| `close --incident-key <key>` | Prints one line, `{"action": "closed", "incident_key": ..., "thread_id": ...}` |
-| `id --incident-key <key>` | Prints the key and its `thread_id`. Nothing is recorded |
-| `join --incident-key <key> [--service <name>]` | Prints one line, `{"action": "joined", "incident_key": ..., "service": ..., "thread_id": ...}`, `service` only when given |
+| `close --incident-key <key>` | Prints one line, `{"action": "closed", "incident_key": ...}` |
+| `join --incident-key <key> [--service <name>]` | Prints one line, `{"action": "joined", "incident_key": ..., "service": ...}`, `service` only when given |
 | `launch --incident-key <key> [--service <name>] -- <command...>` | Sends `opened`, then runs the command in the investigation |
 
-`id`, `join` and `close` need only `MEZMO_LEDGER_ACCOUNT` and send nothing
-themselves. The ledger hook does the rest when a `Bash` call starts by running
+`join` and `close` need no setting and send nothing themselves. The ledger hook does the rest when a `Bash` call starts by running
 the CLI with a Python interpreter, as `python3 <cli> join --incident-key <key>`,
 and its output has that line for the same key. So run `join` and `close` each
 on its own as the whole call, with the key written out: one after a `cd ... &&`,
@@ -408,7 +404,7 @@ command worked.
 
 - After a `join`, the hook writes the investigation to the
   [session state](#session-state) and then sends `joined`. Every later call of
-  the session carries the `thread_id`, and so does the join call's own `ran`.
+  the session carries the incident key, and so does the join call's own `ran`.
   If the state can't be written, it warns on stderr and sends no `joined`.
 - After a `close`, it sends `closed` and clears the session's investigation,
   but only when it is the one closed.
@@ -456,9 +452,8 @@ the path of `ledger_investigation.py`.
 `launch` is for an alert that starts an agent, for example
 `python3 ~/.codex/hooks/ledger_investigation.py launch --incident-key <key> -- codex exec "<prompt>"`.
 It sends `opened` with `opened_by: "alert"`, then runs the command in its
-place with `MEZMO_LEDGER_INCIDENT_KEY` and `MEZMO_LEDGER_INVESTIGATION_ID`
-set, so `launch` exits with the command's exit code. It needs `MEZMO_LEDGER_ACCOUNT` and
-`MEZMO_LEDGER_URL`, and `MEZMO_LEDGER_KEY` (or `MEZMO_GOVERNANCE_TOKEN`)
+place with `MEZMO_LEDGER_INCIDENT_KEY` set, so `launch` exits with the
+command's exit code. It needs `MEZMO_LEDGER_URL`, and `MEZMO_LEDGER_KEY` (or `MEZMO_GOVERNANCE_TOKEN`)
 exported in the shell it runs from. Without a key the ledger refuses `opened`
 with a 401, and it waits in the retry file, so it may arrive after `joined`.
 An `opened` that can't be sent is saved for retry and the command still runs.
@@ -532,7 +527,7 @@ string. The only `Bash` output it reads is the result line of an
 
 The ledger hook reads a session's investigation and references from
 `~/.mezmo/governance/codex-sessions/<session id>.json`, when that file exists.
-An investigation there wins over `MEZMO_LEDGER_INVESTIGATION_ID`. The ledger
+An investigation there wins over `MEZMO_LEDGER_INCIDENT_KEY`. The ledger
 hook writes the investigation there after an [investigation](#investigations)
 `join` and clears it after a `close`, and adds the [references](#references)
 of each Memory or Insights read, keeping whatever else the file holds. A call

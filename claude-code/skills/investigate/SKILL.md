@@ -3,7 +3,6 @@ name: investigate
 description: Join an incident investigation in the Mezmo ledger, so every tool call Claude makes is filed under the incident and other agents and people working on it can see what was done. Use when the user asks Claude to investigate, triage or fix an incident, alert or outage from PagerDuty, Jira or Slack, or to pick up an investigation someone else started.
 argument-hint: "<PagerDuty incident, Jira key or Slack channel>"
 allowed-tools:
-  - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/ledger_investigation.py" id*)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/ledger_investigation.py" join*)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/ledger_investigation.py" close*)
   - mcp__mezmo__get_ledger_investigation
@@ -12,9 +11,10 @@ allowed-tools:
 # Investigate an incident
 
 The Mezmo ledger records each Bash and MCP tool call. Once this session joins an investigation,
-every record is filed under the incident's investigation, the same one any other agent working on
-the incident joins. Its id comes from the incident's key, so agents that start from the same key
-meet in the same investigation.
+every record carries the incident's key, and the ledger files it under the incident's
+investigation, the same one any other agent of your Mezmo account working on the incident joins.
+The investigation comes from the incident's key, so agents that start from the same key meet in the
+same investigation.
 
 Arguments: $ARGUMENTS
 
@@ -39,7 +39,7 @@ can't tell which incident the user means, ask.
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/ledger_investigation.py" join --incident-key <key> --service <name>
 ```
 
-It prints one line with the `incident_key`, the `service` and the investigation's `thread_id`.
+It prints one line with the `action`, the `incident_key` and the `service`.
 From here on, the ledger files each tool call under that investigation.
 
 `--service` records the service the incident is about, so people reading the investigation see
