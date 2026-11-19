@@ -996,6 +996,28 @@ class JoinCloseTests(LedgerTestCase):
             "session_id": "session-1",
         })
 
+    def test_a_close_whose_quoted_summary_starts_with_punctuation_is_recognized(self) -> None:
+        line = json.dumps({"action": "closed", "incident_key": INCIDENT_KEY, "status": "mitigated", "summary": SUMMARY})
+        for summary in ("(Mitigated) Restarted checkout; follow-up remains.", "; a | b & c", "<none>"):
+            with self.subTest(summary=summary):
+                command = f'python3 \"/plugin/scripts/ledger_investigation.py\" close --summary "{summary}" --status mitigated --incident-key {INCIDENT_KEY}'
+                event = hook_input(
+                    "PostToolUse",
+                    tool_input={"command": command},
+                    tool_response={"interrupted": False, "isImage": False, "stderr": "", "stdout": f"{line}\n"},
+                )
+                self.assertEqual(
+                    ledger.investigation_action(hook_input=event),
+                    ("closed", INCIDENT_KEY, None, {"status": "mitigated", "summary": SUMMARY}),
+                )
+        # A real separator still ends the command: the key after it is not the CLI's.
+        command = f"python3 \"/plugin/scripts/ledger_investigation.py\" close --status mitigated ; echo --incident-key {INCIDENT_KEY}"
+        self.assertIsNone(ledger.investigation_action(hook_input=hook_input(
+                    "PostToolUse",
+                    tool_input={"command": command},
+                    tool_response={"interrupted": False, "isImage": False, "stderr": "", "stdout": f"{line}\n"},
+                )))
+
     def test_a_close_without_a_valid_status_and_summary_sends_neither(self) -> None:
         cli = 'python3 "/plugin/scripts/ledger_investigation.py"'
         for printed in (

@@ -1158,8 +1158,9 @@ def _investigation_call(words: Sequence[str]) -> Optional[Tuple[str, str, Option
     argparse takes it, and other arguments are left to the CLI, which refuses them. What follows, such as `2>&1` or a pipe, is not read, so a
     later command, a here-doc's body or an echo or printf of the CLI's words is no call.
     """
-    punctuation = tuple(SHELL_PUNCTUATION)
-    end = next((index for index, word in enumerate(words) if word.startswith(punctuation)), len(words))
+    # A separator is a word of nothing but punctuation: a quoted argument, such as a summary that
+    # starts with "(", is one word with other characters in it.
+    end = next((index for index, word in enumerate(words) if word and not word.strip(SHELL_PUNCTUATION)), len(words))
     position = 0
     while position < end and SHELL_ASSIGNMENT.fullmatch(words[position]):
         position += 1
