@@ -1023,7 +1023,9 @@ class ReferenceTests(LedgerTestCase):
             with self.subTest(case=case):
                 self.state_path().unlink(missing_ok=True)
                 self.run_hook(event)
-                self.assertFalse(self.state_path().exists())
+                # The state may hold the hook's last send, never references.
+                state = json.loads(self.state_path().read_text(encoding="utf-8")) if self.state_path().exists() else {}
+                self.assertNotIn("references", state)
 
     def test_only_valid_state_references_are_sent(self) -> None:
         bad = {"record": "claim_bad", "type": "memory", "version": -1}
@@ -1452,6 +1454,49 @@ class SettingsTests(LedgerTestCase):
             with self.subTest(answer=answer):
                 self.assertEqual(ledger.send_ledger_events(config=config, events=[event], ledger_http=self.fake(answer)), expected)
         self.assertEqual(self.spool_lines(), [])
+
+
+class LastSendTests(LedgerTestCase):
+    """The hook keeps its last send in the session state, for /mezmo:test and doctor: never a secret."""
+
+    SECRET_KEY = "sts_last_send_secret_key"
+
+    def last(self) -> Dict[str, Any]:
+        return json.loads(hook.session_state_path("session-1").read_text(encoding="utf-8"))["ledger_last_send"]
+
+    def test_a_202_is_kept_with_its_host_and_event_count(self) -> None:
+        self.run_hook(hook_input("PreToolUse"), self.fake((202, b"{}")))
+        last = self.last()
+        self.assertEqual(sorted(last), ["error", "events", "host", "status", "ts"])
+        self.assertEqual((last["status"], last["error"], last["events"], last["host"]), (202, None, 1, "audit.ledger.invalid"))
+        datetime.fromisoformat(last["ts"])
+
+    def test_a_401_is_kept(self) -> None:
+        self.run_hook(hook_input("PreToolUse"), self.fake((401, b"{}")))
+        self.assertEqual((self.last()["status"], self.last()["error"]), (401, None))
+
+    def test_a_network_error_is_kept_without_the_key(self) -> None:
+        os.environ["MEZMO_LEDGER_KEY"] = self.SECRET_KEY
+        self.run_hook(hook_input("PreToolUse"), self.fake(OSError(f"refused for {self.SECRET_KEY}")))
+        self.assertEqual((self.last()["status"], self.last()["error"]), (None, "refused for <key>"))
+
+    def test_a_send_with_no_answer_by_the_deadline_is_kept_as_one(self) -> None:
+        self.timeout(0.1)
+        self.run_hook(hook_input("PreToolUse"), self.fake("hang"))
+        self.assertEqual((self.last()["status"], self.last()["error"]), (None, "no answer within 0.1 seconds"))
+
+    def test_a_join_counts_both_events_and_a_failure_outranks_a_success(self) -> None:
+        self.run_hook(cli_call("join", "joined"), self.fake((202, b"{}"), (503, b"")))
+        last = self.last()
+        self.assertEqual((last["events"], last["status"]), (2, 503))
+
+    def test_the_state_holds_neither_the_key_nor_the_call(self) -> None:
+        os.environ["MEZMO_LEDGER_KEY"] = self.SECRET_KEY
+        self.run_hook(hook_input("PostToolUse", tool_input={"command": "echo private-argument"}), self.fake((202, b"{}")))
+        text = hook.session_state_path("session-1").read_text(encoding="utf-8")
+        for secret in (self.SECRET_KEY, "private-argument", "a\\nb"):
+            self.assertNotIn(secret, text)
+        self.assertEqual(self.last()["status"], 202)
 
 
 class RetryFileTests(LedgerTestCase):

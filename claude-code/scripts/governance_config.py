@@ -6,17 +6,20 @@ environment variables first, then the plugin's options: one Mezmo API URL, from 
 endpoints are derived, and the service account token, which Claude Code keeps as a sensitive
 option (the macOS Keychain, else ~/.claude/.credentials.json).
 
-  configure  check the token against governance and the ledger, then save it (plugin options, or the settings file)
+  configure  check the token against governance and the ledger, save it (plugin options, or the
+             settings file), then connect Mezmo's MCP server with it (mcp_config.py)
   remove     clear the plugin options and the settings-file variables
-  status     where the configuration comes from, the hook's last result, and the ledger
+  status     where the configuration comes from, the hook's last result, and the ledger's last send
   check      ask governance and the ledger whether they accept the token; records nothing
   managed    add the variables to a managed-settings document
+  saved-key  whether the Codex setup saved a Mezmo key in the macOS Keychain; never prints it
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import datetime
 import json
 import os
 import pathlib
@@ -27,6 +30,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import claude_code_otel as cco
+import mcp_config
 import mezmo_common as mc
 
 run_claude = mc.run_claude
@@ -59,7 +63,11 @@ DEFAULT_STATE_DIR = pathlib.Path.home() / ".mezmo" / "governance" / "sessions"
 # Where ledger.py keeps the events it could not send yet.
 DEFAULT_LEDGER_SPOOL = pathlib.Path.home() / ".mezmo" / "ledger-spool.jsonl"
 
-EXIT_ERROR, EXIT_USAGE, EXIT_REJECTED, EXIT_NOT_INSTALLED, EXIT_UNSUPPORTED = 1, 2, 3, 4, 5
+EXIT_ERROR, EXIT_USAGE, EXIT_REJECTED, EXIT_NOT_INSTALLED, EXIT_UNSUPPORTED, EXIT_NO_SAVED_KEY = 1, 2, 3, 4, 5, 6
+# Where ledger_hook.py keeps its last send in the session state (ledger.LAST_SEND_FIELD).
+LAST_SEND_FIELD = "ledger_last_send"
+# A harmless call that makes the hooks check and record something.
+TEST_COMMAND = "printf 'mezmo-onboarding-test\\n'"
 
 # What status says of a key kept as a sensitive plugin option, which no script can read back.
 OPTION_KEY = "(a sensitive plugin option: in the macOS Keychain, else ~/.claude/.credentials.json)"
@@ -362,6 +370,53 @@ def latest_session(state_dir: pathlib.Path) -> Optional[Dict[str, Any]]:
     return None
 
 
+def latest_ledger_send(state_dir: pathlib.Path) -> Optional[Dict[str, Any]]:
+    """The last send ledger_hook.py kept in the most recently updated session that has one, or None."""
+    try:
+        files = sorted(state_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for path in files:
+        try:
+            found = json.loads(path.read_text(encoding="utf-8")).get(LAST_SEND_FIELD)
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(found, dict):
+            return found
+    return None
+
+
+def describe_last_send(
+    last: Optional[Mapping[str, Any]], now: Optional[datetime.datetime] = None
+) -> Tuple[Optional[bool], str]:
+    """(whether it worked, or None when nothing was sent, and a line such as
+    "last send 16:14:40 UTC, HTTP 202, 2 events"). A send before today shows its date too."""
+    if not last:
+        return None, (f"no send recorded yet. In a new Claude Code session, ask Claude to run `{TEST_COMMAND}`, "
+                      "then check again.")
+    try:
+        when = datetime.datetime.fromisoformat(str(last.get("ts"))).astimezone(datetime.timezone.utc)
+        today = (now or datetime.datetime.now(datetime.timezone.utc)).astimezone(datetime.timezone.utc).date()
+        stamp = when.strftime("%H:%M:%S UTC" if when.date() == today else "%Y-%m-%d %H:%M:%S UTC")
+    except ValueError:
+        stamp = "at an unknown time"
+    count = last.get("events")
+    events = f"{count} event{'' if count == 1 else 's'}" if isinstance(count, int) else "unknown events"
+    host = f" to {last['host']}" if last.get("host") else ""
+    status = last.get("status")
+    if status == 202:
+        return True, f"last send {stamp}{host}, HTTP 202, {events}"
+    if status in (401, 403):
+        return False, (f"last send {stamp}{host}, HTTP {status}, {events}: the ledger rejected the token, a wrong "
+                       "key or a key for another account. Rerun /mezmo:setup governance with the right service "
+                       "account token.")
+    if status is None:
+        return False, (f"last send {stamp}{host} failed, {events}: {last.get('error') or 'no answer'}. Check the "
+                       "API URL, proxy, VPN or firewall.")
+    return False, (f"last send {stamp}{host}, HTTP {status}, {events}, not 202. Check the API URL in "
+                   "/plugin configure mezmo@mezmo.")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="governance_config.py", description="Configure Mezmo Governance and the ledger for Claude Code.")
     parser.add_argument("--settings-file", type=pathlib.Path,
@@ -373,14 +428,20 @@ def _build_parser() -> argparse.ArgumentParser:
     pre.add_argument("--store", choices=("plugin", "settings"), default="plugin")
 
     api_help = f"Mezmo API URL (default: {DEFAULT_API_URL})"
-    configure = sub.add_parser("configure", help="Check the service account token, then save it")
+    configure = sub.add_parser("configure", help="Check the service account token, save it, and connect Mezmo MCP")
     mc.add_key_arguments(configure, "Service account token (default: $MEZMO_GOVERNANCE_ACCESS_KEY or $MEZMO_GOVERNANCE_TOKEN)")
+    mc.add_saved_key_argument(configure)
+    mcp = configure.add_mutually_exclusive_group()
+    mcp.add_argument("--mcp-url", help=f"Mezmo MCP URL; required unless the API URL is {DEFAULT_API_URL} ({mcp_config.MCP_URL})")
+    mcp.add_argument("--no-mcp", action="store_true", help="Don't connect Mezmo's MCP server")
     configure.add_argument("--api-url", help=f"{api_help[:-1]}, or the API URL of a governance_url an older release saved)")
     configure.add_argument("--store", choices=("plugin", "settings"), default="plugin",
                            help="plugin: plugin options, key kept as a sensitive option (default); settings: the settings file's env")
     configure.add_argument("--skip-check", action="store_true", help="Save without checking the key first")
 
     sub.add_parser("remove", help="Clear the plugin options and the settings-file variables")
+
+    sub.add_parser("saved-key", help="Whether the Codex setup saved a Mezmo key in the macOS Keychain; never prints it")
 
     status = sub.add_parser("status", help="Show where the configuration comes from and the last result")
     status.add_argument("--json", action="store_true")
@@ -397,6 +458,16 @@ def _build_parser() -> argparse.ArgumentParser:
     managed.add_argument("--required", action="store_true", help="Deny every Bash and MCP tool call when governance isn't configured")
     managed.add_argument("--output", type=pathlib.Path, help="Write, or merge into, this file instead of printing")
     return parser
+
+
+def _codex_api_url(environ: Mapping[str, str]) -> Optional[str]:
+    """The api_url the Codex setup saved in ~/.mezmo/codex.json, or None for production or no file."""
+    home = environ.get("HOME") or str(pathlib.Path.home())
+    try:
+        value = json.loads((pathlib.Path(home) / ".mezmo" / "codex.json").read_text(encoding="utf-8")).get("api_url")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return value.strip().rstrip("/") or None if isinstance(value, str) else None
 
 
 def _key_from(args_key: Optional[str], environ: Mapping[str, str]) -> Optional[str]:
@@ -429,6 +500,13 @@ def main(
             legacy = (options or {}).get("legacy_url") or legacy_url_option(cco.read_settings(settings_file), args.plugin_id)
             api = api_base(args.api_url or legacy or DEFAULT_API_URL)
             url, ledger = governance_url(api), ledger_url(api)
+            mcp_url = None
+            if not args.no_mcp:
+                mcp_url = mcp_config.mcp_url(args.mcp_url) if args.mcp_url else mcp_config.url_for_api(api)
+                if mcp_url is None:
+                    print(f"Error: {api} isn't the production API, so give its Mezmo MCP URL with --mcp-url, "
+                          "or leave MCP out with --no-mcp. Nothing was saved.", file=sys.stderr)
+                    return EXIT_USAGE
             ledger_result = None
             if not args.skip_check:
                 result = check_access(key, url, send)
@@ -475,7 +553,23 @@ def main(
                   "Set the plugin's ledger_enabled option to false to turn it off.")
             if ledger_result is not None and not ledger_result.ok:
                 print("Warning: the ledger check failed, so records wait in the retry file until the ledger takes them.")
+            if mcp_url:
+                if mcp_config.connect(mcp_config.clean_key(key), mcp_url, claude, send,
+                                      force=True, check=not args.skip_check) != 0:
+                    print("Warning: Mezmo MCP isn't connected, so Claude can't read the ledger. Governance and the "
+                          "ledger are set up. Run /mezmo:setup mcp to connect it.")
             print("Start a new Claude Code session to apply it.")
+            return 0
+
+        if args.command == "saved-key":
+            if not mc.saved_key_present():
+                print("No Mezmo key is saved on this machine." if mc.is_macos()
+                      else "A saved Mezmo key is looked up only in the macOS Keychain, so not on this system.")
+                return EXIT_NO_SAVED_KEY
+            print("A Mezmo key is saved on this machine: the Codex setup keeps it in the macOS Keychain.")
+            codex_api = _codex_api_url(environ)
+            print(f"Codex uses it with the Mezmo API URL {codex_api}." if codex_api
+                  else f"Codex uses it with the production Mezmo API URL, {DEFAULT_API_URL}.")
             return 0
 
         if args.command == "remove":
@@ -533,6 +627,8 @@ def main(
             report["last_result"] = (session or {}).get("last")
             ledger = ledger_report(sources, options, environ)
             ledger.pop("readable_key")
+            ledger["last_send"] = latest_ledger_send(pathlib.Path(state_dir).expanduser())
+            ledger["last_send_ok"], last_send_line = describe_last_send(ledger["last_send"])
             report["ledger"] = ledger
             if args.json:
                 print(json.dumps(report, indent=2))
@@ -574,6 +670,9 @@ def main(
                 print(f"  Service account token: {ledger['key']}, from {ledger['source']}")
             else:
                 print(f"The Mezmo ledger is off: {ledger['why']}.")
+            if ledger["on"] or ledger["last_send"]:
+                failed = "FAIL: " if ledger["last_send_ok"] is False else ""
+                print(f"  {failed}Ledger: {last_send_line}")
             print(f"  Waiting in the retry file ({ledger['retry_file']}): {ledger['waiting']}")
             return 0
 

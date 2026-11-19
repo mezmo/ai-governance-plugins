@@ -1,6 +1,6 @@
 ---
 name: test
-description: Check the Mezmo setup for Claude Code. Shows the Mezmo Governance configuration with the governance hook's last result, whether the Mezmo ledger is on with a check of its URL and records waiting to be resent, the telemetry settings with a test of the ingestion key against Mezmo's OpenTelemetry endpoint, and whether Claude Code connects to Mezmo's MCP server. Use when the user asks why a tool call was blocked by Mezmo Governance, whether Mezmo governance, telemetry or MCP works, or why Claude data is missing in Mezmo.
+description: Check the Mezmo setup for Claude Code. Shows the Mezmo Governance configuration with the governance hook's last result, whether the Mezmo ledger is on with the ledger hook's last send, a check of its URL and records waiting to be resent, the telemetry settings with a test of the ingestion key against Mezmo's OpenTelemetry endpoint, and whether Claude Code connects to Mezmo's MCP server. Use when the user asks why a tool call was blocked by Mezmo Governance, whether Mezmo governance, telemetry or MCP works, or why Claude data is missing in Mezmo.
 argument-hint: "[--check-only] [--signals traces logs metrics|--all-signals]"
 allowed-tools:
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" status*)
@@ -47,10 +47,15 @@ Arguments: $ARGUMENTS
 
 ## Ledger
 
-`status` above ends with the ledger: on or off and why, the URL it sends to, and how many records wait in its retry file. `check` sends the ledger the empty batch. Explain the results using this table:
+`status` above ends with the ledger: on or off and why, the URL it sends to, the ledger hook's last send, and how many records wait in its retry file. The last send, such as `Ledger: last send 16:14:40 UTC to api.mezmo.com, HTTP 202, 2 events`, proves the hooks themselves send, even when the token is a sensitive plugin option that `check` can't read. `check` sends the ledger the empty batch. Explain the results using this table:
 
 | What you see | What to tell the user |
 | --- | --- |
+| `Ledger: last send ..., HTTP 202` | The ledger hook's last send worked: each tool call is recorded. |
+| `FAIL: Ledger: last send ..., HTTP 401` (or `403`) | The ledger rejected the token: a wrong key, or a key for another account. Rerun `/mezmo:setup governance` with the right service account token. Records wait in the retry file meanwhile. |
+| `FAIL: Ledger: last send ... failed` | The hook couldn't reach the ledger. Check the API URL, proxy, VPN or firewall. |
+| `FAIL: Ledger: last send ..., HTTP <other>` | Anything but `202` is a failure. Check the API URL in `/plugin configure mezmo@mezmo`. |
+| `Ledger: no send recorded yet` | No session has sent anything since setup. In a new session, ask Claude to run `printf 'mezmo-onboarding-test\n'`, then run `/mezmo:test` again. |
 | On, and the check says the ledger accepted the token | Each Bash and MCP tool call is recorded in the Mezmo ledger under the token's account. |
 | Off: no service account token | The ledger uses the governance token. Run `/mezmo:setup governance`. |
 | Off: the `ledger_enabled` option is off | The user turned it off. `/plugin configure mezmo@mezmo` turns it back on. |
@@ -107,7 +112,7 @@ Arguments: $ARGUMENTS
 
    | What you see | What to tell the user |
    | --- | --- |
-   | Not set up | Run `/mezmo:setup mcp` to add it. |
+   | Not set up | Run `/mezmo:setup governance`, which connects it with the governance token, or `/mezmo:setup mcp` for MCP alone. |
    | `✔ Connected` | Claude Code connects. New sessions have tools named `mcp__mezmo__<tool>`. |
    | Failed to connect, `401` | Mezmo rejected the service key. Run `/mezmo:setup mcp` with a current key and replace the server. |
    | A server called `mezmo` with another URL | Something else uses the name `mezmo`. `/mezmo:setup mcp` can replace it if it's in user scope. |

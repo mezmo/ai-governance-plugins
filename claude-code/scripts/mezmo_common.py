@@ -16,7 +16,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Dict, Mapping, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 MEZMO_OTEL_ENDPOINT = "https://logs.mezmo.com/otel"
 MEZMO_AUTH_HEADER = "apikey"
@@ -149,7 +149,56 @@ def read_key_file(path: pathlib.Path) -> str:
 def key_argument(args: argparse.Namespace) -> Optional[str]:
     if args.delete_key_file and not args.key_file:
         raise ValueError("--delete-key-file requires --key-file.")
+    if getattr(args, "use_saved_key", False):
+        if args.key or args.key_file:
+            raise ValueError("--use-saved-key can't be combined with --key or --key-file.")
+        return read_saved_key()
     return read_key_file(args.key_file) if args.key_file else args.key
+
+
+# The macOS Keychain item the Codex plugin's setup saves the Mezmo key in (codex/mezmo_settings.py).
+SAVED_KEY_SERVICE = "mezmo-ai-governance"
+SAVED_KEY_ACCOUNT = "codex"
+
+
+def add_saved_key_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--use-saved-key", action="store_true",
+                        help="Use the Mezmo key the Codex setup saved in the macOS Keychain; it is never printed")
+
+
+def is_macos() -> bool:
+    return sys.platform == "darwin"
+
+
+def run_security(args: Sequence[str]) -> Tuple[int, str]:
+    """Run macOS's `security` and return (exit code, stdout). Its stderr is dropped."""
+    try:
+        done = subprocess.run(["security", *args], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return 1, ""
+    return done.returncode, done.stdout or ""
+
+
+def _saved_key_query(*extra: str) -> List[str]:
+    return ["find-generic-password", "-s", SAVED_KEY_SERVICE, "-a", SAVED_KEY_ACCOUNT, *extra]
+
+
+def saved_key_present() -> bool:
+    """Whether the Codex setup's key is in the macOS Keychain. Reads the item's attributes, never the key."""
+    return is_macos() and run_security(_saved_key_query())[0] == 0
+
+
+def read_saved_key() -> str:
+    """The key the Codex setup saved in the macOS Keychain. Raises ValueError, which never quotes it."""
+    if not is_macos():
+        raise ValueError("A saved Mezmo key is read from the macOS Keychain, so --use-saved-key works only on macOS.")
+    code, output = run_security(_saved_key_query("-w"))
+    key = output.strip()
+    if code != 0 or not key or any(c in key for c in "\r\n\x00"):
+        raise ValueError(
+            f"No usable Mezmo key is saved in the macOS Keychain (service {SAVED_KEY_SERVICE}, account {SAVED_KEY_ACCOUNT})."
+        )
+    return key
 
 
 def delete_key_file(path: pathlib.Path) -> None:

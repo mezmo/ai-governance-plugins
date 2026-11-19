@@ -189,5 +189,43 @@ class CliTest(unittest.TestCase):
         self.assertIn("isn't set up", out)
 
 
+class NonProductionUrlTest(unittest.TestCase):
+    OTHER = "https://mcp.example.test/mcp"
+
+    def test_add_and_check_take_another_mcp_url(self):
+        http = FakeHttp()
+        code, out, err, claude = run("add", "--key", KEY, "--url", self.OTHER + "/", http=http)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(http.calls[0]["url"], self.OTHER)
+        add = next(call for call in claude.calls if call[1] == "add")
+        self.assertEqual(add[add.index("mezmo") + 1], self.OTHER)
+        self.assertNotIn(KEY, out + err)
+        code, out, _, _ = run("check", "--key", KEY, "--url", self.OTHER)
+        self.assertEqual(code, 0)
+        self.assertIn(self.OTHER, out)
+
+    def test_status_counts_the_expected_url_as_mezmo(self):
+        claude = FakeClaude(existing=("User config (available in all your projects)", self.OTHER))
+        _, out, _, _ = run("status", "--json", claude=claude)
+        self.assertFalse(json.loads(out)["is_mezmo"])
+        _, out, _, _ = run("status", "--json", "--url", self.OTHER, claude=claude)
+        self.assertTrue(json.loads(out)["is_mezmo"])
+
+    def test_an_insecure_url_is_refused_before_anything_runs(self):
+        for url in ("http://mcp.example.test/mcp", "https://user:pw@mcp.example.test/mcp", "mcp.example.test"):
+            with self.subTest(url=url):
+                http = FakeHttp()
+                code, _, err, claude = run("add", "--key", KEY, "--url", url, http=http)
+                self.assertEqual((code, http.calls, claude.calls), (mcp.EXIT_USAGE, [], []))
+                self.assertIn("https://", err)
+
+    def test_the_production_api_maps_to_the_production_mcp_url_and_no_other_does(self):
+        self.assertEqual(mcp.url_for_api("https://api.mezmo.com/"), URL)
+        self.assertIsNone(mcp.url_for_api("https://api.example.test"))
+
+    def test_a_token_prefix_is_dropped_too(self):
+        self.assertEqual(mcp.clean_key(f"Token {KEY}"), KEY)
+
+
 if __name__ == "__main__":
     unittest.main()

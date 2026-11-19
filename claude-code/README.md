@@ -27,10 +27,15 @@ working.
    so after it run step 2.
 2. **Set up governance**: `/mezmo:setup governance`. It asks for the API URL and the service
    account token, checks both Mezmo Governance and the [ledger](#ledger) without recording
-   anything, and saves them as plugin options. One token and one URL turn on both.
-3. **Check it**: start a new session and run `/mezmo:test`.
-4. **Investigate**: `/mezmo:investigate <incident>` files the session's tool calls under the
-   incident's [investigation](#investigations).
+   anything, and saves them as plugin options. It also connects [Mezmo MCP](#mezmo-mcp) with the
+   same token, so Claude can read the ledger. One token and one URL turn on all three. For an API
+   URL other than production, it asks once for the MCP URL. On a Mac where the Codex plugin's
+   setup already saved a Mezmo key, it offers to use that key instead of asking for one.
+3. **Check it**: start a new session and run `/mezmo:test`. It shows the ledger's last send,
+   such as `Ledger: last send 16:14:40 UTC to api.mezmo.com, HTTP 202, 2 events`.
+4. **Investigate**: ask Claude to investigate an incident. It joins the incident's
+   [investigation](#investigations) and reads the ledger first, so it sees what other agents and
+   people already did. `/mezmo:investigate <incident>` does the same by name.
 
 ## Fail behavior
 
@@ -313,7 +318,12 @@ is given.
 
 `/mezmo:test` shows whether the ledger is on and why, the URL it sends to, an empty-batch check
 of the key (`POST []`, answered `202` with `{"accepted": 0}`, which records nothing) and how many
-records wait in the retry file.
+records wait in the retry file. It also shows the hook's last send, which the hook keeps in the
+session state beside governance's last check: the time, the URL's host, the HTTP status or network
+error, and the event count, never the key or the events. That proves the hooks send even when the
+key is a sensitive plugin option that no script can read back. Anything but `202` is a failure,
+and `401` means a wrong key or a key for another account. With no send yet, ask Claude to run a
+harmless command such as `printf 'mezmo-onboarding-test\n'`.
 
 ### Overrides
 
@@ -452,12 +462,23 @@ causes, patterns, histograms, correlated timelines), look at traces and AI inves
 inspect and change Telemetry Pipelines. You need a Mezmo service key, from Settings > API Keys in
 Mezmo. It's a different key from the ingestion key.
 
-`/mezmo:setup mcp` checks the key against `https://mcp.mezmo.com/mcp`, then runs the command
-Mezmo documents (inside the script; do not paste a literal key into a governed Bash call):
+`/mezmo:setup governance` connects it with the governance token. `/mezmo:setup mcp` connects only
+the MCP server, with any service key. Either checks the key against the MCP URL, then runs the
+command Mezmo documents (inside the script; do not paste a literal key into a governed Bash call):
 
 ```bash
 claude mcp add --scope user --transport http mezmo https://mcp.mezmo.com/mcp --header "Authorization: Bearer <service key>"
 ```
+
+The MCP URL follows the API URL: `https://api.mezmo.com` uses `https://mcp.mezmo.com/mcp`. For any
+other API URL, setup asks for the MCP URL (`--mcp-url` for `governance_config.py configure`, `--url`
+for `mcp_config.py add`). The server is always named `mezmo`: `/mezmo:investigate` allows its
+`mcp__mezmo__get_ledger_investigation` tool, and any other name asks mid-investigation. Setup
+replaces a user-scope server called `mezmo`, never one from a project's `.mcp.json`.
+
+The key is in that `claude mcp add` command's arguments while it runs. `claude mcp add-json -`
+would read it from stdin, but Claude Code refuses that inside a Claude Code session, where setup
+runs.
 
 The server is available in every project, in new sessions, with tools named `mcp__mezmo__<tool>`.
 Claude Code keeps the key as plain text in `~/.claude.json`, as with any server added this way.
@@ -518,6 +539,7 @@ Governance also needs the plugin installed on each machine. Add `extraKnownMarke
 | `/mezmo:test` shows records waiting in the ledger's retry file | The ledger was unreachable or refused the token. They are resent on later tool calls once the check passes |
 | Telemetry checks pass, but nothing shows up in Mezmo | Start a new session, make sure a pipeline has an OpenTelemetry source, and give metrics a minute |
 | Telemetry setup reports conflicting settings | Your settings already send OpenTelemetry somewhere else. Claude Code only exports to one endpoint |
+| `/mezmo:test` shows the ledger's last send failed with `HTTP 401` | The ledger rejected the token: a wrong key, or one for another account. Run `/mezmo:setup governance` with the right service account token |
 | The `mezmo` MCP server fails to connect with `401` | Mezmo rejected the service key. Run `/mezmo:setup mcp` with a current key and replace the server |
 
 To see Claude Code's own telemetry export log:
