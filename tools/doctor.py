@@ -661,16 +661,16 @@ def ledger_last_send(report: Report, subject: str, folder: Path, agent: str, fix
 
     It never holds the key or an event: the time, the URL's host, the HTTP status or error, and the event count.
     """
+    # By the send's own time: governance rewrites session files too, so their modification time can't tell.
     last = None
     try:
-        files = sorted(folder.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+        files = list(folder.glob("*.json"))
     except OSError:
         files = []
     for path in files:
         found = as_dict(read_json(path)).get(LAST_SEND_FIELD)
-        if isinstance(found, dict):
+        if isinstance(found, dict) and (last is None or str(found.get("ts", "")) > str(last.get("ts", ""))):
             last = found
-            break
     if last is None:
         report.line("info", subject, "no send recorded yet", f"in a new {agent} session, ask it to run `{TEST_COMMAND}`, then run doctor again")
         return

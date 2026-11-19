@@ -1650,7 +1650,9 @@ def _remove_old_start_times() -> None:
     A file another run deleted first is passed over, so two runs need no lock.
     """
     cutoff = time.time() - STATE_RETENTION_SECONDS
-    for folder, suffixes in ((call_state_dir(), None), (state_dir(), (".json", ".lock"))):
+    # Never a session's .lock: another hook may hold it, and a new file at that path would not be
+    # locked against it.
+    for folder, suffixes in ((call_state_dir(), None), (state_dir(), (".json",))):
         try:
             with os.scandir(folder) as entries:
                 for entry in entries:
