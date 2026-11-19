@@ -905,22 +905,27 @@ def is_launch_marker(marker: Optional[str]) -> bool:
     return marker is not None and LAUNCH_MARKER_PATTERN.fullmatch(marker) is not None
 
 
-def _take_launch_claim(*, incident_key: str, marker: str) -> bool:
-    """Take `marker`'s claim on `incident_key`, if no session has and it isn't stale. Never raises.
+def _hold_launch_claim(*, holder: str, incident_key: str, marker: str) -> Optional[Path]:
+    """Hold `marker`'s claim on `incident_key` for `holder`, and return where it is held. Never raises.
 
-    Deleting the file is the claim: only one process can, so only one session joins.
+    None when it isn't there, is another key's, or is stale (then it is dropped). Renaming the file
+    is the hold: only one process can, so only one session joins. The held file is deleted once the
+    session state is saved, or put back if it wasn't, so a failed save doesn't lose the launch.
     """
     try:
         if not is_launch_marker(marker):
-            return False
+            return None
         path = launches_dir() / marker
         if path.read_text(encoding="utf-8").strip() != incident_key:
-            return False
-        stale = path.stat().st_mtime < time.time() - LAUNCH_CLAIM_MAX_AGE_SECONDS
-        path.unlink()
-        return not stale
+            return None
+        if path.stat().st_mtime < time.time() - LAUNCH_CLAIM_MAX_AGE_SECONDS:
+            path.unlink()
+            return None
+        held = path.with_name(f"{marker}.{holder}")
+        os.rename(path, held)
+        return held
     except OSError:
-        return False
+        return None
 
 
 def _session_state(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
@@ -954,12 +959,16 @@ def adopt_launched_investigation(
         if (marker and state.get(LAUNCH_CLAIMED_FIELD) == marker) or state.get(IGNORED_INCIDENT_KEY_FIELD) == incident_key:
             return
         joined_at = datetime.now(timezone.utc).isoformat()
+        holder = hashlib.sha256(str(hook_input.get("session_id")).encode("utf-8")).hexdigest()[:16]
         ignored: List[str] = []
+        held: List[Path] = []
 
         def adopt(state: Dict[str, Any]) -> None:
             if marker and state.get(LAUNCH_CLAIMED_FIELD) == marker:
                 return
-            if _take_launch_claim(incident_key=incident_key, marker=marker):
+            claim = held[0] if held else _hold_launch_claim(holder=holder, incident_key=incident_key, marker=marker)
+            if claim is not None:
+                held[:] = [claim]
                 state[LAUNCH_CLAIMED_FIELD] = marker
                 current = state.get("investigation")
                 current_key = current.get("incident_key") if isinstance(current, dict) else None
@@ -972,6 +981,14 @@ def adopt_launched_investigation(
                 ignored.append(incident_key)
 
         update(adopt)
+        if held:
+            try:
+                if _session_state(hook_input=hook_input).get(LAUNCH_CLAIMED_FIELD) == marker:
+                    held[0].unlink()
+                else:
+                    os.replace(held[0], held[0].with_name(marker))
+            except OSError:
+                pass
         if ignored:
             LEDGER_MESSAGES.append(
                 f"Mezmo ledger ignores {LEDGER_INCIDENT_KEY_ENV}={incident_key}: only the first session"
