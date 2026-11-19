@@ -883,7 +883,7 @@ class CodexTests(DoctorTestCase):
                 self.assertIn(words, line)
                 if status == "FAIL":
                     # The installer's wording: the ledger's two entries need trust as well.
-                    self.assertIn("Fix: start codex, run /hooks, and trust the four Mezmo hook entries", line)
+                    self.assertIn("Fix: start codex, run /hooks, and trust the five Mezmo hook entries", line)
 
     def test_a_codex_that_cannot_list_hooks_leaves_a_saved_trust_unchecked(self) -> None:
         self.install()
@@ -1059,7 +1059,7 @@ class CodexPluginTests(DoctorTestCase):
 
         line = self.assertStatus(self.doctor(), "Codex plugin trust", "FAIL")
 
-        self.assertIn("Fix: start codex, run /hooks, and trust all four Mezmo hooks", line)
+        self.assertIn("Fix: start codex, run /hooks, and trust all five Mezmo hooks", line)
 
     def test_the_ledger_hook_is_not_the_governance_hook(self) -> None:
         # Both are PreToolUse hooks of the plugin; only the one that runs the governance script checks a call.

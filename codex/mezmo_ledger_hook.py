@@ -88,7 +88,8 @@ DEFAULT_CALL_STATE_DIR = Path.home() / ".mezmo" / "governance" / "codex-calls"
 # reported back, and PostToolUse deletes them.
 STATE_RETENTION_SECONDS = 7 * 24 * 3600
 LEDGER_APPLICATION = "mezmo-codex-plugin"
-LEDGER_EVENTS = frozenset({"PostToolUse", "PreToolUse"})
+# Stop, at the end of a turn, settles what the turn's calls left open and sends its last steps.
+LEDGER_EVENTS = frozenset({"PostToolUse", "PreToolUse", "Stop"})
 SKIP_LEDGER_MCP_TOOL_NAMES = frozenset({"get_ledger_investigation", "list_ledger_entries"})
 # What tool_references reads. The fields an Insights reference takes its id from, in priority order,
 # not alphabetical: the first template_id found wins over any edge_key, and an edge_key over any trace_id.
@@ -157,7 +158,20 @@ MAX_LEDGER_JSON_CHARACTERS = 4096
 MAX_LEDGER_MESSAGE_CHARACTERS = 200
 # The first line of an apply_patch result.
 EXIT_CODE_LINE = re.compile(r"Exit code: (-?\d+)")
-LEDGER_ENDINGS = {"failed": "failed", "not_run": "not run"}
+LEDGER_ENDINGS = {"failed": "failed", "no_result": "no result reported", "not_run": "not run"}
+# Codex runs no PostToolUse for a failed MCP call, so the hook keeps each started call in the
+# session state until its end is recorded, and reads the session's rollout (the hook input's
+# transcript_path) for how the rest ended. The state also keeps how far the rollout was read.
+PENDING_CALLS_FIELD = "pending_calls"
+ROLLOUT_OFFSET_FIELD = "rollout_offset"
+# The hook-input fields an end event is built from, kept for a call that may never get its own.
+PENDING_FIELDS = ("cwd", "session_id", "tool_input", "tool_name", "tool_use_id", "turn_id")
+MAX_PENDING_CALLS = 200
+# The most of the rollout one hook run reads; the rest waits for the next run.
+MAX_ROLLOUT_READ_BYTES = 8 * 1024 * 1024
+# What Codex says between its calls, sent once each as a step of the investigation.
+STEP_EVENT = "agent.investigation.step"
+MAX_STEP_CHARACTERS = 2000
 # The investigation CLI, and what its join and close print as `action` when they succeed.
 INVESTIGATION_ACTIONS = {"close": "closed", "join": "joined"}
 # The statuses ledger_investigation.py close takes, and the most of its summary the hook sends.
@@ -1082,7 +1096,7 @@ def ledger_event(
     outcome: Optional[str] = None,
     reason: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """One tool-call event: `kind` is started, ran, failed or not_run. None without an identity."""
+    """One tool-call event: `kind` is started, ran, failed, not_run or no_result. None without an identity."""
     try:
         tool = normalize_tool_call(hook_input)
         identity = call_identity(hook_input, tool)
@@ -1912,6 +1926,170 @@ def _change_investigation(
         return closed
 
 
+def _track_pending(*, hook_input: Mapping[str, Any], update: Callable[[Callable[[Dict[str, Any]], None]], None]) -> None:
+    """Keep a started call in the session state until its end is recorded, or drop an ended one. Never raises."""
+    try:
+        tool_use_id = hook_input.get("tool_use_id")
+        if not isinstance(tool_use_id, str) or not tool_use_id:
+            return
+        started = hook_input.get("hook_event_name") == "PreToolUse"
+        kept = {name: hook_input[name] for name in PENDING_FIELDS if name in hook_input}
+
+        def change(state: Dict[str, Any]) -> None:
+            pending = state.get(PENDING_CALLS_FIELD)
+            pending = dict(pending) if isinstance(pending, dict) else {}
+            if started and len(pending) < MAX_PENDING_CALLS:
+                pending[tool_use_id] = kept
+            elif not started:
+                pending.pop(tool_use_id, None)
+            _set_pending(state, pending)
+
+        update(change)
+    except Exception:
+        pass
+
+
+def _set_pending(state: Dict[str, Any], pending: Dict[str, Any]) -> None:
+    """Keep `pending` in the state, or no field at all once nothing is left open."""
+    if pending:
+        state[PENDING_CALLS_FIELD] = pending
+    else:
+        state.pop(PENDING_CALLS_FIELD, None)
+
+
+def _rollout_records(*, path: str, offset: int) -> Tuple[List[Dict[str, Any]], int]:
+    """The rollout's JSON records after `offset`, and the offset past the last whole line read.
+
+    A rollout shorter than `offset` was replaced, so it is read from the start.
+    """
+    with open(path, "rb") as rollout:
+        if offset > os.fstat(rollout.fileno()).st_size:
+            offset = 0
+        rollout.seek(offset)
+        data = rollout.read(MAX_ROLLOUT_READ_BYTES)
+    end = data.rfind(b"\n")
+    if end < 0:
+        return [], offset
+    records: List[Dict[str, Any]] = []
+    for line in data[:end].splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records, offset + end + 1
+
+
+def _item_text(item: Mapping[str, Any]) -> str:
+    """The text of a rollout item: an agent message's, or a failed call's error."""
+    content = item.get("content")
+    if item.get("type") != "AgentMessage":
+        result = item.get("result")
+        content = result.get("content") if isinstance(result, dict) else None
+        if not isinstance(content, list):
+            error = item.get("error") or item.get("aggregated_output")
+            return error if isinstance(error, str) else ""
+    if not isinstance(content, list):
+        return ""
+    return "\n".join(
+        part["text"] for part in content if isinstance(part, dict) and isinstance(part.get("text"), str)
+    )
+
+
+def _item_duration_ms(item: Mapping[str, Any]) -> Optional[int]:
+    duration = item.get("duration")
+    if not isinstance(duration, dict):
+        return None
+    seconds, nanos = duration.get("secs"), duration.get("nanos")
+    if not isinstance(seconds, int) or not isinstance(nanos, int):
+        return None
+    return seconds * 1000 + nanos // 1_000_000
+
+
+def step_event(*, hook_input: Mapping[str, Any], incident_key: str, text: str) -> Optional[Dict[str, Any]]:
+    """`agent.investigation.step`: what the agent said between its calls, in its own words."""
+    session_id = hook_input.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    text = text.strip()[:MAX_STEP_CHARACTERS]
+    extra = {"agent": AGENT, "incident_key": incident_key, "session_id": session_id.strip(), "text": text}
+    # No entity_id: the ledger service sets it to the investigation it derives from the incident key.
+    return ledger_envelope(
+        entity_id=None,
+        entity_type="investigation",
+        event=STEP_EVENT,
+        extra=extra,
+        message=_one_line(text)[:MAX_LEDGER_MESSAGE_CHARACTERS],
+        session_id=session_id.strip(),
+    )
+
+
+def _catch_up(
+    *,
+    config: LedgerConfig,
+    hook_input: Mapping[str, Any],
+    update: Callable[[Callable[[Dict[str, Any]], None]], None],
+) -> List[Dict[str, Any]]:
+    """Events for what the rollout shows since it was last read. Never raises.
+
+    A call it shows failed, which Codex gives no PostToolUse, ends as `failed` with its error. On
+    Stop, a call still kept has no end coming, so it ends as `no_result`. Each message the agent
+    wrote is a step, sent only while the session is in an investigation. The rollout is read and
+    the state changed under the state's lock, so two runs never send the same end or step.
+    """
+    try:
+        path = hook_input.get("transcript_path")
+        if not isinstance(path, str) or not path:
+            return []
+        stop = hook_input.get("hook_event_name") == "Stop"
+        ended: List[Tuple[Dict[str, Any], str, Dict[str, Any]]] = []
+        steps: List[str] = []
+
+        def change(state: Dict[str, Any]) -> None:
+            pending = state.get(PENDING_CALLS_FIELD)
+            pending = dict(pending) if isinstance(pending, dict) else {}
+            offset = state.get(ROLLOUT_OFFSET_FIELD)
+            offset = offset if isinstance(offset, int) and offset >= 0 else 0
+            records, offset = _rollout_records(path=path, offset=offset)
+            for record in records:
+                payload = record.get("payload")
+                item = payload.get("item") if isinstance(payload, dict) and payload.get("type") == "item_completed" else None
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "AgentMessage":
+                    text = _item_text(item).strip()
+                    if text:
+                        steps.append(text)
+                elif item.get("status") == "failed" and isinstance(pending.get(item.get("id")), dict):
+                    ended.append((pending.pop(item["id"]), "failed", item))
+            if stop:
+                ended.extend((kept, "no_result", {}) for kept in pending.values() if isinstance(kept, dict))
+                pending = {}
+            _set_pending(state, pending)
+            state[ROLLOUT_OFFSET_FIELD] = offset
+
+        update(change)
+        events: List[Dict[str, Any]] = []
+        for kept, kind, item in ended:
+            call = {**kept, "hook_event_name": "PostToolUse", "transcript_path": path}
+            if kind == "failed":
+                call["tool_response"] = _item_text(item)
+            event = ledger_event(config=config, duration_ms=_item_duration_ms(item), hook_input=call, kind=kind)
+            if event is not None:
+                events.append(event)
+        incident_key = ledger_context(hook_input=hook_input).get("incident_key")
+        if incident_key:
+            for text in steps:
+                event = step_event(hook_input=hook_input, incident_key=incident_key, text=text)
+                if event is not None:
+                    events.append(event)
+        return events
+    except Exception as error:
+        ledger_warn(message=f"Mezmo ledger could not read the session's rollout: {str(error) or type(error).__name__}")
+        return []
+
+
 def _record_references(*, deadline: float, hook_input: Mapping[str, Any]) -> None:
     """Add the references this call gives to the session state. Never raises, and never warns.
 
@@ -1989,13 +2167,18 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
         # past main()'s timer.
         deadline = time.monotonic() + LEDGER_TIMEOUT_SECONDS
         session_id = event.get("session_id")
-        if isinstance(session_id, str) and session_id.strip():
-            adopt_launched_investigation(
-                hook_input=event,
-                update=lambda change: update_session_state(
-                    change=change, lock_timeout=_lock_timeout(deadline=deadline), session_id=session_id.strip()
-                ),
-            )
+        session = session_id.strip() if isinstance(session_id, str) else ""
+
+        def update(change: Callable[[Dict[str, Any]], None]) -> None:
+            if session:
+                update_session_state(change=change, lock_timeout=_lock_timeout(deadline=deadline), session_id=session)
+
+        if session:
+            adopt_launched_investigation(hook_input=event, update=update)
+        # Before this call's own event, so ends and steps that came first are sent first.
+        caught_up = _catch_up(config=config, hook_input=event, update=update) if session else []
+        if event.get("hook_event_name") == "Stop" and not caught_up:
+            return
         action, incident_key, service, closing = investigation_action(hook_input=event) or ("", "", None, None)
         investigation: Optional[Dict[str, Any]] = None
         if action == "joined":
@@ -2007,7 +2190,9 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
                 incident_key=incident_key,
                 service=service,
             )
-        new_event = _new_event(config=config, hook_input=event)
+        new_event = None if event.get("hook_event_name") == "Stop" else _new_event(config=config, hook_input=event)
+        if new_event is not None:
+            _track_pending(hook_input=event, update=update)
         if action == "closed":
             investigation = _change_investigation(
                 action=action,
@@ -2020,8 +2205,10 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
             )
         sent: List[LedgerSendResult] = []
         sent_investigation: List[LedgerSendResult] = []
+        sent_caught_up: List[LedgerSendResult] = []
         outcome: Dict[str, Any] = {}
         outcome_investigation: Dict[str, Any] = {}
+        outcome_caught_up: Dict[str, Any] = {}
         threads: List[threading.Thread] = []
         try:
             # Requests that never share a body, so a bad saved event can't cost a new one, and one
@@ -2050,6 +2237,18 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
                         )
                     )
                 )
+            if caught_up:
+                threads.append(
+                    start_ledger_thread(
+                        work=lambda: sent_caught_up.append(
+                            send_ledger_events(
+                                config=config,
+                                events=caught_up,
+                                ledger_http=recording_http(ledger_http=ledger_http, outcome=outcome_caught_up),
+                            )
+                        )
+                    )
+                )
             threads.append(start_ledger_thread(work=lambda: drain_ledger_spool(config=config, ledger_http=ledger_http)))
         except Exception as error:
             ledger_warn(message=f"Mezmo ledger could not start: {str(error) or type(error).__name__}")
@@ -2068,6 +2267,9 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
             if new is not None:
                 result = results[0] if results else LedgerSendResult(answered=False, save=[new])
                 save_ledger_events(config=config, events=result.save)
+        if caught_up:
+            result = sent_caught_up[0] if sent_caught_up else LedgerSendResult(answered=False, save=caught_up)
+            save_ledger_events(config=config, events=result.save)
         # A copy of each outcome, so a thread still running can't change it while it is read.
         _record_last_send(
             config=config,
@@ -2076,7 +2278,8 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
                 (1, dict(found))
                 for new, found in ((new_event, outcome), (investigation, outcome_investigation))
                 if new is not None
-            ],
+            ]
+            + ([(len(caught_up), dict(outcome_caught_up))] if caught_up else []),
         )
         print_ledger_messages()
     except Exception as error:

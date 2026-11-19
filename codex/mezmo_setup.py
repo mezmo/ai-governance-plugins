@@ -563,7 +563,7 @@ def setup(ledger: bool = True, send: Optional[Http] = None, platform: str = sys.
             print(f"ok    Codex connects to the Mezmo MCP at {mcp_url} as server mezmo ({codex_config_path()})")
             if backup:
                 print(f"      the previous config.toml is in {backup}")
-    print("next: start a new Codex session, run /hooks, and trust the four Mezmo hooks")
+    print("next: start a new Codex session, run /hooks, and trust the five Mezmo hooks")
     if mcp_changed:
         # Codex reads [mcp_servers] when a session starts.
         print("Start a new Codex session to use the Mezmo MCP")

@@ -34,7 +34,7 @@ The script needs Python 3.9 or later and uses only the standard library.
    to run `~/.mezmo/bin/mezmo-setup` in your terminal instead. That asks for
    the URL and the key, without showing the key. See [Setup](#setup).
 5. Setup ends with "Start a new Codex session to use the Mezmo MCP". Start
-   one, run `/hooks`, and trust all four Mezmo hooks.
+   one, run `/hooks`, and trust all five Mezmo hooks.
 6. Ask Codex to investigate an incident, such as "investigate PagerDuty
    incident Q34FCCWSTU9OI2". Its `mezmo-investigate` skill joins the
    incident's investigation and reads the Mezmo ledger before it changes
@@ -252,9 +252,9 @@ cp codex/mezmo_governance_hook.py codex/mezmo_ledger_hook.py codex/ledger_invest
    [Connect to Mezmo](../README.md#connect-to-mezmo). Or export the
    [overrides](#overrides).
 
-4. Start Codex, run `/hooks`, and trust all four Mezmo hook entries: the
+4. Start Codex, run `/hooks`, and trust all five Mezmo hook entries: the
    governance hook and the ledger hook, each for `PreToolUse` and for
-   `PostToolUse`. Until you trust them, Codex skips them and every tool runs
+   `PostToolUse`, and the ledger hook for `Stop`. Until you trust them, Codex skips them and every tool runs
    ungoverned. Do not wait for a warning: Codex 0.163.0 gave none for the
    native plugin. Trust them again after each edit to the entries. Then run
    `./mezmo-governance doctor codex`: it fails while the governance
@@ -288,7 +288,7 @@ codex plugin add mezmo-governance@mezmo
 
 Then start Codex and ask it to "set up Mezmo", or run
 `./mezmo-governance setup codex` from a clone; both save the same settings.
-Then trust all four hooks in `/hooks`. Until you do, Codex skips them without
+Then trust all five hooks in `/hooks`. Until you do, Codex skips them without
 a warning and every tool runs ungoverned (0.163.0). Use the plugin or the file
 install, not both: both run the hook twice. `doctor` checks the plugin's
 trust; `smoke` checks only the file install. For a headless setup, see

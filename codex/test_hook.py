@@ -584,7 +584,13 @@ class HookConfigTests(unittest.TestCase):
     def test_each_config_registers_governance_then_the_ledger_for_both_events(self) -> None:
         for name, ledger_command in HOOK_CONFIGS.items():
             config = json.loads((ADAPTER_DIR / name).read_text(encoding="utf-8"))["hooks"]
-            self.assertEqual(set(config), {"PreToolUse", "PostToolUse"})
+            self.assertEqual(set(config), {"PreToolUse", "PostToolUse", "Stop"})
+            # Stop runs only the ledger: it settles the calls Codex never reported back.
+            with self.subTest(config=name, event="Stop"):
+                ((stop,),) = [group["hooks"] for group in config.pop("Stop")]
+                self.assertEqual(stop["command"], ledger_command)
+                self.assertEqual(set(stop), {"command", "statusMessage", "timeout", "type"})
+                self.assertEqual(stop["timeout"], 15)
             for event, groups in config.items():
                 with self.subTest(config=name, event=event):
                     (group,) = groups

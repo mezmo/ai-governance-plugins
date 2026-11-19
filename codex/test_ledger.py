@@ -108,7 +108,7 @@ EVENT_NAME = re.compile(r"^[a-z0-9]+(?:[_-][a-z0-9]+)*(?:\.[a-z0-9]+(?:[_-][a-z0
 EXTRA_KEYS = {
     "access", "agent", "arguments", "call_id", "decision_id", "duration_ms", "entry_key", "exit_status",
     "incident_key", "intent_source", "person_email", "output", "references", "request_id", "service", "session_id",
-    "status", "summary", "target", "tool_name", "tool_namespace",
+    "status", "summary", "target", "text", "tool_name", "tool_namespace",
 }
 
 
@@ -604,6 +604,7 @@ class EventTests(LedgerTestCase):
 
     def test_other_hook_events_send_nothing(self) -> None:
         fake = self.fake()
+        # Stop is handled, but sends nothing when the rollout shows nothing new (none here).
         for name in ("PermissionRequest", "PostToolUseFailure", "SessionStart", "Stop", None, 5):
             with self.subTest(name=name):
                 self.assertIsNone(self.run_hook(hook_input("PostToolUse", hook_event_name=name), fake))
@@ -1218,6 +1219,131 @@ class InvestigationChangeTests(LedgerTestCase):
                 self.assertEqual(sorted(event["event"] for event in fake.events()), names)
                 self.assertEqual([event["event"] for event in self.spooled()], [refused])
                 self.spool.unlink()
+
+
+class RolloutTests(LedgerTestCase):
+    """Codex runs no PostToolUse for a failed MCP call. The hook reads the session's rollout for it,
+    and for what the agent said between calls."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.rollout = self.dir / "rollout.jsonl"
+        self.rollout.write_text("", encoding="utf-8")
+
+    def mcp(self, name: str = "PreToolUse", tool_use_id: str = "exec-1", **fields: Any) -> dict[str, Any]:
+        fields.setdefault("transcript_path", str(self.rollout))
+        return hook_input(
+            name,
+            tool_name="mcp__pagerduty__get_past_incidents",
+            tool_input={"incident_id": "Q1"},
+            tool_use_id=tool_use_id,
+            **fields,
+        )
+
+    def append(self, *items: dict[str, Any]) -> None:
+        with self.rollout.open("a", encoding="utf-8") as rollout:
+            for item in items:
+                rollout.write(json.dumps({"timestamp": "2026-11-19T19:05:47Z", "type": "event_msg",
+                                          "payload": {"type": "item_completed", "item": item}}) + "\n")
+
+    def failed(self, tool_use_id: str = "exec-1") -> dict[str, Any]:
+        return {"type": "McpToolCall", "id": tool_use_id, "server": "pagerduty", "tool": "get_past_incidents",
+                "status": "failed", "duration": {"secs": 1, "nanos": 250_000_000},
+                "result": {"content": [{"type": "text", "text": "Access Denied (status 403)"}], "isError": True}}
+
+    def said(self, text: str, phase: str = "commentary") -> dict[str, Any]:
+        return {"type": "AgentMessage", "id": f"msg-{text[:5]}", "content": [{"type": "Text", "text": text}], "phase": phase}
+
+    def sent(self, event: dict[str, Any]) -> list[dict[str, Any]]:
+        """The events this hook run sent, by event name: each kind goes in its own request."""
+        fake = self.fake()
+        self.run_hook(event, fake)
+        return sorted(fake.events(), key=lambda sent: sent["event"])
+
+    def test_a_failed_mcp_call_ends_as_failed_with_its_error_at_the_next_hook(self) -> None:
+        (started,) = self.sent(self.mcp())
+        self.assertEqual(started["event"], "agent.tool_call.started")
+        self.append(self.failed())
+        events = self.sent(hook_input(tool_use_id="tool-use-2", transcript_path=str(self.rollout)))
+        self.assertEqual([event["event"] for event in events], ["agent.tool_call.failed", "agent.tool_call.started"])
+        ended = events[0]
+        self.assertEqual(ended["extra"]["call_id"], started["extra"]["call_id"])
+        self.assertEqual(ended["extra"]["entry_key"], started["extra"]["call_id"] + ":end")
+        self.assertEqual(ended["extra"]["output"], "Access Denied (status 403)")
+        self.assertEqual(ended["extra"]["duration_ms"], 1250)
+        self.assertIn("pagerduty.get_past_incidents: failed - Access Denied", ended["message"])
+        # Settled once: a later hook sends no second end.
+        self.assertEqual([event["event"] for event in self.sent(hook_input(tool_use_id="tool-use-3"))], ["agent.tool_call.started"])
+        pending = json.loads(ledger.session_state_path("session-1").read_text())[ledger.PENDING_CALLS_FIELD]
+        self.assertEqual(sorted(pending), ["tool-use-2", "tool-use-3"])
+
+    def test_a_call_that_reported_back_is_never_ended_twice(self) -> None:
+        self.sent(self.mcp())
+        self.append({**self.failed(), "status": "completed"})
+        (ran,) = self.sent(self.mcp("PostToolUse", tool_response="ok"))
+        self.assertEqual(ran["event"], "agent.tool_call.ran")
+        self.assertEqual(self.sent(self.mcp("Stop")), [])
+
+    def test_stop_ends_a_call_with_no_outcome_as_no_result(self) -> None:
+        (started,) = self.sent(self.mcp())
+        (ended,) = self.sent(self.mcp("Stop"))
+        self.assertEqual(ended["event"], "agent.tool_call.no_result")
+        self.assertEqual(ended["extra"]["call_id"], started["extra"]["call_id"])
+        self.assertTrue(ended["message"].endswith(": no result reported"))
+        self.assertEqual(self.sent(self.mcp("Stop")), [])
+
+    def test_what_the_agent_says_in_an_investigation_is_sent_once_as_steps(self) -> None:
+        self.write_state({"investigation": {"incident_key": INCIDENT_KEY}})
+        self.append(self.said("I'll check PagerDuty."), self.said("  "))
+        events = self.sent(self.mcp())
+        self.assertEqual([event["event"] for event in events], ["agent.investigation.step", "agent.tool_call.started"])
+        step, call = events
+        self.assertEqual(step["entity_type"], "investigation")
+        self.assertNotIn("entity_id", step)
+        self.assertEqual(step["message"], "I'll check PagerDuty.")
+        self.assertEqual(
+            step["extra"],
+            {"agent": "codex", "incident_key": INCIDENT_KEY, "session_id": "session-1", "text": "I'll check PagerDuty."},
+        )
+        # The call keeps its own intent: the narration is never a call's reason.
+        self.assertEqual(call["message"], "pagerduty.get_past_incidents")
+        self.append(self.said("Raised the limit.\nIt held.", "final_answer"))
+        stopped = self.sent(self.mcp("Stop"))
+        # The call itself never reported back either, so Stop ends it too.
+        self.assertEqual([event["event"] for event in stopped], ["agent.investigation.step", "agent.tool_call.no_result"])
+        final = stopped[0]
+        self.assertEqual((final["message"], final["extra"]["text"]), ("Raised the limit. It held.", "Raised the limit.\nIt held."))
+        self.assertEqual(self.sent(self.mcp("Stop")), [])
+
+    def test_outside_an_investigation_no_steps_are_sent(self) -> None:
+        self.append(self.said("I'll look around."))
+        self.assertEqual([event["event"] for event in self.sent(self.mcp())], ["agent.tool_call.started"])
+        # Read past, so joining later doesn't send what was said before.
+        self.write_state({**json.loads(ledger.session_state_path("session-1").read_text()),
+                          "investigation": {"incident_key": INCIDENT_KEY}})
+        self.assertEqual([event["event"] for event in self.sent(self.mcp(tool_use_id="exec-2"))], ["agent.tool_call.started"])
+
+    def test_a_missing_or_garbled_rollout_never_stops_the_calls_own_event(self) -> None:
+        self.rollout.write_bytes(b"\x00not json\n{\"payload\": 5}\n[1]\n{\"half\": ")
+        self.assertEqual([event["event"] for event in self.sent(self.mcp())], ["agent.tool_call.started"])
+        self.assertEqual(self.stderr, "")
+        for path in (str(self.dir / "missing.jsonl"), str(self.dir), 5):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    [event["event"] for event in self.sent(self.mcp(tool_use_id=f"exec-{path}", transcript_path=path))],
+                    ["agent.tool_call.started"],
+                )
+
+    def test_a_partial_last_line_waits_for_the_next_read(self) -> None:
+        self.write_state({"investigation": {"incident_key": INCIDENT_KEY}})
+        line = json.dumps({"payload": {"type": "item_completed", "item": self.said("Half way.")}})
+        self.rollout.write_text(line[:20], encoding="utf-8")
+        self.assertEqual([event["event"] for event in self.sent(self.mcp())], ["agent.tool_call.started"])
+        self.rollout.write_text(line + "\n", encoding="utf-8")
+        self.assertEqual(
+            [event["event"] for event in self.sent(self.mcp(tool_use_id="exec-2"))],
+            ["agent.investigation.step", "agent.tool_call.started"],
+        )
 
 
 class ReferenceTests(LedgerTestCase):

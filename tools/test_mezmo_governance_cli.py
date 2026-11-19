@@ -485,9 +485,12 @@ class InstallTests(CliTestCase):
         """Leave what a release before the ledger installed: hooks.json without the ledger handlers, and no ledger script."""
         path = self.tmp / root / "hooks.json"
         config = json.loads(path.read_text())
-        for groups in config["hooks"].values():
+        for event, groups in list(config["hooks"].items()):
             for group in groups:
                 group["hooks"] = [handler for handler in group["hooks"] if "mezmo_ledger_hook.py" not in handler["command"]]
+            # Stop runs only the ledger hook, so a release before the ledger had none.
+            if not any(group["hooks"] for group in groups):
+                del config["hooks"][event]
         path.write_text(json.dumps(config, indent=2))
         (self.tmp / root / "hooks/mezmo_ledger_hook.py").unlink()
         return config
@@ -512,11 +515,14 @@ class InstallTests(CliTestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertRegex(result.stdout, r"copy codex/mezmo_ledger_hook\.py to \S*/hooks/mezmo_ledger_hook\.py\n")
                 self.assertRegex(result.stdout, r"backup: \S*hooks\.json\.mezmo-backup-\S+\n      add the Mezmo ledger hook entries to \S*hooks\.json\n")
-                self.assertIn("next: Start codex, run /hooks, and trust the four Mezmo hook entries", result.stdout)
+                self.assertIn("next: Start codex, run /hooks, and trust the five Mezmo hook entries", result.stdout)
                 script = self.tmp / root / "hooks/mezmo_ledger_hook.py"
                 self.assertEqual(script.read_bytes(), (REPO / "codex/mezmo_ledger_hook.py").read_bytes())
                 now = json.loads(path.read_text())
-                self.assertEqual(list(now["hooks"]), list(older["hooks"]))
+                self.assertEqual(list(now["hooks"]), list(older["hooks"]) + ["Stop"])
+                self.assertEqual(now["hooks"]["Stop"], [{"hooks": [{"command": f'python3 "{folder}/hooks/mezmo_ledger_hook.py" || true',
+                                                                     "timeout": 15, "type": "command",
+                                                                     "statusMessage": "Recording the turn's end in the Mezmo Ledger"}]}])
                 for event, groups in older["hooks"].items():
                     self.assertEqual(len(now["hooks"][event]), len(groups), event)
                     for g, group in enumerate(groups):
@@ -712,7 +718,7 @@ class InstallTests(CliTestCase):
         for name in ("mezmo_ledger_hook.py", "ledger_investigation.py", "mezmo_settings.py", "mezmo_setup.py", "mezmo_key_file.py",
                      "mezmo_mcp_headers.py"):
             self.assertEqual((self.tmp / "codex/hooks" / name).read_bytes(), (REPO / "codex" / name).read_bytes())
-        self.assertIn("next: Start codex, run /hooks, and trust the four Mezmo hook entries", result.stdout)
+        self.assertIn("next: Start codex, run /hooks, and trust the five Mezmo hook entries", result.stdout)
         # No other agent has a ledger script.
         self.assertEqual([path for path in self.tmp.rglob("mezmo_ledger_hook.py") if "codex" not in path.parts], [])
         cursor = json.loads((self.tmp / "home/.cursor/hooks.json").read_text())
