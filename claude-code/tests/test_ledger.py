@@ -816,6 +816,19 @@ class InvestigationTests(LedgerTestCase):
         # Its own launch, closed: nothing to warn about.
         self.assertEqual(self.stderr, "")
 
+    def test_a_launch_claim_survives_a_state_save_that_fails(self) -> None:
+        os.environ.update(launched(INCIDENT_KEY))
+        claim = ledger.launches_dir() / os.environ["MEZMO_LEDGER_LAUNCHED"]
+
+        def unsaved(event: Any, change: Any, lock_timeout: Any = None) -> None:
+            change({})  # applied, then never written, as when the disk is full
+
+        with patch.object(ledger_hook, "update_session_state", unsaved):
+            self.assertNotIn("incident_key", self.sent()["extra"])
+        self.assertTrue(claim.exists())
+        self.assertEqual(self.sent()["extra"]["incident_key"], INCIDENT_KEY)
+        self.assertEqual(list(ledger.launches_dir().iterdir()), [])
+
     def test_a_stale_launch_claim_is_not_joined(self) -> None:
         os.environ.update(launched(INCIDENT_KEY))
         claim = ledger.launches_dir() / os.environ["MEZMO_LEDGER_LAUNCHED"]
