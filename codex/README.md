@@ -52,7 +52,10 @@ keep it in memory for that hook process only. A store they cannot read gives
 a warning and counts as no key, so governance denies the call.
 
 `setup codex --remove` deletes the key from its store and removes
-`codex.json`.
+`codex.json`. If the store refuses the delete, it says so, exits 1 and keeps
+`codex.json`, so running it again still knows where the key is. When setup
+moves the key to another store, it deletes the old copy only after the new
+settings are saved, and a keyring that does not answer counts as no keyring.
 
 From the API URL the hooks derive the governance URL,
 `<api_url>/governance/workflow/authorize`, and the ledger URL,

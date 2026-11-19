@@ -1160,14 +1160,14 @@ class SmokeTests(CliTestCase):
         self.assertIn("FAIL  codex: Bash should be denied", result.stdout)
         self.assertIn("FAIL  codex: Read should be approved", result.stdout)
 
-    def test_no_smoke_hands_the_hook_the_ledger_settings(self) -> None:
+    def test_no_smoke_hands_the_hook_the_users_ledger_settings(self) -> None:
         # With them, the call the mock denies would be posted to the real ledger as a call that did not run.
         self.cli("install", "codex")
         seen = self.tmp / "seen.jsonl"
         (self.tmp / "codex/hooks/mezmo_governance_hook.py").write_text(
             "import json, os, sys\n"
             f"with open({str(seen)!r}, 'a') as log:\n"
-            "    log.write(json.dumps(sorted(name for name in os.environ if name.startswith('MEZMO_LEDGER_'))) + '\\n')\n"
+            "    log.write(json.dumps({name: value for name, value in os.environ.items() if name.startswith('MEZMO_LEDGER_')}) + '\\n')\n"
             "sys.exit(2)\n"
         )
         ledger = {"MEZMO_LEDGER_KEY": "key", "MEZMO_LEDGER_URL": "https://ledger.example.test/v1/audit/events"}
@@ -1179,7 +1179,11 @@ class SmokeTests(CliTestCase):
 
                 runs = [json.loads(line) for line in seen.read_text().splitlines()]
                 self.assertTrue(runs)
-                self.assertEqual([names for names in runs if names], [])
+                # Only the smoke's own: a closed port, and a retry file in its scratch folder. None of the user's key or URL.
+                for run in runs:
+                    self.assertEqual(sorted(run), ["MEZMO_LEDGER_SPOOL", "MEZMO_LEDGER_URL"])
+                    self.assertEqual(run["MEZMO_LEDGER_URL"], "http://127.0.0.1:9/v1/audit/events")
+                    self.assertIn("mezmo-governance-smoke-", run["MEZMO_LEDGER_SPOOL"])
 
     def test_codex_hooks_run_as_codex_runs_them_and_uninstall_removes_what_it_installed(self) -> None:
         self.write(ORIGINALS["codex"])
@@ -1336,10 +1340,38 @@ class LiveSmokeTests(CliTestCase):
                 self.assertEqual(env["MEZMO_GOVERNANCE_TIMEOUT_SECONDS"], want)
                 self.assertEqual(env["MEZMO_GOVERNANCE_AUDIT_LOG"], str(scratch / "audit.jsonl"))
                 self.assertEqual(env["MEZMO_GOVERNANCE_TOKEN"], CANARY)
-                # A live smoke asks Mezmo for a decision; it records nothing in the ledger.
-                self.assertEqual([name for name in env if name.startswith("MEZMO_LEDGER_")], [])
+                # A live smoke asks Mezmo for a decision; it records nothing in the ledger: the user's ledger settings
+                # are replaced by a closed port and a retry file in the scratch folder.
+                self.assertEqual({name: value for name, value in env.items() if name.startswith("MEZMO_LEDGER_")}, cli.smoke_ledger(scratch))
                 # Nor does the Claude Code plugin's ledger, which a governance key alone turns on.
                 self.assertEqual(env["CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED"], "false")
+
+
+    def test_a_live_deny_sends_the_codex_ledger_nowhere_real(self) -> None:
+        # The real Codex hook under live_env, against the denying mock. A spy notes each URL the ledger posts to.
+        import mezmo_governance_cli as cli
+
+        log = self.tmp / "ledger-urls.txt"
+        spy = (
+            "import sys; sys.path.insert(0, sys.argv[1]); import mezmo_ledger_hook as ledger\n"
+            "real = ledger.post_ledger_events\n"
+            "def spy(**kwargs):\n"
+            "    open(sys.argv[2], 'a').write(kwargs['url'] + '\\n')\n"
+            "    return real(**kwargs)\n"
+            "ledger.post_ledger_events = spy\n"
+            "import mezmo_governance_hook\n"
+            "sys.exit(mezmo_governance_hook.main())\n"
+        )
+        event = {"hook_event_name": "PreToolUse", "session_id": "s1", "tool_use_id": "c1", "tool_name": "Bash",
+                 "tool_input": {"command": "ls"}}
+        user = {**self.env, "MEZMO_LEDGER_URL": "https://ledger.example.invalid/v1/audit/events"}
+        with mock.patch.dict(os.environ, user, clear=True):
+            env = cli.live_env(self.tmp / "scratch")
+        result = subprocess.run([sys.executable, "-c", spy, str(REPO / "codex"), str(log)], input=json.dumps(event), env=env,
+                                capture_output=True, text=True, timeout=60, check=False)
+        self.assertIn("mock policy: codex:Bash is denied", result.stdout, result.stderr)
+        self.assertEqual(log.read_text().splitlines(), [cli.SMOKE_LEDGER_URL])
+        self.assertFalse((self.tmp / "home/.mezmo").exists())
 
 
 def doctor_unreachable() -> str:

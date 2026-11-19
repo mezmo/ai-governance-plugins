@@ -183,16 +183,29 @@ def write_key_file(key: str) -> None:
 
 
 def delete_key(store: str) -> bool:
-    """Delete the key from the store. True when one was there."""
-    if store == KEYCHAIN:
-        return run(mezmo_settings.keychain_command("delete-generic-password")).returncode == 0
-    if store == SECRET_TOOL:
-        return run(["secret-tool", "clear", *mezmo_settings.secret_tool_attributes()]).returncode == 0
-    path = mezmo_settings.key_path()
-    if os.path.lexists(path):
+    """Delete the key from the store. True when one was there, False when none was. Raises SetupError when the
+    store could not be changed, so the caller keeps the settings that name it."""
+    try:
+        if store == KEYCHAIN:
+            code = run(mezmo_settings.keychain_command("delete-generic-password")).returncode
+            if code == 44:  # the item is not there
+                return False
+            if code != 0:
+                raise SetupError(f"security exited {code}")
+            return True
+        if store == SECRET_TOOL:
+            # secret-tool clear exits 0 whether or not it found the key.
+            code = run(["secret-tool", "clear", *mezmo_settings.secret_tool_attributes()]).returncode
+            if code != 0:
+                raise SetupError(f"secret-tool exited {code}")
+            return True
+        path = mezmo_settings.key_path()
+        if not os.path.lexists(path):
+            return False
         path.unlink()
         return True
-    return False
+    except (OSError, subprocess.SubprocessError) as error:
+        raise SetupError(str(error) or type(error).__name__) from error
 
 
 def store_key(key: str, platform: str = sys.platform) -> str:
@@ -204,8 +217,10 @@ def store_key(key: str, platform: str = sys.platform) -> str:
         try:
             write_secret_tool(key)
             return SECRET_TOOL
-        except SetupError as error:
-            print(f"{error}; using a protected file instead")
+        except (SetupError, OSError, subprocess.SubprocessError) as error:
+            # A keyring that is locked, missing or never answers (TimeoutExpired) counts as no keyring.
+            reason = f"secret-tool did not answer within {error.timeout:g} s" if isinstance(error, subprocess.TimeoutExpired) else error
+            print(f"{reason}; using a protected file instead")
     write_key_file(key)
     return KEY_FILE
 
@@ -229,16 +244,24 @@ def setup(ledger: bool = True, send: Http = http, platform: str = sys.platform) 
             check_ledger(api_url + mezmo_settings.LEDGER_PATH, key, send)
             print("ok    the ledger accepted the key")
         store = store_key(key, platform)
-    except SetupError as error:
+    except (SetupError, OSError, subprocess.SubprocessError) as error:
         print(f"FAIL  {error}. Nothing was saved.", file=sys.stderr)
         return 1
+    # The new settings are committed before the old store's key is deleted, so a failed save leaves the old setup working.
+    config = {"api_url": api_url, "ledger_enabled": ledger, "key_store": store}
+    try:
+        private_dir()
+        write_private(mezmo_settings.config_path(), json.dumps(config, indent=2) + "\n")
+    except OSError as error:
+        print(f"FAIL  could not save {mezmo_settings.config_path()}: {error}. The previous settings are unchanged.", file=sys.stderr)
+        return 1
+    print(f"saved the key in {store_name(store)}, and the settings in {mezmo_settings.config_path()}")
     previous = old.get("key_store")
     if previous in mezmo_settings.KEY_STORES and previous != store:
-        delete_key(previous)
-    private_dir()
-    config = {"api_url": api_url, "ledger_enabled": ledger, "key_store": store}
-    write_private(mezmo_settings.config_path(), json.dumps(config, indent=2) + "\n")
-    print(f"saved the key in {store_name(store)}, and the settings in {mezmo_settings.config_path()}")
+        try:
+            delete_key(previous)
+        except SetupError as error:
+            print(f"warn  could not delete the old key from {store_name(previous)}: {error}; delete it by hand", file=sys.stderr)
     if not ledger:
         print("the ledger is off; run setup again without --no-ledger to turn it on")
     if any(os.environ.get(name) for name in ("MEZMO_GOVERNANCE_URL", "MEZMO_GOVERNANCE_TOKEN", "MEZMO_LEDGER_URL", "MEZMO_LEDGER_KEY")):
@@ -251,8 +274,13 @@ def remove() -> int:
     # Without codex.json nothing records a store, so only a leftover key file is deleted.
     store = mezmo_settings.read_config().get("key_store")
     name = store if store in mezmo_settings.KEY_STORES else KEY_FILE
-    if delete_key(name):
-        print(f"deleted the key from {store_name(name)}")
+    try:
+        found = delete_key(name)
+    except SetupError as error:
+        # codex.json stays, so running --remove again still knows which store holds the key.
+        print(f"FAIL  could not delete the key from {store_name(name)}: {error}. Nothing else was removed.", file=sys.stderr)
+        return 1
+    print(f"deleted the key from {store_name(name)}" if found else f"no key was in {store_name(name)}")
     path = mezmo_settings.config_path()
     if os.path.lexists(path):
         path.unlink()

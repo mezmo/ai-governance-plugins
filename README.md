@@ -453,12 +453,17 @@ Not every plugin sends only that, and not only to the Governance service:
   switch on or off. When `MEZMO_LEDGER_KEY` isn't set, it sends the governance
   key, so with `MEZMO_LEDGER_URL` set the key goes to that host, whatever it
   is. See [claude-code/README.md](claude-code/README.md#ledger).
-- Codex's ledger sending is off until `MEZMO_LEDGER_URL` is set, and uses the
-  same limits and retry file. It records every tool Codex runs a hook
-  for, such as `apply_patch`, `Bash`, MCP tools and `update_plan`, not only
-  Bash and MCP calls. When `MEZMO_LEDGER_KEY` isn't set, it sends
-  `MEZMO_GOVERNANCE_TOKEN` to `MEZMO_LEDGER_URL`, whatever host that is. See
-  [codex/README.md](codex/README.md#ledger).
+- Codex's ledger sending is on whenever its hooks have a key, from
+  `./mezmo-governance setup codex` or `MEZMO_GOVERNANCE_TOKEN`, including
+  setups that only export the governance variables. It sends to the Mezmo API
+  URL plus `/v1/audit/events`: the URL setup saved, else the host of
+  `MEZMO_GOVERNANCE_URL`, else `https://api.mezmo.com` (or
+  `MEZMO_LEDGER_URL`). It uses the same limits and retry file, and records
+  every tool Codex runs a hook for, such as `apply_patch`, `Bash`, MCP tools
+  and `update_plan`, not only Bash and MCP calls. When `MEZMO_LEDGER_KEY` isn't
+  set, it sends the governance key to that URL, whatever host that is. Turn it
+  off with `./mezmo-governance setup codex --no-ledger`, which saves
+  `ledger_enabled` false. See [codex/README.md](codex/README.md#ledger).
 - Antigravity CLI sends its built-in tools' arguments as it gets them,
   including the model's `toolAction` and `toolSummary` notes.
 
