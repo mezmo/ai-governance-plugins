@@ -550,7 +550,7 @@ key lands in the same one.
 
 | Event | When |
 | --- | --- |
-| `agent.investigation.closed` | The session ran `ledger_investigation.py close` |
+| `agent.investigation.closed` | The session ran `ledger_investigation.py close`, saying where things stand: `extra.status` and `extra.summary` |
 | `agent.investigation.joined` | The session ran `ledger_investigation.py join` |
 | `agent.investigation.opened` | `ledger_investigation.py launch` started a command for an alert |
 
@@ -565,7 +565,7 @@ An incident key is `<source>:<id>`, with source `jira`, `pagerduty` or
 
 | Command | What it does |
 | --- | --- |
-| `close --incident-key <key>` | Prints one line, `{"action": "closed", "incident_key": ...}` |
+| `close --incident-key <key> --status <status> --summary <text>` | Prints one line, `{"action": "closed", "incident_key": ..., "status": ..., "summary": ...}`. Status is `resolved`, `mitigated`, `ongoing` or `no_action`; the summary says what happened, what was changed and what's left, in 2,000 characters or fewer. Refused without both |
 | `join --incident-key <key> [--service <name>]` | Prints one line, `{"action": "joined", "incident_key": ..., "service": ...}`, `service` only when given |
 | `launch --incident-key <key> [--service <name>] -- <command...>` | Sends `opened`, then runs the command in the investigation |
 
@@ -621,8 +621,11 @@ the path of `ledger_investigation.py`.
    environment the incident names. If a command fails because a target isn't
    found, report it and stop. Don't search the cluster for another deployment
    with the same name and act on that.
-6. When you are done, run `python3 <cli> close --incident-key <key>` with the
-   same key, on its own as the whole shell call, with the key written out.
+6. When you are done, run
+   `python3 <cli> close --incident-key <key> --status <status> --summary "<text>"`
+   with the same key, on its own as the whole shell call, with the key written
+   out. The status is `resolved`, `mitigated`, `ongoing` or `no_action`, and the
+   summary says what happened, what you changed and what's left.
 ```
 
 `launch` is for an alert that starts an agent, for example

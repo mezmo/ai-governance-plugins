@@ -69,6 +69,7 @@ DENY_STDOUT = (
     + "\n"
 ).encode()
 INCIDENT_KEY = "pagerduty:Q34FCCWSTU9OI2"
+SUMMARY = "The operator ran out of memory at its 128 MiB limit. Raised it to 256 MiB; no restarts since. The chart default is a follow-up for the platform team."
 
 
 def launched(incident_key: str) -> dict[str, str]:
@@ -107,7 +108,7 @@ EVENT_NAME = re.compile(r"^[a-z0-9]+(?:[_-][a-z0-9]+)*(?:\.[a-z0-9]+(?:[_-][a-z0
 EXTRA_KEYS = {
     "access", "agent", "arguments", "call_id", "decision_id", "duration_ms", "entry_key", "exit_status",
     "incident_key", "intent_source", "person_email", "output", "references", "request_id", "service", "session_id",
-    "target", "tool_name", "tool_namespace",
+    "status", "summary", "target", "tool_name", "tool_namespace",
 }
 
 
@@ -1026,11 +1027,16 @@ class InvestigationChangeTests(LedgerTestCase):
     """A Bash call that runs ledger_investigation.py join or close, and prints its result line."""
 
     def cli_input(self, command: str, action: str) -> dict[str, Any]:
-        line = json.dumps({"action": action, "incident_key": INCIDENT_KEY})
+        printed: dict[str, Any] = {"action": action, "incident_key": INCIDENT_KEY}
+        arguments = f"--incident-key {INCIDENT_KEY}"
+        if command == "close":
+            printed.update(status="resolved", summary=SUMMARY)
+            arguments += f' --status resolved --summary "{SUMMARY}"'
+        line = json.dumps(printed)
         cli = "python3 ~/.codex/hooks/ledger_investigation.py"
         return hook_input(
             "PostToolUse",
-            tool_input={"command": f"{cli} {command} --incident-key {INCIDENT_KEY}"},
+            tool_input={"command": f"{cli} {command} {arguments}"},
             tool_response=f"starting\n{line}\n",
         )
 
@@ -1041,7 +1047,10 @@ class InvestigationChangeTests(LedgerTestCase):
         self.assertEqual(event["event"], f"agent.investigation.{action}")
         self.assertEqual(event["entity_type"], "investigation")
         self.assertNotIn("entity_id", event)
-        self.assertEqual(event["extra"], {"agent": "codex", "incident_key": INCIDENT_KEY, "session_id": "session-1"})
+        closing = {"status": "resolved", "summary": SUMMARY} if action == "closed" else {}
+        self.assertEqual(
+            event["extra"], {"agent": "codex", "incident_key": INCIDENT_KEY, "session_id": "session-1", **closing}
+        )
 
     def test_only_a_real_join_or_close_with_its_own_key_is_recognized(self) -> None:
         # Compact: claude-code/tests/test_ledger.py covers _investigation_call, which is the same text.
@@ -1049,9 +1058,9 @@ class InvestigationChangeTests(LedgerTestCase):
         joined = json.dumps({"action": "joined", "incident_key": INCIDENT_KEY})
         runbook = f"{cli} join --incident-key {INCIDENT_KEY}\n{joined}\n"
         cases = (
-            (f"{cli} join --incident-key {INCIDENT_KEY}", ("joined", INCIDENT_KEY, None)),
-            (f"{cli} join --incident-key={INCIDENT_KEY} 2>&1", ("joined", INCIDENT_KEY, None)),
-            (f"{cli} join --incident-key {INCIDENT_KEY} | tail -n 5", ("joined", INCIDENT_KEY, None)),
+            (f"{cli} join --incident-key {INCIDENT_KEY}", ("joined", INCIDENT_KEY, None, None)),
+            (f"{cli} join --incident-key={INCIDENT_KEY} 2>&1", ("joined", INCIDENT_KEY, None, None)),
+            (f"{cli} join --incident-key {INCIDENT_KEY} | tail -n 5", ("joined", INCIDENT_KEY, None, None)),
             (f"{cli} join --incident-key jira:OPS-1", None),
             (f'{cli} join --incident-key "$KEY"', None),
             # The printed line names no service, though the command gave one.
@@ -1065,6 +1074,26 @@ class InvestigationChangeTests(LedgerTestCase):
                 event = hook_input("PostToolUse", tool_input={"command": command}, tool_response=f"run\n{joined}\n")
                 self.assertEqual(ledger.investigation_action(hook_input=event), expected)
 
+    def test_a_close_without_a_valid_status_and_summary_sends_neither(self) -> None:
+        cli = "python3 ~/.codex/hooks/ledger_investigation.py"
+        for printed in (
+            {},
+            {"status": "fixed", "summary": SUMMARY},
+            {"status": "resolved", "summary": "  "},
+            {"status": "resolved", "summary": 7},
+            {"status": "resolved"},
+        ):
+            with self.subTest(printed=printed):
+                line = json.dumps({"action": "closed", "incident_key": INCIDENT_KEY, **printed})
+                event = hook_input("PostToolUse", tool_input={"command": f"{cli} close --incident-key {INCIDENT_KEY}"}, tool_response=f"{line}\n")
+                self.assertEqual(ledger.investigation_action(hook_input=event), ("closed", INCIDENT_KEY, None, None))
+        line = json.dumps({"action": "closed", "incident_key": INCIDENT_KEY, "status": "ongoing", "summary": " a\n b "})
+        event = hook_input("PostToolUse", tool_input={"command": f"{cli} close --incident-key {INCIDENT_KEY}"}, tool_response=f"{line}\n")
+        self.assertEqual(
+            ledger.investigation_action(hook_input=event),
+            ("closed", INCIDENT_KEY, None, {"status": "ongoing", "summary": "a b"}),
+        )
+
     def test_a_join_with_a_service_keeps_it_in_the_state_and_on_joined(self) -> None:
         line = json.dumps({"action": "joined", "incident_key": INCIDENT_KEY, "service": "checkout"})
         event = hook_input(
@@ -1075,7 +1104,7 @@ class InvestigationChangeTests(LedgerTestCase):
             },
             tool_response=f"{line}\n",
         )
-        self.assertEqual(ledger.investigation_action(hook_input=event), ("joined", INCIDENT_KEY, "checkout"))
+        self.assertEqual(ledger.investigation_action(hook_input=event), ("joined", INCIDENT_KEY, "checkout", None))
         fake = self.fake()
         self.run_hook(event, fake)
         self.assertEqual(self.state()["investigation"]["service"], "checkout")

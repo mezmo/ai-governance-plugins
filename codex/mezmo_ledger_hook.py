@@ -126,7 +126,7 @@ MAX_REFERENCES = 20
 MEMORY_BRIEF_TOOL_NAME = "mezmo_memory_brief"
 # For application.version. A file install has no manifest beside the script, so this is a
 # constant, and test_ledger.py checks it against .codex-plugin/plugin.json.
-LEDGER_VERSION = "0.7.1"
+LEDGER_VERSION = "0.8.0"
 # The socket timeout of each request this hook makes, and the deadline its main thread waits for
 # its ledger threads from when they start. A socket timeout alone bounds neither DNS nor the whole
 # request, hence the threads. Read at call time, so a test can patch it.
@@ -160,6 +160,9 @@ EXIT_CODE_LINE = re.compile(r"Exit code: (-?\d+)")
 LEDGER_ENDINGS = {"failed": "failed", "not_run": "not run"}
 # The investigation CLI, and what its join and close print as `action` when they succeed.
 INVESTIGATION_ACTIONS = {"close": "closed", "join": "joined"}
+# The statuses ledger_investigation.py close takes, and the most of its summary the hook sends.
+CLOSE_STATUSES = ("resolved", "mitigated", "ongoing", "no_action")
+MAX_SUMMARY_CHARACTERS = 2000
 INVESTIGATION_SCRIPT = "ledger_investigation.py"
 # What _investigation_call takes for a Python interpreter's file name, and for its flags that take
 # no argument, such as -I or -Su.
@@ -1196,14 +1199,17 @@ def _investigation_intent(tool: Any) -> Optional[str]:
     return f"Investigation {INVESTIGATION_ACTIONS[call[0]]}" if call else None
 
 
-def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str, str, Optional[str]]]:
-    """(action, incident_key, service) for a Bash call that joined or closed an investigation, else None.
+def investigation_action(
+    *, hook_input: Mapping[str, Any]
+) -> Optional[Tuple[str, str, Optional[str], Optional[Dict[str, str]]]]:
+    """(action, incident_key, service, closing) for a Bash call that joined or closed an investigation, else None.
 
     `action` is "joined" or "closed". Both must hold: the command starts by running the CLI, as
     _investigation_call reads it, and the output has a line that is a JSON object stating the
     matching action and the key and service the command gave. So a key the command passes through a
     shell variable is not recognized. Codex gives a Bash call no exit code, so that line is the only sign
-    the command worked. Only for PostToolUse. Never raises.
+    the command worked. `closing` is a close's {status, summary} from that line, None for a join or a
+    line without a valid pair. Only for PostToolUse. Never raises.
     """
     try:
         if hook_input.get("hook_event_name") != "PostToolUse":
@@ -1225,10 +1231,19 @@ def investigation_action(*, hook_input: Mapping[str, Any]) -> Optional[Tuple[str
                 continue
             if isinstance(printed, dict) and printed.get("action") == action \
                     and printed.get("incident_key") == incident_key and printed.get("service") == service:
-                return action, incident_key, service
+                return action, incident_key, service, _closing(printed) if action == "closed" else None
         return None
     except Exception:
         return None
+
+
+def _closing(printed: Mapping[str, Any]) -> Optional[Dict[str, str]]:
+    """{status, summary} from a close's printed line, or None unless both are valid."""
+    status, summary = printed.get("status"), printed.get("summary")
+    if status not in CLOSE_STATUSES or not isinstance(summary, str):
+        return None
+    summary = _one_line(summary)[:MAX_SUMMARY_CHARACTERS]
+    return {"status": status, "summary": summary} if summary else None
 
 
 def investigation_event(
@@ -1238,10 +1253,12 @@ def investigation_event(
     hook_input: Mapping[str, Any],
     incident_key: str,
     service: Optional[str] = None,
+    closing: Optional[Mapping[str, str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """The `joined` or `closed` event for this session and investigation. None without an identity.
 
     It has no entity_id: the ledger service sets it to the investigation it derives from the incident key.
+    A close's `closing`, {status, summary}, goes in its extra.
     """
     try:
         session_id = call_identity(hook_input, normalize_tool_call(hook_input)).session_id
@@ -1250,6 +1267,8 @@ def investigation_event(
     extra = {"agent": AGENT, "incident_key": incident_key, "session_id": session_id}
     if service is not None:
         extra["service"] = service
+    if closing is not None:
+        extra.update(status=closing["status"], summary=closing["summary"])
     return ledger_envelope(
         entity_id=None,
         entity_type="investigation",
@@ -1837,6 +1856,7 @@ def _change_investigation(
     hook_input: Mapping[str, Any],
     incident_key: str,
     service: Optional[str],
+    closing: Optional[Mapping[str, str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Join or leave the investigation in the session state, and return its event. Never raises.
 
@@ -1875,7 +1895,7 @@ def _change_investigation(
                 service=service,
             )
         closed = investigation_event(
-            action=action, config=config, hook_input=hook_input, incident_key=incident_key
+            action=action, closing=closing, config=config, hook_input=hook_input, incident_key=incident_key
         )
         # No write for another investigation, so a close can't create a state file.
         if session_id and _state_incident_key(session_id=session_id) == incident_key:
@@ -1975,7 +1995,7 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
                     change=change, lock_timeout=_lock_timeout(deadline=deadline), session_id=session_id.strip()
                 ),
             )
-        action, incident_key, service = investigation_action(hook_input=event) or ("", "", None)
+        action, incident_key, service, closing = investigation_action(hook_input=event) or ("", "", None, None)
         investigation: Optional[Dict[str, Any]] = None
         if action == "joined":
             investigation = _change_investigation(
@@ -1995,6 +2015,7 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
                 hook_input=event,
                 incident_key=incident_key,
                 service=None,
+                closing=closing,
             )
         sent: List[LedgerSendResult] = []
         sent_investigation: List[LedgerSendResult] = []

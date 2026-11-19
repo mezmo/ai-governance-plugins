@@ -4,9 +4,10 @@
 The ledger service derives the investigation from the incident key and the account of the key the
 events are sent with, so nothing here needs the account.
 
-- `join --incident-key K [--service S]` and `close --incident-key K` print {action, incident_key,
-  service} as one line of JSON, `service` only when given, and do nothing else. The ledger hook
-  sees that line in the Bash call's output and records the join or close itself.
+- `join --incident-key K [--service S]` prints {action, incident_key, service} as one line of JSON,
+  `service` only when given, and does nothing else. `close --incident-key K --status S --summary T`
+  prints {action, incident_key, status, summary}: where things stand, which a close must say. The
+  ledger hook sees that line in the Bash call's output and records the join or close itself.
 - `launch --incident-key K [--service S] -- <command...>` sends `agent.investigation.opened`, sets
   MEZMO_LEDGER_INCIDENT_KEY and MEZMO_LEDGER_LAUNCHED, and execs the command, so its exit code is the command's. The marker
   names a one-time claim: the first session to take it joins the investigation, and no later session
@@ -45,6 +46,10 @@ COMMAND_NOT_FOUND = 127
 # The exit code of a command that was found but can't be run, as a shell gives it.
 COMMAND_NOT_RUN = 126
 USAGE_ERROR = 2
+# Where an investigation stands when a session closes it: fixed and verified; impact stopped with
+# a cause or follow-up left; still a problem, handed off; or nothing needed doing.
+CLOSE_STATUSES = ("resolved", "mitigated", "ongoing", "no_action")
+MAX_SUMMARY_CHARACTERS = 2000
 
 
 def warn(message: str) -> None:
@@ -91,6 +96,13 @@ def _parser() -> argparse.ArgumentParser:
         )
         if name in ("join", "launch"):
             command.add_argument("--service", help="the deployment or app the incident is about, e.g. checkout")
+        if name == "close":
+            command.add_argument("--status", required=True, choices=CLOSE_STATUSES, help="where the incident stands")
+            command.add_argument(
+                "--summary",
+                required=True,
+                help="what happened, what was changed, and what's left and who owns it, in a few sentences",
+            )
     return parser
 
 
@@ -225,6 +237,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     line = {"action": "joined" if parsed.action == "join" else "closed", "incident_key": key}
     if service is not None:
         line["service"] = service
+    if parsed.action == "close":
+        summary = " ".join(parsed.summary.split())
+        if not summary:
+            warn("close needs a --summary: what happened, what was changed, and what's left")
+            return USAGE_ERROR
+        if len(summary) > MAX_SUMMARY_CHARACTERS:
+            warn(f"the summary is {len(summary)} characters; keep it to {MAX_SUMMARY_CHARACTERS} or fewer")
+            return USAGE_ERROR
+        line.update(status=parsed.status, summary=summary)
     print_line(line)
     return 0
 

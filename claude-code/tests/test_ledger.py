@@ -47,6 +47,7 @@ GOVERNANCE = {
 }
 DENY_REASON = "mock policy: Bash is denied"
 INCIDENT_KEY = "pagerduty:Q34FCCWSTU9OI2"
+SUMMARY = "The operator ran out of memory at its 128 MiB limit. Raised it to 256 MiB; no restarts since. The chart default is a follow-up for the platform team."
 
 
 def launched(incident_key: str) -> Dict[str, str]:
@@ -104,6 +105,9 @@ def cli_call(subcommand: str, action: str, service: Optional[str] = None) -> Dic
     if service is not None:
         line["service"] = service
         arguments += f" --service {service}"
+    if subcommand == "close":
+        line.update(status="resolved", summary=SUMMARY)
+        arguments += f' --status resolved --summary "{SUMMARY}"'
     printed = json.dumps(line)
     return hook_input(
         "PostToolUse",
@@ -884,7 +888,10 @@ class JoinCloseTests(LedgerTestCase):
         self.assertEqual(event["event"], f"agent.investigation.{action}")
         self.assertNotIn("entity_id", event)
         self.assertEqual(event["entity_type"], "investigation")
-        self.assertEqual(event["extra"], {"agent": hook.AGENT, "incident_key": INCIDENT_KEY, "session_id": "session-1"})
+        closing = {"status": "resolved", "summary": SUMMARY} if action == "closed" else {}
+        self.assertEqual(
+            event["extra"], {"agent": hook.AGENT, "incident_key": INCIDENT_KEY, "session_id": "session-1", **closing}
+        )
 
     def test_only_a_real_join_or_close_with_its_own_key_is_recognized(self) -> None:
         cli = '"/plugin/scripts/ledger_investigation.py"'
@@ -916,7 +923,7 @@ class JoinCloseTests(LedgerTestCase):
                 )
                 self.assertEqual(
                     ledger.investigation_action(hook_input=bash(command, f"starting\n{joined}\ndone\n")),
-                    ("joined", INCIDENT_KEY, None),
+                    ("joined", INCIDENT_KEY, None, None),
                 )
         # (command, what _investigation_call reads from it, the call's output)
         for command, call, stdout in (
@@ -988,6 +995,34 @@ class JoinCloseTests(LedgerTestCase):
             "service": "checkout",
             "session_id": "session-1",
         })
+
+    def test_a_close_without_a_valid_status_and_summary_sends_neither(self) -> None:
+        cli = 'python3 "/plugin/scripts/ledger_investigation.py"'
+        for printed in (
+            {},
+            {"status": "fixed", "summary": SUMMARY},
+            {"status": "resolved", "summary": "  "},
+            {"status": "resolved", "summary": 7},
+            {"status": "resolved"},
+        ):
+            with self.subTest(printed=printed):
+                line = json.dumps({"action": "closed", "incident_key": INCIDENT_KEY, **printed})
+                event = hook_input(
+                    "PostToolUse",
+                    tool_input={"command": f"{cli} close --incident-key {INCIDENT_KEY}"},
+                    tool_response={"interrupted": False, "isImage": False, "stderr": "", "stdout": f"{line}\n"},
+                )
+                self.assertEqual(ledger.investigation_action(hook_input=event), ("closed", INCIDENT_KEY, None, None))
+        line = json.dumps({"action": "closed", "incident_key": INCIDENT_KEY, "status": "ongoing", "summary": " a\n b "})
+        event = hook_input(
+                    "PostToolUse",
+                    tool_input={"command": f"{cli} close --incident-key {INCIDENT_KEY}"},
+                    tool_response={"interrupted": False, "isImage": False, "stderr": "", "stdout": f"{line}\n"},
+                )
+        self.assertEqual(
+            ledger.investigation_action(hook_input=event),
+            ("closed", INCIDENT_KEY, None, {"status": "ongoing", "summary": "a b"}),
+        )
 
     def test_a_close_clears_the_state_and_sends_closed(self) -> None:
         self.write_state({"investigation": {"incident_key": INCIDENT_KEY, "joined_at": "2026-11-09T00:00:00+00:00"}})
