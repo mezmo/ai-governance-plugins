@@ -743,9 +743,10 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(mezmo_settings.launcher_path(), mezmo_settings.settings_dir() / "bin" / "mezmo-setup")
         self.assertNotIn("find ", text)
         self.assertNotIn("--disable hooks", text)
-        # A user who chose the ledger off keeps that choice on the terminal route too.
+        # Choices the user made carry onto the terminal route too: the ledger off, and replacing an MCP.
         fallback = text[text.index("If it prints `ok`"):text.index("It asks for the Mezmo API URL")]
         self.assertEqual(fallback.count("--no-ledger"), 2)
+        self.assertEqual(fallback.count("--replace-mcp"), 2)
         self.assertIn("Start a new Codex session to use the Mezmo MCP", text)
         self.assertIn("Start a new Codex session to use the Mezmo MCP", (ADAPTER_DIR / "mezmo_setup.py").read_text(encoding="utf-8"))
 
