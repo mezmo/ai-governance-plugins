@@ -88,10 +88,7 @@ def _new_event(*, config: ledger.LedgerConfig, hook_input: Mapping[str, Any]) ->
 
 
 def _state_incident_key(*, hook_input: Mapping[str, Any]) -> Any:
-    """The incident key of the investigation in this session's state, or None. Never raises.
-
-    Read from the state alone: ledger_context would fall back to the environment's investigation.
-    """
+    """The incident key of the investigation in this session's state, or None. Never raises."""
     try:
         state = json.loads(session_state_path(hook_input["session_id"].strip()).read_text(encoding="utf-8"))
         return state["investigation"]["incident_key"]
@@ -247,7 +244,7 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
         # events are built and the state written, so a slow git lookup or lock can't push the save
         # past it.
         deadline = time.monotonic() + ledger.LEDGER_TIMEOUT_SECONDS
-        ledger.warn_ignored_incident_key(
+        ledger.adopt_launched_investigation(
             hook_input=event,
             update=lambda change: update_session_state(event, change, lock_timeout=_lock_timeout(deadline=deadline)),
         )

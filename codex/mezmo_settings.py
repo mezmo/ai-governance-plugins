@@ -208,21 +208,21 @@ def read_key_file(path: Path) -> Optional[str]:
 
 
 def governance_configured() -> bool:
-    """Whether a key was given at all: MEZMO_GOVERNANCE_TOKEN, or a key store codex.json names.
+    """Whether a key was given at all: MEZMO_GOVERNANCE_TOKEN, or a codex.json.
 
-    A configured key that cannot be read still counts, so the hook fails closed on it, and so does a
-    codex.json that exists but can't be read or parsed: only a missing one means never set up.
+    Only a missing codex.json means never set up (`--remove` deletes it). One that exists counts
+    whatever it holds, so a broken or edited one keeps the hook failing closed, as a configured key
+    that can't be read does.
     """
     if _env("MEZMO_GOVERNANCE_TOKEN"):
         return True
-    path = config_path()
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        config_path().stat()
     except FileNotFoundError:
         return False
-    except (OSError, ValueError):
-        return True
-    return not isinstance(data, dict) or data.get("key_store") in KEY_STORES
+    except OSError:
+        pass
+    return True
 
 
 def governance_required() -> bool:

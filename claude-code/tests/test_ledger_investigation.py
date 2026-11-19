@@ -5,7 +5,6 @@ command, so it runs as a script against an audit-service defined here, with the 
 session state in a temp folder and no setting of the developer's own.
 """
 
-import hashlib
 import json
 import os
 import pathlib
@@ -168,14 +167,12 @@ class LaunchTests(unittest.TestCase):
     def test_launch_sends_opened_and_sets_the_incident_key_and_its_marker_for_the_command(self) -> None:
         result = self.launch("launch", "--incident-key", INCIDENT_KEY, "--", sys.executable, "-c", PRINT_ENV)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(
-            json.loads(result.stdout),
-            {
-                "MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY,
-                "MEZMO_LEDGER_INVESTIGATION_ID": None,
-                "MEZMO_LEDGER_LAUNCHED": hashlib.sha256(INCIDENT_KEY.encode()).hexdigest()[:16],
-            },
-        )
+        printed = json.loads(result.stdout)
+        marker = printed.pop("MEZMO_LEDGER_LAUNCHED")
+        self.assertEqual(printed, {"MEZMO_LEDGER_INCIDENT_KEY": INCIDENT_KEY, "MEZMO_LEDGER_INVESTIGATION_ID": None})
+        # The marker names the one-time claim the command's first session takes.
+        claim = self.dir / "sessions" / "launches" / marker
+        self.assertEqual(claim.read_text(encoding="utf-8"), INCIDENT_KEY + "\n")
         (opened,) = self.events()
         # No account and no correlation_id: the ledger service sets them from the key and the incident key.
         self.assertEqual(opened["actor"], {"pk": "claude_code:launcher", "type": "agent"})

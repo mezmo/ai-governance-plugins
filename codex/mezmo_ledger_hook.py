@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shlex
 import stat
 import subprocess
@@ -64,8 +65,14 @@ import mezmo_settings  # noqa: E402
 GOVERNANCE_TOKEN_ENV = "MEZMO_GOVERNANCE_TOKEN"
 GOVERNANCE_URL_ENV = "MEZMO_GOVERNANCE_URL"
 LEDGER_INCIDENT_KEY_ENV = "MEZMO_LEDGER_INCIDENT_KEY"
-# Set by ledger_investigation.py launch beside MEZMO_LEDGER_INCIDENT_KEY, to launch_marker of it.
+# Set by ledger_investigation.py launch beside MEZMO_LEDGER_INCIDENT_KEY, to the name of its claim
+# file in launches_dir(): the first session to take that file joins the investigation.
 LEDGER_LAUNCHED_ENV = "MEZMO_LEDGER_LAUNCHED"
+# Where the session state keeps the launch it claimed, so the session never warns about its own.
+LAUNCH_CLAIMED_FIELD = "launch_claimed"
+# A claim no session has taken within this long is dropped: the launch's session never started.
+LAUNCH_CLAIM_MAX_AGE_SECONDS = 24 * 3600
+LAUNCH_MARKER_PATTERN = re.compile(r"[0-9a-f]{32}")
 # Where the session state keeps the MEZMO_LEDGER_INCIDENT_KEY it warned is ignored, so it warns once.
 IGNORED_INCIDENT_KEY_FIELD = "ignored_incident_key"
 LEDGER_KEY_ENV = "MEZMO_LEDGER_KEY"
@@ -864,27 +871,56 @@ def tool_references(*, hook_input: Mapping[str, Any], read_at: str) -> List[Dict
         return []
 
 
-def launch_marker(incident_key: str) -> str:
-    """What ledger_investigation.py launch sets MEZMO_LEDGER_LAUNCHED to beside `incident_key`.
+def launches_dir() -> Path:
+    """Where ledger_investigation.py launch leaves its one-time claims, beside the session states."""
+    return state_dir() / "launches"
 
-    Tied to the key, so a marker left from one launch never vouches for another key set later.
+
+def record_launch(incident_key: str) -> str:
+    """Leave a one-time claim on `incident_key`'s investigation, and return the MEZMO_LEDGER_LAUNCHED value naming it.
+
+    Claims older than LAUNCH_CLAIM_MAX_AGE_SECONDS are dropped first. Raises OSError when the claim
+    can't be written.
     """
-    return hashlib.sha256(incident_key.encode("utf-8")).hexdigest()[:16]
+    folder = launches_dir()
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    cutoff = time.time() - LAUNCH_CLAIM_MAX_AGE_SECONDS
+    for entry in folder.iterdir():
+        try:
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink()
+        except OSError:
+            pass
+    marker = secrets.token_hex(16)
+    path = folder / marker
+    # In a private folder, so the moment before chmod exposes nothing.
+    with open(path, "x", encoding="utf-8") as claim:
+        claim.write(incident_key + "\n")
+    os.chmod(path, 0o600)
+    return marker
 
 
-def environment_incident_key() -> Tuple[Optional[str], Optional[str]]:
-    """(MEZMO_LEDGER_INCIDENT_KEY when `launch` set it, else None; the key when it is ignored, else None).
+def is_launch_marker(marker: Optional[str]) -> bool:
+    """Whether `marker` has the shape of a MEZMO_LEDGER_LAUNCHED value record_launch gives."""
+    return marker is not None and LAUNCH_MARKER_PATTERN.fullmatch(marker) is not None
 
-    Only a key with MEZMO_LEDGER_LAUNCHED set to its launch_marker counts. Any other, such as one
-    left from testing or kept in a long-lived process's environment, would file every call made
-    outside an investigation under it.
+
+def _take_launch_claim(*, incident_key: str, marker: str) -> bool:
+    """Take `marker`'s claim on `incident_key`, if no session has and it isn't stale. Never raises.
+
+    Deleting the file is the claim: only one process can, so only one session joins.
     """
-    incident_key = _setting(LEDGER_INCIDENT_KEY_ENV)
-    if incident_key is None:
-        return None, None
-    if _setting(LEDGER_LAUNCHED_ENV) == launch_marker(incident_key):
-        return incident_key, None
-    return None, incident_key
+    try:
+        if not is_launch_marker(marker):
+            return False
+        path = launches_dir() / marker
+        if path.read_text(encoding="utf-8").strip() != incident_key:
+            return False
+        stale = path.stat().st_mtime < time.time() - LAUNCH_CLAIM_MAX_AGE_SECONDS
+        path.unlink()
+        return not stale
+    except OSError:
+        return False
 
 
 def _session_state(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
@@ -899,32 +935,49 @@ def _session_state(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
     return state if isinstance(state, dict) else {}
 
 
-def warn_ignored_incident_key(
+def adopt_launched_investigation(
     *, hook_input: Mapping[str, Any], update: Callable[[Callable[[Dict[str, Any]], None]], None]
 ) -> None:
-    """Warn once per session that MEZMO_LEDGER_INCIDENT_KEY is set but ignored. Never raises.
+    """Join the investigation ledger_investigation.py launch opened, once, or warn that MEZMO_LEDGER_INCIDENT_KEY is ignored. Never raises.
 
-    `update(change)` applies `change` to the session state under its lock. The state keeps the key
-    warned about, so a later call warns again only for another key, and a state that isn't written
-    means no warning.
+    The hooks never read the incident key from the environment directly: a long-lived process,
+    such as Codex's app-server, keeps it for every later session, and after the investigation
+    closes. Only the first session to take launch's claim joins, in its own state, so a close
+    ends it for good. `update(change)` applies `change` to the session state under its lock.
     """
     try:
-        ignored = environment_incident_key()[1]
-        if ignored is None or _session_state(hook_input=hook_input).get(IGNORED_INCIDENT_KEY_FIELD) == ignored:
+        incident_key = _setting(LEDGER_INCIDENT_KEY_ENV)
+        if incident_key is None:
             return
-        warned: List[str] = []
+        marker = _setting(LEDGER_LAUNCHED_ENV) or ""
+        state = _session_state(hook_input=hook_input)
+        if (marker and state.get(LAUNCH_CLAIMED_FIELD) == marker) or state.get(IGNORED_INCIDENT_KEY_FIELD) == incident_key:
+            return
+        joined_at = datetime.now(timezone.utc).isoformat()
+        ignored: List[str] = []
 
-        def note(state: Dict[str, Any]) -> None:
-            if state.get(IGNORED_INCIDENT_KEY_FIELD) != ignored:
-                state[IGNORED_INCIDENT_KEY_FIELD] = ignored
-                warned.append(ignored)
+        def adopt(state: Dict[str, Any]) -> None:
+            if marker and state.get(LAUNCH_CLAIMED_FIELD) == marker:
+                return
+            if _take_launch_claim(incident_key=incident_key, marker=marker):
+                state[LAUNCH_CLAIMED_FIELD] = marker
+                current = state.get("investigation")
+                current_key = current.get("incident_key") if isinstance(current, dict) else None
+                # An investigation the session already joined stays; launch's only fills an empty slot.
+                if not (isinstance(current_key, str) and current_key.strip()):
+                    state["investigation"] = {"incident_key": incident_key, "joined_at": joined_at}
+                return
+            if state.get(IGNORED_INCIDENT_KEY_FIELD) != incident_key:
+                state[IGNORED_INCIDENT_KEY_FIELD] = incident_key
+                ignored.append(incident_key)
 
-        update(note)
-        if warned:
+        update(adopt)
+        if ignored:
             LEDGER_MESSAGES.append(
-                f"Mezmo ledger ignores {LEDGER_INCIDENT_KEY_ENV}={ignored}: only ledger_investigation.py launch"
-                " sets it, so calls outside an investigation are not filed under it. Unset it where it is set;"
-                " a long-running process keeps the environment it started with."
+                f"Mezmo ledger ignores {LEDGER_INCIDENT_KEY_ENV}={incident_key}: only the first session"
+                " ledger_investigation.py launch starts joins its investigation, so this session's calls are not"
+                " filed under it. Join it to work on it, or unset it where it is set; a long-running process keeps"
+                " the environment it started with."
             )
     except Exception:
         pass
@@ -933,9 +986,9 @@ def warn_ignored_incident_key(
 def ledger_context(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
     """{incident_key, references} for this session, absent ones left out.
 
-    The session state's investigation wins over MEZMO_LEDGER_INCIDENT_KEY, which counts only when
-    `launch` set it (environment_incident_key). `references` are the state's valid ones as
-    merge_references keeps them, left out when none is.
+    The incident key is the session state's investigation, which a launched session joins through
+    adopt_launched_investigation. `references` are the state's valid ones as merge_references keeps
+    them, left out when none is.
     """
     state = _session_state(hook_input=hook_input)
     context: Dict[str, Any] = {}
@@ -946,10 +999,6 @@ def ledger_context(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
     incident_key = investigation.get("incident_key") if isinstance(investigation, dict) else None
     if isinstance(incident_key, str) and incident_key.strip():
         context["incident_key"] = incident_key.strip()
-        return context
-    incident_key = environment_incident_key()[0]
-    if incident_key is not None:
-        context["incident_key"] = incident_key
     return context
 
 
@@ -1750,10 +1799,7 @@ def _new_event(*, config: LedgerConfig, hook_input: Mapping[str, Any]) -> Option
 
 
 def _state_incident_key(*, session_id: str) -> Any:
-    """The incident key of the investigation in this session's state, or None. Never raises.
-
-    Read from the state alone: ledger_context would fall back to the environment's investigation.
-    """
+    """The incident key of the investigation in this session's state, or None. Never raises."""
     try:
         state = json.loads(session_state_path(session_id).read_text(encoding="utf-8"))
         return state["investigation"]["incident_key"]
@@ -1906,7 +1952,7 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
         deadline = time.monotonic() + LEDGER_TIMEOUT_SECONDS
         session_id = event.get("session_id")
         if isinstance(session_id, str) and session_id.strip():
-            warn_ignored_incident_key(
+            adopt_launched_investigation(
                 hook_input=event,
                 update=lambda change: update_session_state(
                     change=change, lock_timeout=_lock_timeout(deadline=deadline), session_id=session_id.strip()

@@ -707,8 +707,8 @@ CODEX_DAEMON = (
 def ledger_leftovers(report: Report, agent: str, sources: list, fix: str = "") -> None:
     """Warn about ledger variables in `sources`, [(where, environment)], highest first: what the ledger hooks would see.
 
-    The hooks honor MEZMO_LEDGER_INCIDENT_KEY only beside the marker ledger_investigation.py launch sets, and
-    0.6.0 and later never read MEZMO_LEDGER_ACCOUNT.
+    Only the first session ledger_investigation.py launch starts joins MEZMO_LEDGER_INCIDENT_KEY's investigation,
+    through the one-time claim its marker names, and 0.6.0 and later never read MEZMO_LEDGER_ACCOUNT.
     """
 
     def found(name: str) -> Optional[tuple]:
@@ -718,8 +718,9 @@ def ledger_leftovers(report: Report, agent: str, sources: list, fix: str = "") -
     if incident is not None:
         where, key = incident
         marker = found(mezmo_ledger_hook.LEDGER_LAUNCHED_ENV)
-        if marker is not None and marker[1] == mezmo_ledger_hook.launch_marker(key):
-            report.line("info", f"{agent} incident key", f"{key} {where}, set by ledger_investigation.py launch: calls outside an investigation are filed under it")
+        # launch sets both in one environment, so a marker from another source never vouches for the key.
+        if marker is not None and marker[0] == where and mezmo_ledger_hook.is_launch_marker(marker[1]):
+            report.line("info", f"{agent} incident key", f"{key} {where}, set by ledger_investigation.py launch: only the first session started with it joins its investigation")
         else:
             report.line(
                 "warn", f"{agent} incident key",

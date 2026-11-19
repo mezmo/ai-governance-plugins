@@ -72,8 +72,8 @@ INCIDENT_KEY = "pagerduty:Q34FCCWSTU9OI2"
 
 
 def launched(incident_key: str) -> dict[str, str]:
-    """The environment ledger_investigation.py launch gives its command for `incident_key`."""
-    return {"MEZMO_LEDGER_INCIDENT_KEY": incident_key, "MEZMO_LEDGER_LAUNCHED": ledger.launch_marker(incident_key)}
+    """The environment ledger_investigation.py launch gives its command for `incident_key`, with its claim left."""
+    return {"MEZMO_LEDGER_INCIDENT_KEY": incident_key, "MEZMO_LEDGER_LAUNCHED": ledger.record_launch(incident_key)}
 
 DROP = object()
 
@@ -933,16 +933,61 @@ class InvestigationTests(LedgerTestCase):
         self.sent()
         self.assertEqual(self.stderr, "")
 
-    def test_the_environment_is_used_without_a_state_investigation(self) -> None:
-        os.environ.update(launched(INCIDENT_KEY))
+    def test_a_launched_session_joins_without_a_state_investigation(self) -> None:
         for state in (
             None, {"investigation": None}, {"investigation": {"incident_key": "  "}},
             {"investigation": {"thread_id": "from-an-older-release"}}, {"investigation": "x"}, [1],
         ):
             with self.subTest(state=state):
+                os.environ.update(launched(INCIDENT_KEY))
                 if state is not None:
                     self.write_state(state)
                 self.assertEqual(self.sent()["extra"]["incident_key"], INCIDENT_KEY)
+                self.assertEqual(json.loads(ledger.session_state_path("session-1").read_text(encoding="utf-8"))["investigation"]["incident_key"], INCIDENT_KEY)
+
+    def test_a_launch_is_joined_by_its_first_session_only(self) -> None:
+        # A long-lived process, such as Codex's app-server, hands the same environment to every session.
+        os.environ.update(launched(INCIDENT_KEY))
+        self.assertEqual(self.sent()["extra"]["incident_key"], INCIDENT_KEY)
+        self.assertEqual(self.sent("PostToolUse")["extra"]["incident_key"], INCIDENT_KEY)
+        self.assertEqual(self.stderr, "")
+        later = self.fake()
+        self.run_hook(hook_input(session_id="session-2"), later)
+        self.assertNotIn("incident_key", later.events()[0]["extra"])
+        self.assertIn(f"Mezmo ledger ignores MEZMO_LEDGER_INCIDENT_KEY={INCIDENT_KEY}", self.stderr)
+
+    def test_a_closed_launch_files_nothing_more_under_it(self) -> None:
+        os.environ.update(launched(INCIDENT_KEY))
+        self.assertEqual(self.sent()["extra"]["incident_key"], INCIDENT_KEY)
+        line = json.dumps({"action": "closed", "incident_key": INCIDENT_KEY})
+        close = {"command": f"python3 ~/.codex/hooks/ledger_investigation.py close --incident-key {INCIDENT_KEY}"}
+        self.run_hook(hook_input("PostToolUse", tool_input=close, tool_response=f"{line}\n"), self.fake())
+        self.assertNotIn("investigation", json.loads(ledger.session_state_path("session-1").read_text(encoding="utf-8")))
+        self.assertNotIn("incident_key", self.sent()["extra"])
+        # Its own launch, closed: nothing to warn about.
+        self.assertEqual(self.stderr, "")
+
+    def test_a_stale_launch_claim_is_not_joined(self) -> None:
+        os.environ.update(launched(INCIDENT_KEY))
+        claim = ledger.launches_dir() / os.environ["MEZMO_LEDGER_LAUNCHED"]
+        old = time.time() - ledger.LAUNCH_CLAIM_MAX_AGE_SECONDS - 60
+        os.utime(claim, (old, old))
+        self.assertNotIn("incident_key", self.sent()["extra"])
+        self.assertFalse(claim.exists())
+
+    def test_a_launch_claim_is_private_and_launch_drops_stale_ones(self) -> None:
+        marker = ledger.record_launch(INCIDENT_KEY)
+        claim = ledger.launches_dir() / marker
+        self.assertTrue(ledger.is_launch_marker(marker))
+        self.assertEqual(claim.read_text(encoding="utf-8"), INCIDENT_KEY + "\n")
+        self.assertEqual(stat.S_IMODE(claim.stat().st_mode), 0o600)
+        old = time.time() - ledger.LAUNCH_CLAIM_MAX_AGE_SECONDS - 60
+        os.utime(claim, (old, old))
+        fresh = ledger.record_launch(INCIDENT_KEY)
+        self.assertNotEqual(fresh, marker)
+        self.assertEqual(sorted(path.name for path in ledger.launches_dir().iterdir()), [fresh])
+        for marker in ("", "../x", "ABC", "a" * 31, "a" * 33):
+            self.assertFalse(ledger.is_launch_marker(marker))
 
     def test_an_unreadable_state_file_means_no_investigation(self) -> None:
         self.state_dir.mkdir(parents=True)
@@ -2842,12 +2887,15 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "_response_object",
     "_retryable",
     "_session_state",
+    "_take_launch_claim",
+    "adopt_launched_investigation",
+    "is_launch_marker",
+    "launches_dir",
+    "record_launch",
     "_skip_ledger_mcp_tool",
     "_spool_ledger_events",
     "_spool_locked",
     "drain_ledger_spool",
-    "environment_incident_key",
-    "launch_marker",
     "_one_line",
     "key_fingerprint",
     "last_send",
@@ -2861,7 +2909,6 @@ CLAUDE_CODE_LEDGER_DEFINITIONS = (
     "save_ledger_events",
     "send_ledger_events",
     "tool_references",
-    "warn_ignored_incident_key",
 )
 # The ledger file's own copies of helpers the Claude Code ledger imports from its governance hook.
 CLAUDE_CODE_HOOK_DEFINITIONS = ("_locked", "_setting", "authorization_header")

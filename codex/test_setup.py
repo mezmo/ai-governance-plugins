@@ -159,7 +159,7 @@ class PrecedenceTests(SettingsCase):
         # Only a missing file means never set up; a broken one must keep governance failing closed.
         self.assertFalse(mezmo_settings.governance_configured())
         mezmo_settings.settings_dir().mkdir(parents=True, exist_ok=True)
-        for broken in ("{not json", "[]"):
+        for broken in ("{not json", "[]", "{}", '{"key_store": "bogus"}', ""):
             with self.subTest(broken=broken):
                 mezmo_settings.config_path().write_text(broken, encoding="utf-8")
                 self.assertTrue(mezmo_settings.governance_configured())

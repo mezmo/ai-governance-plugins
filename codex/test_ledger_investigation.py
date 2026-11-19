@@ -8,7 +8,6 @@ defined here, with no setting of the developer's own.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -100,8 +99,11 @@ class LedgerInvestigationTests(unittest.TestCase):
             timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        marker = hashlib.sha256(INCIDENT_KEY.encode()).hexdigest()[:16]
-        self.assertEqual(result.stdout, f"{INCIDENT_KEY} None {marker}\n")
+        key, investigation_id, marker = result.stdout.split()
+        self.assertEqual((key, investigation_id), (INCIDENT_KEY, "None"))
+        # The marker names the one-time claim the command's first session takes.
+        claim = folder / "codex-sessions" / "launches" / marker
+        self.assertEqual(claim.read_text(encoding="utf-8"), INCIDENT_KEY + "\n")
         ((opened,),) = requests
         # No account, correlation_id or entity_id: the ledger service sets them from the key and the incident key.
         self.assertEqual(opened["actor"], {"pk": "codex:launcher", "type": "agent"})
