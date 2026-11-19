@@ -363,7 +363,7 @@ token's account, so every agent of the account that starts from the same key lan
 
 | Event | When |
 | --- | --- |
-| `agent.investigation.closed` | The session left the investigation |
+| `agent.investigation.closed` | The session left the investigation, saying where things stand: `extra.status` (`resolved`, `mitigated`, `ongoing` or `no_action`) and `extra.summary` |
 | `agent.investigation.joined` | The session joined the investigation |
 | `agent.investigation.opened` | The launcher started a command in the investigation |
 
@@ -378,8 +378,10 @@ interpreter, with the key written out, so `join` and `close` are each run on the
 whole call: one after a `cd ... &&`, or with a key passed through a shell variable such as
 `"$KEY"`, is not recognized. Claude then reads the
 investigation with the `get_ledger_investigation` tool of [Mezmo MCP](#mezmo-mcp) before changing
-anything, runs one command per Bash call, and at the end runs `close`, which sends `closed` and
-takes the session out of it. Both need ledger sending on.
+anything, runs one command per Bash call, and at the end runs
+`close --incident-key <key> --status <status> --summary "<text>"`, which sends `closed` with the
+status and summary and takes the session out of it. `close` refuses to run without both, so every
+close says what happened, what was changed and what's left. Both need ledger sending on.
 
 To start an agent inside an investigation, such as from an alert, use the launcher:
 

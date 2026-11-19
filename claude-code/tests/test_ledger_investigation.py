@@ -84,12 +84,37 @@ class PrintTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
 
     def test_join_and_close_print_their_one_line(self) -> None:
-        for command, action in (("close", "closed"), ("join", "joined")):
+        closing = ("--status", "mitigated", "--summary", "  Restarted it.\n\nThe cause is still open,  owned by on-call. ")
+        for command, action, extra, printed in (
+            ("close", "closed", closing,
+             {"status": "mitigated", "summary": "Restarted it. The cause is still open, owned by on-call."}),
+            ("join", "joined", (), {}),
+        ):
             with self.subTest(command=command):
-                code, stdout, stderr = self.run_main(command, "--incident-key", INCIDENT_KEY)
+                code, stdout, stderr = self.run_main(command, "--incident-key", INCIDENT_KEY, *extra)
                 self.assertEqual((code, stderr), (0, ""))
                 self.assertEqual(stdout.count("\n"), 1)
-                self.assertEqual(json.loads(stdout), {"action": action, "incident_key": INCIDENT_KEY})
+                self.assertEqual(json.loads(stdout), {"action": action, "incident_key": INCIDENT_KEY, **printed})
+
+    def test_close_needs_a_status_and_a_summary(self) -> None:
+        for arguments in (
+            (),
+            ("--status", "resolved"),
+            ("--summary", "Fixed it."),
+            ("--status", "fixed", "--summary", "Fixed it."),
+        ):
+            with self.subTest(arguments=arguments), redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
+                ledger_investigation.main(["close", "--incident-key", INCIDENT_KEY, *arguments])
+            self.assertEqual(raised.exception.code, 2)
+        for summary, words in ((" \n ", "close needs a --summary"), ("x" * 2001, "the summary is 2001 characters")):
+            with self.subTest(summary=summary[:10]):
+                code, stdout, stderr = self.run_main(
+                    "close", "--incident-key", INCIDENT_KEY, "--status", "resolved", "--summary", summary
+                )
+                self.assertEqual((code, stdout), (2, ""))
+                self.assertIn(words, stderr)
+        code, stdout, _ = self.run_main("close", "--incident-key", INCIDENT_KEY, "--status", "no_action", "--summary", "x" * 2000)
+        self.assertEqual((code, json.loads(stdout)["status"]), (0, "no_action"))
 
     def test_join_prints_the_service_it_is_given(self) -> None:
         code, stdout, stderr = self.run_main("join", "--incident-key", INCIDENT_KEY, "--service", " checkout ")
@@ -104,7 +129,9 @@ class PrintTests(unittest.TestCase):
                 self.assertIn("service must be a DNS label", stderr)
         for command in ("close",):
             with self.subTest(command=command), redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
-                ledger_investigation.main([command, "--incident-key", INCIDENT_KEY, "--service", "checkout"])
+                ledger_investigation.main(
+                    [command, "--incident-key", INCIDENT_KEY, "--status", "resolved", "--summary", "Done.", "--service", "checkout"]
+                )
             self.assertEqual(raised.exception.code, 2)
 
     def test_a_key_that_is_not_source_colon_id_is_refused(self) -> None:

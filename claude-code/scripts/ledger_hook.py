@@ -138,7 +138,12 @@ def _join(
 
 
 def _close(
-    *, config: ledger.LedgerConfig, deadline: float, hook_input: Mapping[str, Any], incident_key: str
+    *,
+    closing: Optional[Mapping[str, str]],
+    config: ledger.LedgerConfig,
+    deadline: float,
+    hook_input: Mapping[str, Any],
+    incident_key: str,
 ) -> Optional[Dict[str, Any]]:
     """Build `closed`, then take the session out of the investigation when it is in this one.
 
@@ -147,7 +152,7 @@ def _close(
     closed: Optional[Dict[str, Any]] = None
     try:
         closed = ledger.investigation_event(
-            action="closed", config=config, hook_input=hook_input, incident_key=incident_key
+            action="closed", closing=closing, config=config, hook_input=hook_input, incident_key=incident_key
         )
 
         def leave(state: Dict[str, Any]) -> None:
@@ -261,7 +266,11 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
         new_event = _new_event(config=config, hook_input=event)
         if investigation is not None and investigation[0] == "closed":
             investigation_event = _close(
-                config=config, deadline=deadline, hook_input=event, incident_key=investigation[1]
+                closing=investigation[3],
+                config=config,
+                deadline=deadline,
+                hook_input=event,
+                incident_key=investigation[1],
             )
         sends: List[Tuple[Dict[str, Any], List[ledger.LedgerSendResult], Dict[str, Any]]] = [
             (new, [], {}) for new in (new_event, investigation_event) if new is not None

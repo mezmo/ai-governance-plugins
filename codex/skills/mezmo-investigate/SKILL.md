@@ -69,11 +69,30 @@ set up Mezmo, and don't change anything until they have.
 
 ## 5. Close
 
-When the work is done, or the user stops it, close the investigation with the same key, on its
-own as the whole shell call, with the key written out:
+When your part is done, when you hand off, or when the user stops the work, close the
+investigation with the same key, and say where things stand. Run it on its own as the whole shell
+call, with the key written out:
 
 ```bash
-python3 "<cli>" close --incident-key <key>
+python3 "<cli>" close --incident-key <key> --status <status> --summary "<summary>"
 ```
+
+`--status` is where the incident stands now:
+
+- `resolved`: fixed, and you checked that it stays fixed.
+- `mitigated`: the impact stopped, but the cause or a follow-up is still open.
+- `ongoing`: still a problem, and you are handing it off.
+- `no_action`: nothing needed doing, such as a false alarm.
+
+`--summary` is a few plain sentences for whoever reads the investigation next: what happened,
+what you changed (the changes, not the lookups), and what's left, with who or what owns it. Write
+it out in the command, in double quotes, with no double quotes or shell variables inside it, in
+2,000 characters or fewer. Don't say `resolved` unless you verified the fix. For example:
+
+```bash
+python3 "<cli>" close --incident-key pagerduty:Q12ABC --status mitigated --summary "The checkout pods were OOM-killed at their 512 MiB limit after a traffic spike. Raised the limit to 1 GiB and restarted them; no kills in the last 20 minutes. Why memory grew is still open, and the checkout team owns it."
+```
+
+Close without them and the CLI refuses, so the close isn't recorded.
 
 Later tool calls in this session are no longer filed under the incident.
