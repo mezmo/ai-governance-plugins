@@ -608,8 +608,17 @@ class HookConfigTests(unittest.TestCase):
                     self.assertEqual(ledger["command"], ledger_command)
                     self.assertTrue(ledger["command"].endswith(" || true"))
                     self.assertNotIn("exit 2", ledger["command"])
-                    self.assertEqual(set(ledger), {"command", "timeout", "type"})
+                    self.assertEqual(set(ledger), {"command", "statusMessage", "timeout", "type"})
                     self.assertEqual(ledger["timeout"], LEDGER_TIMEOUTS[event])
+
+    def test_every_mezmo_entry_has_a_status_message(self) -> None:
+        # Codex's /hooks trust screen names an entry by its statusMessage, else "Unnamed hook".
+        for name in HOOK_CONFIGS:
+            config = json.loads((ADAPTER_DIR / name).read_text(encoding="utf-8"))["hooks"]
+            for event, groups in config.items():
+                for handler in (handler for group in groups for handler in group["hooks"]):
+                    with self.subTest(config=name, event=event, command=handler["command"]):
+                        self.assertTrue(str(handler.get("statusMessage", "")).strip())
 
     def test_the_ledger_command_exits_0_with_or_without_its_script(self) -> None:
         command = HOOK_CONFIGS["hooks.example.json"]

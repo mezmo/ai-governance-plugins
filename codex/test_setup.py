@@ -6,8 +6,10 @@ security / secret-tool command is a stand-in that records its argv and stdin.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -23,10 +25,14 @@ from unittest.mock import patch
 
 import mezmo_governance_hook as hook
 import mezmo_ledger_hook as ledger
+import mezmo_key_file
 import mezmo_settings
 import mezmo_setup
 
 KEY = "canary-key-5d1c8e0a"
+ADAPTER_DIR = Path(__file__).resolve().parent
+REAL_RUN = subprocess.run
+REPO = ADAPTER_DIR.parent
 API = "https://api.example.test"
 ENV_NAMES = ("MEZMO_GOVERNANCE_URL", "MEZMO_GOVERNANCE_TOKEN", "MEZMO_LEDGER_URL", "MEZMO_LEDGER_KEY")
 
@@ -84,6 +90,9 @@ class SettingsCase(unittest.TestCase):
             self.addCleanup(patcher.stop)
         for name in ENV_NAMES:
             os.environ.pop(name, None)
+        # Never the real Codex config.
+        self.codex = Path(scratch.name) / ".codex"
+        os.environ["CODEX_HOME"] = str(self.codex)
         mezmo_settings._read_store.cache_clear()
         self.addCleanup(mezmo_settings._read_store.cache_clear)
         self.stderr = StringIO()
@@ -250,10 +259,10 @@ class SetupTests(SettingsCase):
 
         return send
 
-    def run_setup(self, platform: str, which: Any, fake: FakeStore, **kwargs: Any) -> tuple[int, str]:
+    def run_setup(self, platform: str, which: Any, fake: FakeStore, mcp: str = "", **kwargs: Any) -> tuple[int, str]:
         out = StringIO()
         with (
-            patch("builtins.input", return_value=API),
+            patch("builtins.input", lambda prompt: API if "API URL" in prompt else mcp),
             patch.object(mezmo_setup.getpass, "getpass", return_value=KEY),
             patch.object(mezmo_setup.shutil, "which", which),
             patch.object(subprocess, "run", fake),
@@ -394,6 +403,282 @@ class SetupTests(SettingsCase):
         self.assertIn("did not answer", text)
         self.assertEqual(self.config()["key_store"], "file")
         self.assertEqual((self.dir / "codex-key").read_text(encoding="utf-8").strip(), KEY)
+
+
+class NonInteractiveTests(SettingsCase):
+    """The flags the mezmo-setup skill runs: no prompt, the key from a private file or the store."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.sent: list = []
+        self.governance = 404
+        self.which = lambda name: None
+
+        def send(method: str, url: str, key: str, body: Any) -> tuple:
+            self.sent.append((method, url, key, body))
+            return (self.governance, None) if method == "GET" else (202, {"accepted": 0})
+
+        self.fake = FakeStore()
+        for patcher in (
+            patch.object(mezmo_setup, "http", send),
+            patch.object(subprocess, "run", self.fake),
+            patch.object(mezmo_setup.shutil, "which", lambda name: self.which(name)),
+            patch("builtins.input", side_effect=AssertionError("asked")),
+            patch.object(mezmo_setup.getpass, "getpass", side_effect=AssertionError("asked")),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def key_file(self, key: str = KEY, mode: int = 0o600) -> Path:
+        folder = Path(tempfile.mkdtemp(prefix="mezmo-key-", dir=self.dir.parent))
+        folder.chmod(0o700)
+        path = folder / "key"
+        path.write_text(key + "\n", encoding="utf-8")
+        path.chmod(mode)
+        return path
+
+    def main(self, *argv: str) -> tuple:
+        out = StringIO()
+        with redirect_stdout(out), redirect_stderr(out):
+            code = mezmo_setup.main(list(argv))
+        text = out.getvalue() + self.stderr.getvalue()
+        self.assertNotIn(KEY, text)
+        self.fake.assert_key_never_in_argv(self)
+        return code, text
+
+    def config(self) -> dict:
+        return json.loads((self.dir / "codex.json").read_text(encoding="utf-8"))
+
+    def codex_config(self) -> str:
+        return (self.codex / "config.toml").read_text(encoding="utf-8")
+
+    def test_a_key_file_saves_what_the_prompt_saves_and_is_deleted(self) -> None:
+        path = self.key_file()
+        code, text = self.main("--api-url", API, "--key-file", str(path), "--delete-key-file")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.config(), {"api_url": API, "ledger_enabled": True, "key_store": "file"})
+        self.assertEqual(mezmo_settings.governance_key().value, KEY)
+        self.assertEqual([key for _, _, key, _ in self.sent], [KEY, KEY])
+        self.assertFalse(path.exists())
+        self.assertFalse(path.parent.exists())
+
+    def test_the_key_file_is_deleted_when_setup_fails(self) -> None:
+        self.governance = 401
+        path = self.key_file()
+        code, text = self.main("--api-url", API, "--key-file", str(path), "--delete-key-file")
+        self.assertEqual(code, 1)
+        self.assertIn("Nothing was saved", text)
+        self.assertFalse(path.exists())
+        self.assertFalse(self.dir.exists())
+
+    def test_a_loose_or_linked_key_file_is_refused(self) -> None:
+        loose = self.key_file(mode=0o640)
+        real = self.key_file()
+        link = real.parent / "link"
+        link.symlink_to(real)
+        for path in (loose, link):
+            with self.subTest(path=path.name):
+                code, text = self.main("--api-url", API, "--key-file", str(path))
+                self.assertEqual(code, 1)
+                self.assertIn("key file", text.lower())
+                self.assertEqual(self.sent, [])
+                self.assertFalse(self.dir.exists())
+
+    def test_keep_key_uses_the_saved_key_without_writing_it_again(self) -> None:
+        self.which = lambda name: f"/usr/bin/{name}"
+        self.fake.key = KEY
+        with patch.object(sys, "platform", "darwin"):
+            code, text = self.main("--api-url", API, "--keep-key")
+        self.assertEqual(code, 0, text)
+        self.assertIn("kept the key in the macOS Keychain", text)
+        self.assertEqual(self.config()["key_store"], "keychain")
+        self.assertNotIn(["security", "-i"], [args for args, _ in self.fake.calls])
+        self.assertEqual([key for _, _, key, _ in self.sent], [KEY, KEY])
+
+        mezmo_settings._read_store.cache_clear()
+        self.fake.key = None
+        code, text = self.main("--api-url", API, "--keep-key")
+        self.assertEqual(code, 1)
+        self.assertIn("no Mezmo key is saved", text)
+
+    def test_status_never_shows_the_key(self) -> None:
+        self.assertEqual(self.main("--status")[0], 1)
+        self.main("--api-url", API, "--key-file", str(self.key_file()), "--delete-key-file")
+        code, text = self.main("--status")
+        self.assertEqual(code, 0)
+        self.assertIn(f"API URL: {API} (saved)", text)
+        self.assertIn("key: saved in", text)
+
+    def test_production_writes_the_mezmo_mcp_server_and_keeps_the_rest_of_config_toml(self) -> None:
+        self.codex.mkdir()
+        before = 'model = "x"\n\n[mcp_servers.other]\nurl = "https://other.example.test/mcp"\n'
+        (self.codex / "config.toml").write_text(before, encoding="utf-8")
+        (self.codex / "config.toml").chmod(0o600)
+
+        code, text = self.main("--key-file", str(self.key_file()), "--delete-key-file")
+        self.assertEqual(code, 0, text)
+        config = self.codex_config()
+        self.assertTrue(config.startswith(before))
+        self.assertNotIn(KEY, config)
+        self.assertEqual((self.codex / "config.toml.mezmo-backup").read_text(encoding="utf-8"), before)
+        self.assertEqual(stat.S_IMODE((self.codex / "config.toml").stat().st_mode), 0o600)
+        self.assertIn(
+            '\n\n# Written by Mezmo setup: run it again to change this table, or with --remove to delete it.\n'
+            '[mcp_servers.mezmo]\nurl = "https://mcp.mezmo.com/mcp"\n'
+            f'http_headers_helper = "python3 {self.dir}/codex-mcp/mezmo_mcp_headers.py"\n'
+            'enabled_tools = ["get_ledger_investigation", "list_ledger_entries"]\ndefault_tools_approval_mode = "auto"\n',
+            config,
+        )
+        parsed = mezmo_setup.tomllib.loads(config) if mezmo_setup.tomllib else None
+        if parsed is not None:
+            server = parsed["mcp_servers"]["mezmo"]
+            self.assertEqual(server["url"], "https://mcp.mezmo.com/mcp")
+            self.assertEqual(server["enabled_tools"], ["get_ledger_investigation", "list_ledger_entries"])
+            self.assertEqual(server["default_tools_approval_mode"], "auto")
+            self.assertEqual(server["http_headers_helper"], mezmo_setup.helper_command())
+            self.assertEqual(set(server), {"url", "enabled_tools", "default_tools_approval_mode", "http_headers_helper"})
+            self.assertEqual(parsed["mcp_servers"]["other"], {"url": "https://other.example.test/mcp"})
+
+        # Again, with another URL: still one table, in the same place.
+        code, text = self.main("--keep-key", "--mcp-url", "https://mcp.example.test/mcp")
+        self.assertEqual(code, 0, text)
+        config = self.codex_config()
+        self.assertEqual(config.count("[mcp_servers.mezmo]"), 1)
+        self.assertIn('url = "https://mcp.example.test/mcp"', config)
+        self.assertTrue(config.startswith(before))
+
+        # --remove takes out only setup's table.
+        code, text = self.main("--remove")
+        self.assertEqual(code, 0, text)
+        self.assertEqual(self.codex_config(), before)
+        self.assertFalse(mezmo_setup.helper_dir().exists())
+
+    def test_another_api_without_an_mcp_url_skips_the_mcp(self) -> None:
+        code, text = self.main("--api-url", API, "--key-file", str(self.key_file()), "--delete-key-file")
+        self.assertEqual(code, 0, text)
+        self.assertIn("skip  the Mezmo MCP", text)
+        self.assertFalse((self.codex / "config.toml").exists())
+
+    def test_a_hand_written_mezmo_server_is_kept_unless_replace_mcp(self) -> None:
+        self.codex.mkdir()
+        mine = '[mcp_servers.mezmo]\nurl = "https://mcp.mezmo.com/mcp"\nbearer_token_env_var = "MEZMO_MCP_KEY"\n\n[mcp_servers.mezmo.tools.x]\napproval_mode = "approve"\n\n[other]\na = 1\n'
+        (self.codex / "config.toml").write_text(mine, encoding="utf-8")
+        path = self.key_file()
+        code, text = self.main("--key-file", str(path), "--delete-key-file")
+        self.assertEqual(code, 4)
+        self.assertIn("--replace-mcp", text)
+        self.assertFalse(self.dir.exists() and (self.dir / "codex.json").exists())
+        self.assertFalse(path.exists())
+        self.assertEqual(self.codex_config(), mine)
+        self.assertEqual(self.sent, [])
+
+        code, text = self.main("--key-file", str(self.key_file()), "--delete-key-file", "--replace-mcp")
+        self.assertEqual(code, 0, text)
+        config = self.codex_config()
+        self.assertNotIn("MEZMO_MCP_KEY", config)
+        self.assertNotIn("tools.x", config)
+        self.assertIn("[other]\na = 1", config)
+        self.assertEqual((self.codex / "config.toml.mezmo-backup").read_text(encoding="utf-8"), mine)
+
+    def test_the_helper_prints_the_header_from_the_saved_key_as_codex_runs_it(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX shell")
+        code, text = self.main("--key-file", str(self.key_file()), "--delete-key-file")
+        self.assertEqual(code, 0, text)
+        command = mezmo_setup.helper_command()
+        self.assertNotIn(str(ADAPTER_DIR), command)
+        # Codex runs the helper with sh -c and reads a JSON object of header strings from stdout.
+        env = {name: value for name, value in os.environ.items() if not name.startswith("MEZMO_")}
+        env["HOME"] = str(self.dir.parent)
+        result = REAL_RUN(["sh", "-c", command], env=env, capture_output=True, text=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"Authorization": f"Token {KEY}"})
+
+        (self.dir / "codex-key").unlink()
+        result = REAL_RUN(["sh", "-c", command], env=env, capture_output=True, text=True, timeout=30, check=False)
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("set up Mezmo", result.stderr)
+
+
+class KeyFileCopyTests(unittest.TestCase):
+    def test_the_key_file_helpers_match_claude_codes_byte_for_byte(self) -> None:
+        # The Codex plugin ships only codex/, so it carries a copy of these.
+        def functions(path: Path) -> dict:
+            source = path.read_text(encoding="utf-8")
+            return {
+                node.name: ast.get_source_segment(source, node)
+                for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)
+            }
+
+        copy = functions(ADAPTER_DIR / "mezmo_key_file.py")
+        original = functions(REPO / "claude-code" / "scripts" / "mezmo_common.py")
+        self.assertEqual(set(copy), {"_require_posix", "_private_key_fd", "read_key_file", "delete_key_file", "key_file_main"})
+        for name, source in copy.items():
+            with self.subTest(name=name):
+                self.assertEqual(source, original[name])
+
+    def test_create_key_file_makes_an_empty_private_file_and_prints_only_its_path(self) -> None:
+        if os.name == "nt":
+            self.skipTest("POSIX modes")
+        out = StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(mezmo_key_file.key_file_main(["create-key-file"]), 0)
+        path = Path(out.getvalue().strip())
+        self.addCleanup(lambda: path.parent.rmdir() if path.parent.exists() else None)
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        self.assertEqual(path.read_bytes(), b"")
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+
+
+class SkillTests(unittest.TestCase):
+    def skills(self) -> dict:
+        manifest = json.loads((ADAPTER_DIR / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["skills"], "./skills/")
+        found = {}
+        for path in sorted((ADAPTER_DIR / "skills").glob("*/SKILL.md")):
+            text = path.read_text(encoding="utf-8")
+            match = re.match(r"---\n(.*?)\n---\n", text, re.S)
+            self.assertIsNotNone(match, path)
+            fields = dict(line.split(": ", 1) for line in match.group(1).splitlines())
+            self.assertEqual(fields["name"], path.parent.name)
+            self.assertTrue(fields["description"].strip())
+            found[fields["name"]] = text
+        return found
+
+    def test_the_plugin_declares_the_setup_and_investigate_skills(self) -> None:
+        skills = self.skills()
+        self.assertEqual(set(skills), {"mezmo-setup", "mezmo-investigate"})
+        for name, text in skills.items():
+            with self.subTest(skill=name):
+                # The skill finds the plugin from its own folder: no install path or version in it.
+                self.assertNotIn("plugins/cache", text)
+                self.assertIsNone(re.search(r"\b\d+\.\d+\.\d+\b", text))
+                self.assertIn(f"<plugin root>/skills/{name}/SKILL.md", text)
+
+    def test_setup_passes_the_key_only_through_a_private_file_or_the_store(self) -> None:
+        text = self.skills()["mezmo-setup"]
+        self.assertIn('mezmo_key_file.py" create-key-file', text)
+        self.assertIn('--key-file "<KEY_FILE>" --delete-key-file', text)
+        self.assertIn("--keep-key", text)
+        self.assertIn("--no-ledger", text)
+        self.assertIn("/hooks", text)
+        self.assertNotIn("--key ", text)
+
+    def test_investigate_follows_the_readme_steps(self) -> None:
+        text = self.skills()["mezmo-investigate"]
+        readme = (ADAPTER_DIR / "README.md").read_text(encoding="utf-8")
+        start = readme.index("## Incident investigations\n\nRecord")
+        block = " ".join(readme[start:readme.index("```", start)].split()).lower()
+        text = " ".join(text.split()).lower()
+        for step in (
+            'join --incident-key <key> --service <name>', "get_ledger_investigation", "close --incident-key <key>",
+            "pagerduty:<incident id>", "one command per shell call", "stay on the incident's service and namespace",
+        ):
+            with self.subTest(step=step):
+                self.assertIn(step, block)
+                self.assertIn(step, text)
+
 
 
 if __name__ == "__main__":

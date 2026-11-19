@@ -963,6 +963,7 @@ def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
     if plugins:
         smokes += check_codex_plugin(report, plugins, hooks, why)
     check_codex_ledger(report, hooks)
+    check_codex_mcp(report)
     return smokes
 
 
@@ -1014,6 +1015,141 @@ def check_codex_ledger(report: Report, hooks: Optional[list]) -> None:
         report.line("warn", "Codex ledger trust", f"Codex skips the ledger hook for {', '.join(skipped)}, so those calls are not recorded", fix)
     else:
         report.line("ok", "Codex ledger trust", f"{len(listed)} ledger hooks are trusted")
+
+
+CODEX_MCP_FIX = "ask Codex to set up Mezmo, or run " + CODEX_SETUP
+MCP_SECONDS = 10.0
+
+
+def codex_mcp_server(text: str) -> Optional[dict]:
+    """[mcp_servers.mezmo] from config.toml, or None. Without tomllib, only its flat string keys."""
+    if mezmo_setup.tomllib is not None:
+        try:
+            data = mezmo_setup.tomllib.loads(text)
+        except ValueError as error:
+            raise Unknown(f"could not parse {shown(mezmo_setup.codex_config_path())}: {error}") from error
+        server = as_dict(data.get("mcp_servers")).get("mezmo")
+        return server if isinstance(server, dict) else None
+    table = toml_table(text, "mcp_servers.mezmo")
+    if table is None:
+        return None
+    server: dict = {}
+    for key, value in re.findall(r"^\s*([A-Za-z_]+)\s*=\s*(.+?)\s*$", table, re.M):
+        strings = re.findall(r'"((?:[^"\\]|\\.)*)"', value)
+        if value.startswith("["):
+            server[key] = strings
+        elif value.startswith("{"):
+            server[key] = dict(re.findall(r'([A-Za-z0-9_-]+)\s*=\s*"((?:[^"\\]|\\.)*)"', value))
+        elif strings:
+            server[key] = json.loads(f'"{strings[0]}"')
+        elif value in ("true", "false"):
+            server[key] = value == "true"
+    return server
+
+
+def codex_mcp_headers(server: dict) -> tuple:
+    """(headers, how they were found) the way Codex builds them, or (None, why not)."""
+    helper = server.get("http_headers_helper")
+    if isinstance(helper, str) and helper.strip():
+        if os.name == "nt":
+            return None, "http_headers_helper (not run: Windows)"
+        try:
+            # Codex runs the helper with sh -c and reads a JSON object of header strings from its stdout.
+            result = subprocess.run(
+                ["sh", "-c", helper], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=MCP_SECONDS, check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            return None, f"http_headers_helper did not run: {error}"
+        if result.returncode != 0:
+            last = (result.stderr.strip().splitlines() or [""])[-1]
+            return None, f"http_headers_helper exited {result.returncode}: {last}"
+        try:
+            headers = json.loads(result.stdout)
+        except ValueError:
+            headers = None
+        if not isinstance(headers, dict) or not all(isinstance(value, str) for value in headers.values()):
+            return None, "http_headers_helper did not print a JSON object of strings"
+        return headers, "http_headers_helper"
+    headers = {str(name): str(value) for name, value in as_dict(server.get("http_headers")).items()}
+    how = "a static http_headers Authorization" if any(name.lower() == "authorization" for name in headers) else "no Authorization header"
+    for name, variable in as_dict(server.get("env_http_headers")).items():
+        headers[str(name)] = os.environ.get(str(variable), "")
+        how = f"env_http_headers from {variable}"
+    variable = server.get("bearer_token_env_var")
+    if isinstance(variable, str) and variable:
+        if not os.environ.get(variable):
+            return None, f"bearer_token_env_var {variable}, which this shell does not set (and Codex's daemon may not either)"
+        headers["Authorization"] = "Bearer " + os.environ[variable]
+        how = f"bearer_token_env_var {variable}"
+    return headers, how
+
+
+def mcp_initialize(url: str, headers: dict) -> tuple:
+    """(HTTP status, whether the body holds a JSON-RPC result) for an MCP initialize request."""
+    body = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "mezmo-doctor", "version": "1"}},
+    }).encode()
+    request = Request(url, data=body, method="POST", headers={
+        **headers, "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+    })
+    try:
+        with build_opener(hook.RefuseRedirect).open(request, timeout=REQUEST_SECONDS) as response:
+            status, raw = response.status, response.read(65536)
+    except HTTPError as error:
+        return error.code, False
+    return status, b'"result"' in raw
+
+
+def check_codex_mcp(report: Report) -> None:
+    """The Mezmo MCP server Codex connects to: configured, its URL, how it authenticates, and an initialize call.
+
+    Only investigations read it, so its problems are warnings.
+    """
+    path = mezmo_setup.codex_config_path()
+    try:
+        text = read_text(path) or ""
+        server = codex_mcp_server(text)
+    except Unknown as error:
+        report.line("warn", "Codex MCP", str(error))
+        return
+    if server is None:
+        report.line("warn", "Codex MCP", f"no mezmo MCP server in {shown(path)}, so investigations can't read the ledger", CODEX_MCP_FIX)
+        return
+    url = server.get("url")
+    if not isinstance(url, str) or not url:
+        report.line("warn", "Codex MCP", f"[mcp_servers.mezmo] in {shown(path)} has no url", CODEX_MCP_FIX)
+        return
+    owner = "written by setup" if mezmo_setup.mcp_tables(text.splitlines())[1] else "not written by setup"
+    report.line("info", "Codex MCP", f"server mezmo at {shown_url(url)} ({owner})")
+    tools = server.get("enabled_tools")
+    if isinstance(tools, list) and "get_ledger_investigation" not in tools:
+        report.line("warn", "Codex MCP tools", "enabled_tools leaves out get_ledger_investigation, which investigations read", CODEX_MCP_FIX)
+    if server.get("enabled") is False:
+        report.line("warn", "Codex MCP", "enabled = false, so Codex does not connect", CODEX_MCP_FIX)
+        return
+    if url_problem(url):
+        report.line("warn", "Codex MCP", f"{shown_url(url)} {url_problem(url)}", CODEX_MCP_FIX)
+        return
+    headers, how = codex_mcp_headers(server)
+    if headers is None:
+        report.line("warn", "Codex MCP auth", how, CODEX_MCP_FIX)
+        return
+    report.line("info", "Codex MCP auth", how)
+    for value in headers.values():
+        bare = re.sub(r"^(token|bearer) +", "", value, flags=re.I)
+        report.secrets += [secret for secret in (value, bare) if len(secret) >= 4]
+    try:
+        status, result = mcp_initialize(url, headers)
+    except (OSError, ValueError) as error:
+        report.line("warn", "Codex MCP connect", f"{shown_url(url)} was not reached: {getattr(error, 'reason', error)}")
+        return
+    if status in (401, 403):
+        report.line("warn", "Codex MCP connect", f"{shown_url(url)} refused the key (HTTP {status})", CODEX_MCP_FIX)
+    elif status == 200 and result:
+        report.line("ok", "Codex MCP connect", f"{shown_url(url)} answered initialize (HTTP 200)")
+    else:
+        report.line("warn", "Codex MCP connect", f"{shown_url(url)} answered initialize with HTTP {status}", "check the MCP URL")
 
 
 def same_file(text: Any, path: Path) -> bool:

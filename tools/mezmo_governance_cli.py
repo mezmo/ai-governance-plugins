@@ -42,8 +42,9 @@ LEDGER_FILE = "mezmo_ledger_hook.py"
 # Codex's investigation CLI: the agent runs it by hand, so it is copied beside LEDGER_FILE, which it imports, and
 # never registered as a handler.
 INVESTIGATION_FILE = "ledger_investigation.py"
-# Codex's setup command and the settings loader both hooks and setup import, copied beside the hooks.
-SETUP_FILES = ("mezmo_settings.py", "mezmo_setup.py")
+# Codex's setup command, the settings loader both hooks and setup import, and the key-file and MCP header
+# helpers setup uses, copied beside the hooks.
+SETUP_FILES = ("mezmo_settings.py", "mezmo_setup.py", "mezmo_key_file.py", "mezmo_mcp_headers.py")
 # The mock denies each agent's shell tool and approves the rest.
 SHELL_TOOLS = list(dict.fromkeys(agent.shell for agent in doctor.AGENTS))
 SMOKE_KEY = "smoke-test"
