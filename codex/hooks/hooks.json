@@ -38,6 +38,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/mezmo_ledger_hook.py\" || true",
+            "timeout": 15,
+            "statusMessage": "Recording the turn's end in the Mezmo Ledger"
+          }
+        ]
+      }
     ]
   }
 }

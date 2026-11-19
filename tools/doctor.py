@@ -942,7 +942,7 @@ def check_codex_plugin(report: Report, plugins: list, hooks: Optional[list], why
     governance script is checked and smoked.
     """
     smokes: list = []
-    trust_fix = "start codex, run /hooks, and trust all four Mezmo hooks"
+    trust_fix = "start codex, run /hooks, and trust all five Mezmo hooks"
     for plugin in plugins:
         report.line("ok", "Codex plugin", f"{plugin} is installed")
     if hooks is None:
@@ -979,7 +979,7 @@ def check_codex(report: Report, version: Optional[tuple]) -> Optional[list]:
         )
     smokes = []
     hooks, why = codex_listed()
-    trust_fix = "start codex, run /hooks, and trust the four Mezmo hook entries"
+    trust_fix = "start codex, run /hooks, and trust the five Mezmo hook entries"
     for g, h, _, handler in found:
         command = str(handler.get("command"))
         report.line("ok", "Codex hook", f"PreToolUse hook in {shown(path)}")
@@ -1054,10 +1054,10 @@ def check_codex_ledger(report: Report, hooks: Optional[list]) -> None:
         ledger_last_send(report, "Codex ledger last send", state_folder(CODEX_STATE_DIR), "Codex", f"run {CODEX_SETUP} with a current key")
     if hooks is None:
         return
-    fix = "start codex, run /hooks, and trust all four Mezmo hooks"
+    fix = "start codex, run /hooks, and trust all five Mezmo hooks"
     listed = [
         item for item in hooks
-        if item.get("eventName") in ("preToolUse", "postToolUse")
+        if item.get("eventName") in ("preToolUse", "postToolUse", "stop")
         and mezmo_handlers([{"command": item.get("command")}], script=CODEX_LEDGER_FILE)
     ]
     if not listed:

@@ -294,7 +294,7 @@ exits 1.
 
 The Gemini CLI install runs with `GEMINI_CLI_TRUST_WORKSPACE=true` for that
 one command, so Gemini asks nothing and adds no folder to `trustedFolders.json`.
-Codex skips its four hook entries until you trust them in `/hooks`. Pi loads the extension
+Codex skips its five hook entries until you trust them in `/hooks`. Pi loads the extension
 from this checkout, and Claude Code keeps it as the marketplace, so keep the
 checkout where it is. The
 libraries (LangChain, OpenAI Agents SDK, Claude Agent SDK and Mastra) are set
@@ -359,7 +359,7 @@ The same repository is a marketplace for each, and each reads its own manifest
 and gets its own adapter. Use this or `./mezmo-governance install`, not both:
 both run the hook twice. `smoke` checks only the file install; `doctor` also checks the native Codex plugin.
 
-- Codex CLI: `codex plugin marketplace add mezmo/ai-governance-plugins`, then `codex plugin add mezmo-governance@mezmo`, then trust all four hooks in `/hooks` (governance and ledger, for `PreToolUse` and `PostToolUse`).
+- Codex CLI: `codex plugin marketplace add mezmo/ai-governance-plugins`, then `codex plugin add mezmo-governance@mezmo`, then trust all five hooks in `/hooks` (governance and ledger, for `PreToolUse` and `PostToolUse`, and the ledger for `Stop`).
   **Until you trust them, Codex skips the hooks without a warning and every tool runs ungoverned** (seen live on 0.163.0).
   `doctor` asks `codex app-server` for the trust state and fails when the PreToolUse hook is not trusted or changed since you trusted it.
   For a headless setup, `codex app-server` method `hooks/list` gives each hook's key and current hash; add a

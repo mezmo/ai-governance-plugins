@@ -157,10 +157,11 @@ expected: with no key, the hooks let every call run and record nothing.
 If setup printed "Start a new Codex session to use the Mezmo MCP", say so: Codex connects to MCP
 servers when a session starts, so this session doesn't have the Mezmo MCP's tools.
 
-Tell the user to start a new Codex session, run `/hooks`, and trust the four Mezmo hooks:
+Tell the user to start a new Codex session, run `/hooks`, and trust the five Mezmo hooks:
 
 - "Checking Mezmo Governance" and "Recording the governed result"
-- "Recording the call in the Mezmo Ledger" and "Recording the result in the Mezmo Ledger"
+- "Recording the call in the Mezmo Ledger", "Recording the result in the Mezmo Ledger" and
+  "Recording the turn's end in the Mezmo Ledger"
 
 Until they are trusted, Codex skips them and every tool call runs ungoverned and unrecorded. After
 each plugin update, Codex asks to trust them again.

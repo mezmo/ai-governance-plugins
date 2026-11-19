@@ -346,14 +346,17 @@ def with_ledger(config: dict, example: dict) -> dict:
     # An event with no governance handler takes the example's whole group, less its ledger handler where the
     # event already runs the ledger hook.
     current = as_dict(config.get("hooks"))
-    groups_to_add = {
-        event: [
-            {**group, "hooks": [handler for handler in group["hooks"] if not doctor.mezmo_handlers([handler], script=LEDGER_FILE)]}
-            for group in groups
-        ]
-        if doctor.mezmo_handlers(current.get(event), script=LEDGER_FILE) else groups
-        for event, groups in example["hooks"].items()
-    }
+    groups_to_add = {}
+    for event, groups in example["hooks"].items():
+        if doctor.mezmo_handlers(current.get(event), script=LEDGER_FILE):
+            groups = [
+                {**group, "hooks": [handler for handler in group["hooks"] if not doctor.mezmo_handlers([handler], script=LEDGER_FILE)]}
+                for group in groups
+            ]
+            # Stop runs only the ledger hook, so once it is there nothing is left to add.
+            groups = [group for group in groups if group["hooks"]]
+        if groups:
+            groups_to_add[event] = groups
     result = merged(config, {**example, "hooks": groups_to_add}, "command")
     hooks = result["hooks"]
     for event, groups in example["hooks"].items():
@@ -373,8 +376,9 @@ def ledger_steps(example: dict, path: Path) -> list:
     if with_ledger(config, example) == config:
         return []
     hooks = as_dict(config.get("hooks"))
-    # Only the ledger handlers are new to an install from before the ledger.
-    kind = "ledger hook" if all(doctor.mezmo_handlers(hooks.get(event)) for event in example["hooks"]) else "hook"
+    # Only the ledger handlers are new to an install from before the ledger. Stop runs only the ledger hook.
+    governed = [event for event, groups in example["hooks"].items() if doctor.mezmo_handlers(groups)]
+    kind = "ledger hook" if all(doctor.mezmo_handlers(hooks.get(event)) for event in governed) else "hook"
     return [Step(f"add the Mezmo {kind} entries to {shown(path)}", (path,), lambda: write_json(path, with_ledger(load_object(path), example)))]
 
 
@@ -924,7 +928,7 @@ INSTALLERS = {
     "claude-code": claude_code(),
     "codex": file_hook_agent(
         "codex", doctor.codex_dir, "PreToolUse",
-        "Start codex, run /hooks, and trust the four Mezmo hook entries, two for governance and two for the ledger:"
+        "Start codex, run /hooks, and trust the five Mezmo hook entries, two for governance and three for the ledger:"
         " Codex skips a hook until you trust it. Run ./mezmo-governance setup codex first, unless you export the variables.",
         trust_by_position=True, ledger=True,
     ),
