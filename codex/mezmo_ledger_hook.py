@@ -166,6 +166,8 @@ PENDING_CALLS_FIELD = "pending_calls"
 ROLLOUT_OFFSET_FIELD = "rollout_offset"
 # The hook-input fields an end event is built from, kept for a call that may never get its own.
 PENDING_FIELDS = ("cwd", "session_id", "tool_input", "tool_name", "tool_use_id", "turn_id")
+# Kept beside them: the investigation the call started under, which its ending belongs to.
+PENDING_INCIDENT_KEY = "incident_key"
 MAX_PENDING_CALLS = 200
 # The most of the rollout one hook run reads; the rest waits for the next run.
 MAX_ROLLOUT_READ_BYTES = 8 * 1024 * 1024
@@ -1095,8 +1097,13 @@ def ledger_event(
     kind: str,
     outcome: Optional[str] = None,
     reason: Optional[str] = None,
+    started_under: Optional[Mapping[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """One tool-call event: `kind` is started, ran, failed, not_run or no_result. None without an identity."""
+    """One tool-call event: `kind` is started, ran, failed, not_run or no_result. None without an identity.
+
+    `started_under`, {incident_key} or {}, stands in for the session's current investigation: an
+    ending built later, from the rollout, belongs to the investigation its call started under.
+    """
     try:
         tool = normalize_tool_call(hook_input)
         identity = call_identity(hook_input, tool)
@@ -1109,7 +1116,7 @@ def ledger_event(
     command = tool.arguments.get("command")
     if not investigation and isinstance(command, str) and command.strip():
         intent += f": {_one_line(command)[:MAX_INTENT_COMMAND_CHARACTERS]}"
-    context = ledger_context(hook_input=hook_input)
+    context = ledger_context(hook_input=hook_input) if started_under is None else dict(started_under)
 
     extra: Dict[str, Any] = {"access": access, "agent": AGENT}
     if kind == "started":
@@ -1934,6 +1941,9 @@ def _track_pending(*, hook_input: Mapping[str, Any], update: Callable[[Callable[
             return
         started = hook_input.get("hook_event_name") == "PreToolUse"
         kept = {name: hook_input[name] for name in PENDING_FIELDS if name in hook_input}
+        if started:
+            incident_key = ledger_context(hook_input=hook_input).get("incident_key")
+            kept[PENDING_INCIDENT_KEY] = incident_key if isinstance(incident_key, str) else None
 
         def change(state: Dict[str, Any]) -> None:
             pending = state.get(PENDING_CALLS_FIELD)
@@ -1960,7 +1970,9 @@ def _set_pending(state: Dict[str, Any], pending: Dict[str, Any]) -> None:
 def _rollout_records(*, path: str, offset: int) -> Tuple[List[Dict[str, Any]], int]:
     """The rollout's JSON records after `offset`, and the offset past the last whole line read.
 
-    A rollout shorter than `offset` was replaced, so it is read from the start.
+    A rollout shorter than `offset` was replaced, so it is read from the start. A line longer than
+    MAX_ROLLOUT_READ_BYTES is skipped: its first part is passed over here, and the rest, which is
+    no JSON on its own, on the next read.
     """
     with open(path, "rb") as rollout:
         if offset > os.fstat(rollout.fileno()).st_size:
@@ -1969,7 +1981,8 @@ def _rollout_records(*, path: str, offset: int) -> Tuple[List[Dict[str, Any]], i
         data = rollout.read(MAX_ROLLOUT_READ_BYTES)
     end = data.rfind(b"\n")
     if end < 0:
-        return [], offset
+        # A whole read with no newline is one oversized line; a shorter one is a line still being written.
+        return [], offset + len(data) if len(data) == MAX_ROLLOUT_READ_BYTES else offset
     records: List[Dict[str, Any]] = []
     for line in data[:end].splitlines():
         try:
@@ -2072,10 +2085,18 @@ def _catch_up(
         update(change)
         events: List[Dict[str, Any]] = []
         for kept, kind, item in ended:
-            call = {**kept, "hook_event_name": "PostToolUse", "transcript_path": path}
+            incident_key = kept.get(PENDING_INCIDENT_KEY)
+            call = {name: kept[name] for name in PENDING_FIELDS if name in kept}
+            call.update(hook_event_name="PostToolUse", transcript_path=path)
             if kind == "failed":
                 call["tool_response"] = _item_text(item)
-            event = ledger_event(config=config, duration_ms=_item_duration_ms(item), hook_input=call, kind=kind)
+            event = ledger_event(
+                config=config,
+                duration_ms=_item_duration_ms(item),
+                hook_input=call,
+                kind=kind,
+                started_under={"incident_key": incident_key} if isinstance(incident_key, str) and incident_key else {},
+            )
             if event is not None:
                 events.append(event)
         incident_key = ledger_context(hook_input=hook_input).get("incident_key")
