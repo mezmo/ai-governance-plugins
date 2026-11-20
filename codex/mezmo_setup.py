@@ -474,11 +474,11 @@ class Choices:
 def read_inputs(choices: Choices, old: dict, platform: str) -> Tuple[str, Optional[str], str, Optional[str]]:
     """(api_url, mcp_url, key, the store the key is already in or None).
 
-    With no flags it asks for everything. At a terminal it also asks for whatever the flags leave
-    out, so `--api-url URL` alone asks for the MCP URL and the key; without one, nothing is asked.
+    At a terminal it asks for whatever the flags leave out, so with no flags it asks for everything
+    and `--api-url URL` alone asks for the MCP URL and the key. Without one, nothing is asked.
     """
     default = old.get("api_url") if isinstance(old.get("api_url"), str) else mezmo_settings.DEFAULT_API_URL
-    ask = choices.asking or interactive()
+    ask = interactive()
     if choices.api_url:
         api_url = check_url(choices.api_url)
     elif ask:
@@ -592,7 +592,14 @@ def status(platform: str = sys.platform) -> int:
     print(f"API URL: {url.value} ({'saved' if url.source == 'codex.json' else 'default, nothing saved'})")
     print(f"ledger: {'on' if mezmo_settings.ledger_enabled() else 'off'}")
     key, store = saved_key(platform)
-    print(f"key: saved in {store_name(store)}" if key else "key: none saved")
+    named = config.get("key_store")
+    if key:
+        print(f"key: saved in {store_name(store)}")
+    elif named in mezmo_settings.KEY_STORES:
+        # Codex's sandbox can't read the Keychain or the keyring, so --status run by Codex lands here.
+        print(f"key: saved in {store_name(named)}, but it can't be read from here, as inside Codex's sandbox")
+    else:
+        print("key: none saved")
     print(f"Codex MCP: {mcp_status()}")
     return 0 if config or key else 1
 
