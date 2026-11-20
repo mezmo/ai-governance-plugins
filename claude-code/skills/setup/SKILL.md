@@ -95,6 +95,14 @@ Only after that check succeeds, run `governance_config.py status` using the full
 path to see existing configuration. For My organization, the runtime-only preflight is
 sufficient; target machines still need the supported runtime and installed plugin.
 
+#### Already configured
+
+For Just me, when status shows governance already configured (the plugin's install dialog asks
+for the key and the API URL, so this is common right after installing), ask whether to keep it or
+enter a new key. To keep it, skip the rest of this section and go on to
+[Mezmo MCP](#5-mezmo-mcp) even if the user didn't choose MCP: governance connects the MCP only
+when this section runs `configure`, and the investigate skill needs it to read the ledger.
+
 #### Reuse a saved key
 
 On macOS, before asking for a token, run
@@ -231,8 +239,16 @@ Check the key with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" --key
 
 ## 5. Mezmo MCP
 
-Skip this section if the user didn't choose MCP, or if governance for Just me already connected it. First run
-`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" status`. MCP is set up for this user, even when the rest is for an organization.
+Skip this section only when the user didn't choose MCP and governance's `configure` ran in this
+setup, which connects it. Otherwise, first run
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" status`, with `--url <MCP URL>` for an API
+URL other than production. If it shows `mezmo` set up for that URL and connecting, say so and skip
+the rest of this section. MCP is set up for this user, even when the rest is for an organization.
+
+The scripts can't read the key given in the plugin's install dialog: Claude Code keeps it as a
+sensitive option that only its hooks receive. So connecting the MCP needs the key once more: on
+macOS, offer the key the Codex setup saved (`governance_config.py saved-key`, exit 0) and pass
+`--use-saved-key`; otherwise ask for it through the private key file, and say why in one sentence.
 
 Mezmo's MCP server lets Claude query Mezmo logs (root-cause analysis, patterns, histograms, correlated timelines), look at traces and AI investigations, and inspect and change Telemetry Pipelines.
 
@@ -248,6 +264,8 @@ Before adding it, tell the user:
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" add --key-file "<KEY_FILE>" --delete-key-file [--url <MCP URL>]
 ```
+
+With the Codex key, use `--use-saved-key` in place of `--key-file "<KEY_FILE>" --delete-key-file`.
 
 What each exit code means:
 
