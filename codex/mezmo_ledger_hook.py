@@ -127,7 +127,7 @@ MAX_REFERENCES = 20
 MEMORY_BRIEF_TOOL_NAME = "mezmo_memory_brief"
 # For application.version. A file install has no manifest beside the script, so this is a
 # constant, and test_ledger.py checks it against .codex-plugin/plugin.json.
-LEDGER_VERSION = "0.9.0"
+LEDGER_VERSION = "0.9.1"
 # The socket timeout of each request this hook makes, and the deadline its main thread waits for
 # its ledger threads from when they start. A socket timeout alone bounds neither DNS nor the whole
 # request, hence the threads. Read at call time, so a test can patch it.
@@ -168,6 +168,9 @@ ROLLOUT_OFFSET_FIELD = "rollout_offset"
 PENDING_FIELDS = ("cwd", "session_id", "tool_input", "tool_name", "tool_use_id", "turn_id")
 # Kept beside them: the investigation the call started under, which its ending belongs to.
 PENDING_INCIDENT_KEY = "incident_key"
+# Set on a shell call already recorded as ran before its exit code was in the rollout: a non-zero
+# one found later is sent as a `failed` end, which replaces the `ran` as the call's last record.
+PENDING_AWAITING_EXIT = "awaiting_exit"
 MAX_PENDING_CALLS = 200
 # The most of the rollout one hook run reads; the rest waits for the next run.
 MAX_ROLLOUT_READ_BYTES = 8 * 1024 * 1024
@@ -1837,8 +1840,22 @@ def _remove_old_start_times() -> None:
             pass
 
 
-def _new_event(*, config: LedgerConfig, hook_input: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-    """The event this hook input gives, or None when there's nothing new to send. Never raises."""
+def _is_shell(hook_input: Mapping[str, Any]) -> bool:
+    try:
+        tool = normalize_tool_call(hook_input)
+    except Exception:
+        return False
+    return (tool.namespace, tool.name) == (AGENT, "Bash")
+
+
+def _new_event(
+    *, config: LedgerConfig, hook_input: Mapping[str, Any], exits: Optional[Mapping[str, int]] = None
+) -> Optional[Dict[str, Any]]:
+    """The event this hook input gives, or None when there's nothing new to send. Never raises.
+
+    Codex gives a shell call's PostToolUse its output but no exit code, so `exits`, the exit codes
+    the rollout showed by call id, decides between `ran` and `failed` for one.
+    """
     fields: Dict[str, Any]
     if hook_input.get("hook_event_name") == "PreToolUse":
         fields = {"kind": "started"}
@@ -1848,6 +1865,9 @@ def _new_event(*, config: LedgerConfig, hook_input: Mapping[str, Any]) -> Option
         except Exception:
             # Codex reports back only on a call that ran, so a result that can't be read is one.
             kind, exit_status = "ran", None
+        exit_code = (exits or {}).get(str(hook_input.get("tool_use_id")))
+        if kind == "ran" and exit_status is None and isinstance(exit_code, int) and _is_shell(hook_input):
+            kind, exit_status = ("failed", exit_code) if exit_code else ("ran", 0)
         fields = {"duration_ms": _call_duration_ms(hook_input=hook_input), "exit_status": exit_status, "kind": kind}
     try:
         return ledger_event(config=config, hook_input=hook_input, **fields)
@@ -1933,8 +1953,17 @@ def _change_investigation(
         return closed
 
 
-def _track_pending(*, hook_input: Mapping[str, Any], update: Callable[[Callable[[Dict[str, Any]], None]], None]) -> None:
-    """Keep a started call in the session state until its end is recorded, or drop an ended one. Never raises."""
+def _track_pending(
+    *,
+    hook_input: Mapping[str, Any],
+    update: Callable[[Callable[[Dict[str, Any]], None]], None],
+    awaiting_exit: bool = False,
+) -> None:
+    """Keep a started call in the session state until its end is recorded, or drop an ended one. Never raises.
+
+    With `awaiting_exit`, an ended shell call whose exit code the rollout didn't show yet stays,
+    marked, so a later run can correct its `ran`.
+    """
     try:
         tool_use_id = hook_input.get("tool_use_id")
         if not isinstance(tool_use_id, str) or not tool_use_id:
@@ -1950,6 +1979,8 @@ def _track_pending(*, hook_input: Mapping[str, Any], update: Callable[[Callable[
             pending = dict(pending) if isinstance(pending, dict) else {}
             if started and len(pending) < MAX_PENDING_CALLS:
                 pending[tool_use_id] = kept
+            elif awaiting_exit and isinstance(pending.get(tool_use_id), dict):
+                pending[tool_use_id] = {**pending[tool_use_id], PENDING_AWAITING_EXIT: True}
             elif not started:
                 pending.pop(tool_use_id, None)
             _set_pending(state, pending)
@@ -2043,13 +2074,17 @@ def _catch_up(
     config: LedgerConfig,
     hook_input: Mapping[str, Any],
     update: Callable[[Callable[[Dict[str, Any]], None]], None],
+    exits: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     """Events for what the rollout shows since it was last read. Never raises.
 
-    A call it shows failed, which Codex gives no PostToolUse, ends as `failed` with its error. On
-    Stop, a call still kept has no end coming, so it ends as `no_result`. Each message the agent
-    wrote is a step, sent only while the session is in an investigation. The rollout is read and
-    the state changed under the state's lock, so two runs never send the same end or step.
+    A call it shows failed, which Codex gives no PostToolUse, ends as `failed` with its error. A
+    shell call already recorded as ran before its exit code showed is corrected to `failed` when
+    that exit code isn't 0. On Stop, a call still kept has no end coming, so it ends as
+    `no_result`, unless it was already recorded as ran. Each message the agent wrote is a step,
+    sent only while the session is in an investigation. Each shell command's exit code goes into
+    `exits` by call id. The rollout is read and the state changed under the state's lock, so two
+    runs never send the same end or step.
     """
     try:
         path = hook_input.get("transcript_path")
@@ -2058,6 +2093,7 @@ def _catch_up(
         stop = hook_input.get("hook_event_name") == "Stop"
         ended: List[Tuple[Dict[str, Any], str, Dict[str, Any]]] = []
         steps: List[str] = []
+        found_exits: Dict[str, int] = {} if exits is None else exits
 
         def change(state: Dict[str, Any]) -> None:
             pending = state.get(PENDING_CALLS_FIELD)
@@ -2070,14 +2106,27 @@ def _catch_up(
                 item = payload.get("item") if isinstance(payload, dict) and payload.get("type") == "item_completed" else None
                 if not isinstance(item, dict):
                     continue
+                item_id = item.get("id")
+                exit_code = item.get("exit_code")
+                if item.get("type") == "CommandExecution" and isinstance(item_id, str) \
+                        and isinstance(exit_code, int) and not isinstance(exit_code, bool):
+                    found_exits[item_id] = exit_code
+                kept = pending.get(item_id)
                 if item.get("type") == "AgentMessage":
                     text = _item_text(item).strip()
                     if text:
                         steps.append(text)
-                elif item.get("status") == "failed" and isinstance(pending.get(item.get("id")), dict):
-                    ended.append((pending.pop(item["id"]), "failed", item))
+                elif isinstance(kept, dict) and kept.get(PENDING_AWAITING_EXIT) and item_id in found_exits:
+                    pending.pop(item_id)
+                    if found_exits[item_id]:
+                        ended.append((kept, "failed", item))
+                elif item.get("status") == "failed" and isinstance(kept, dict) and not kept.get(PENDING_AWAITING_EXIT):
+                    ended.append((pending.pop(item_id), "failed", item))
             if stop:
-                ended.extend((kept, "no_result", {}) for kept in pending.values() if isinstance(kept, dict))
+                ended.extend(
+                    (kept, "no_result", {}) for kept in pending.values()
+                    if isinstance(kept, dict) and not kept.get(PENDING_AWAITING_EXIT)
+                )
                 pending = {}
             _set_pending(state, pending)
             state[ROLLOUT_OFFSET_FIELD] = offset
@@ -2090,9 +2139,11 @@ def _catch_up(
             call.update(hook_event_name="PostToolUse", transcript_path=path)
             if kind == "failed":
                 call["tool_response"] = _item_text(item)
+            exit_code = item.get("exit_code")
             event = ledger_event(
                 config=config,
                 duration_ms=_item_duration_ms(item),
+                exit_status=exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None,
                 hook_input=call,
                 kind=kind,
                 started_under={"incident_key": incident_key} if isinstance(incident_key, str) and incident_key else {},
@@ -2197,7 +2248,8 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
         if session:
             adopt_launched_investigation(hook_input=event, update=update)
         # Before this call's own event, so ends and steps that came first are sent first.
-        caught_up = _catch_up(config=config, hook_input=event, update=update) if session else []
+        exits: Dict[str, int] = {}
+        caught_up = _catch_up(config=config, exits=exits, hook_input=event, update=update) if session else []
         if event.get("hook_event_name") == "Stop" and not caught_up:
             return
         action, incident_key, service, closing = investigation_action(hook_input=event) or ("", "", None, None)
@@ -2211,9 +2263,14 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[LedgerHttp] = None
                 incident_key=incident_key,
                 service=service,
             )
-        new_event = None if event.get("hook_event_name") == "Stop" else _new_event(config=config, hook_input=event)
+        new_event = None if event.get("hook_event_name") == "Stop" else _new_event(config=config, exits=exits, hook_input=event)
         if new_event is not None:
-            _track_pending(hook_input=event, update=update)
+            # A shell call whose exit code the rollout didn't show yet stays tracked, to correct later.
+            awaiting = event.get("hook_event_name") == "PostToolUse" and _is_shell(event) \
+                and isinstance(event.get("transcript_path"), str) and bool(event.get("transcript_path")) \
+                and str(event.get("tool_use_id")) not in exits and new_event.get("event") == "agent.tool_call.ran" \
+                and new_event.get("extra", {}).get("exit_status") is None
+            _track_pending(awaiting_exit=awaiting, hook_input=event, update=update)
         if action == "closed":
             investigation = _change_investigation(
                 action=action,

@@ -45,6 +45,14 @@ class InvestigateSkillTests(unittest.TestCase):
         self.assertIn("  - mcp__plugin_mezmo_mezmo__get_ledger_investigation\n", text)
         self.assertIn("If no `get_ledger_investigation` tool is available", text)
 
+    def test_both_investigate_skills_take_closing_times_from_the_record(self) -> None:
+        # A closing once said its checks ran at 19:45 when the entries said 19:42.
+        for path in (INVESTIGATE, ROOT.parent / "codex" / "skills" / "mezmo-investigate" / "SKILL.md"):
+            with self.subTest(path=path.parent.name):
+                text = " ".join(path.read_text(encoding="utf-8").split())
+                self.assertIn("Take any time you write from the investigation's entries", text)
+                self.assertIn("never from memory, or leave times out", text)
+
 
 if __name__ == "__main__":
     unittest.main()

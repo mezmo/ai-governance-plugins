@@ -96,7 +96,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/ledger_investigation.py" close --incident
 `--summary` is a few plain sentences for whoever reads the investigation next: what happened,
 what you changed (the changes, not the lookups), and what's left, with who or what owns it. Write
 it out in the command, in double quotes, with no double quotes or shell variables inside it, in
-2,000 characters or fewer. Don't say `resolved` unless you verified the fix. For example:
+2,000 characters or fewer. Don't say `resolved` unless you verified the fix. Take any time you
+write from the investigation's entries (`get_ledger_investigation`) or a command's output, in UTC,
+never from memory, or leave times out. For example:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/ledger_investigation.py" close --incident-key pagerduty:Q12ABC --status mitigated --summary "The checkout pods were OOM-killed at their 512 MiB limit after a traffic spike. Raised the limit to 1 GiB and restarted them; no kills in the last 20 minutes. Why memory grew is still open, and the checkout team owns it."
