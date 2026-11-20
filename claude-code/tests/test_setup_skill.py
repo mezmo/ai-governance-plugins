@@ -16,7 +16,9 @@ class SetupSkillTests(unittest.TestCase):
 
     def test_the_mcp_section_is_skipped_only_when_mezmo_is_there(self) -> None:
         section = self.text[self.text.index("## 5. Mezmo MCP"):]
-        self.assertIn("Skip this section only when the user didn't choose MCP and governance's `configure` ran", section)
+        # Only when chosen, or when kept governance never connected it: not for telemetry or an organization.
+        self.assertIn("Run this section only when the user chose MCP, or kept governance that was already configured for Just me", section)
+        self.assertIn("telemetry or an organization's settings need no MCP", section)
         self.assertIn("If it shows `mezmo` set up for that URL and connecting", section)
         self.assertNotIn("if governance for Just me already connected it", self.text)
         # The key from the install dialog can't be read, so it's asked for once, or the Codex key is offered.
