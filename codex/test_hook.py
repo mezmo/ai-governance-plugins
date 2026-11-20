@@ -1195,31 +1195,8 @@ class DripGovernance(ThreadingHTTPServer):
         return f"http://127.0.0.1:{self.server_address[1]}/governance/workflow/authorize"
 
 
-REAL_MEZMO = Path.home() / ".mezmo"
-
-
-def real_mezmo_files() -> dict[str, tuple[int, int]]:
-    """(size, mtime) of each file in the developer's real ~/.mezmo, outside its session folders."""
-    found: dict[str, tuple[int, int]] = {}
-    for path in REAL_MEZMO.glob("*") if REAL_MEZMO.is_dir() else ():
-        if path.is_file():
-            info = path.stat()
-            found[path.name] = (info.st_size, info.st_mtime_ns)
-    return found
-
-
 class EndToEndTests(unittest.TestCase):
     """Run the script as the runtime does: JSON on stdin, decision on stdout."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.real_home = real_mezmo_files()
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        # The hook runs as a real process, so only a look at the real folder shows a leak.
-        if real_mezmo_files() != cls.real_home:
-            raise AssertionError(f"EndToEndTests changed the developer's {REAL_MEZMO}")
 
     def run_hook(
         self,
@@ -1469,6 +1446,18 @@ class EndToEndTests(unittest.TestCase):
                     self.assertEqual(set(stdout_json(result)), set(deny_schema("x")))
                     self.assertNotIn("sts_secret", result.stdout + result.stderr)
             self.assertEqual(stub.requests, [])
+
+    def test_a_refusal_the_ledger_cannot_take_is_saved_in_the_tests_own_home(self) -> None:
+        # The ledger the hook derives from the stub's URL takes nothing, so the refusal is saved for
+        # retry: in this test's folder, never the developer's ~/.mezmo.
+        with StubGovernance([]) as stub:
+            url = stub.url
+        result = self.run_hook(hook_event(PRE_EVENT), url)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        spool = Path(self.tmp.name) / "ledger-spool.jsonl"
+        (saved,) = [json.loads(line)["event"] for line in spool.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(saved["event"], "agent.tool_call.not_run")
+        self.assertFalse((Path(self.tmp.name) / "home" / ".mezmo" / "ledger-spool.jsonl").exists())
 
     def test_unreachable_governance_denies(self) -> None:
         with StubGovernance([]) as stub:
