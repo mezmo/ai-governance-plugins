@@ -1364,6 +1364,57 @@ class RolloutTests(LedgerTestCase):
                           if event["event"] == "agent.investigation.step"]
         self.assertEqual(texts, ["After the long line."])
 
+    def shell(self, name: str = "PreToolUse", tool_use_id: str = "exec-sh", **fields: Any) -> dict[str, Any]:
+        fields.setdefault("transcript_path", str(self.rollout))
+        return hook_input(name, tool_input={"command": "kubectl get pods"}, tool_use_id=tool_use_id, **fields)
+
+    def command(self, exit_code: int, tool_use_id: str = "exec-sh") -> dict[str, Any]:
+        return {"type": "CommandExecution", "id": tool_use_id, "status": "completed", "exit_code": exit_code,
+                "aggregated_output": "Unable to connect to the server", "duration": {"secs": 0, "nanos": 400_000_000}}
+
+    def test_a_shell_exit_code_already_in_the_rollout_decides_ran_or_failed(self) -> None:
+        # Codex gives a shell call's PostToolUse its output but no exit code.
+        for exit_code, kind in ((1, "failed"), (0, "ran")):
+            with self.subTest(exit_code=exit_code):
+                call = f"exec-{exit_code}"
+                self.sent(self.shell(tool_use_id=call))
+                self.append(self.command(exit_code, call))
+                (ended,) = self.sent(self.shell("PostToolUse", tool_use_id=call, tool_response="Unable to connect"))
+                self.assertEqual(ended["event"], f"agent.tool_call.{kind}")
+                self.assertEqual(ended["extra"]["exit_status"], exit_code)
+        self.assertNotIn(ledger.PENDING_CALLS_FIELD, json.loads(ledger.session_state_path("session-1").read_text()))
+
+    def test_a_shell_exit_code_that_shows_later_corrects_a_ran(self) -> None:
+        (started,) = self.sent(self.shell())
+        (ran,) = self.sent(self.shell("PostToolUse", tool_response="Unable to connect"))
+        self.assertEqual(ran["event"], "agent.tool_call.ran")
+        self.assertNotIn("exit_status", ran["extra"])
+        self.append(self.command(1))
+        events = self.sent(hook_input(tool_use_id="tool-use-2", transcript_path=str(self.rollout)))
+        self.assertEqual([event["event"] for event in events], ["agent.tool_call.failed", "agent.tool_call.started"])
+        failed = events[0]
+        # The same call, recorded later, so it is the call's last record: failed, with its exit status.
+        self.assertEqual(failed["extra"]["call_id"], started["extra"]["call_id"])
+        self.assertEqual(failed["extra"]["exit_status"], 1)
+        self.assertEqual(failed["extra"]["output"], "Unable to connect to the server")
+        self.assertGreater(failed["timestamp"], ran["timestamp"])
+        # Settled: Stop sends nothing more for it.
+        stopped = self.sent(self.shell("Stop"))
+        self.assertNotIn(started["extra"]["call_id"], [event["extra"]["call_id"] for event in stopped])
+
+    def test_a_later_zero_exit_or_none_at_all_sends_nothing_more(self) -> None:
+        (zero,) = self.sent(self.shell())
+        self.sent(self.shell("PostToolUse", tool_response="ok"))
+        self.append(self.command(0))
+        later = self.sent(self.shell("PostToolUse", tool_use_id="exec-other", tool_response="ok"))
+        self.assertNotIn(zero["extra"]["call_id"], [event["extra"]["call_id"] for event in later])
+        # A shell call already recorded as ran never becomes no_result at Stop, with or without an exit code.
+        (quiet,) = self.sent(self.shell(tool_use_id="exec-quiet"))
+        self.sent(self.shell("PostToolUse", tool_use_id="exec-quiet", tool_response="ok"))
+        stopped = self.sent(self.shell("Stop"))
+        ids = {zero["extra"]["call_id"], quiet["extra"]["call_id"]}
+        self.assertEqual([event for event in stopped if event["extra"].get("call_id") in ids], [])
+
     def test_a_partial_last_line_waits_for_the_next_read(self) -> None:
         self.write_state({"investigation": {"incident_key": INCIDENT_KEY}})
         line = json.dumps({"payload": {"type": "item_completed", "item": self.said("Half way.")}})
