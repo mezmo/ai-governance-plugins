@@ -25,6 +25,11 @@ working.
    service account token and the Mezmo API URL (empty means `https://api.mezmo.com`).
    `/plugin configure mezmo@mezmo` reopens it. The shell's `claude plugin install` never prompts,
    so after it run step 2.
+   Start a session afterwards and the plugin says what's left, once, at startup: "Mezmo
+   Governance is off: run /mezmo:setup to turn it on" without a token, or "Mezmo is on, but
+   Claude can't read the Mezmo ledger yet: run /mezmo:setup mcp to connect it" with a token but
+   no `mezmo` MCP server. It reads only local config, and says nothing once both are set up or
+   when the plugin's `governance_enabled` option is off.
 2. **Set up governance**: `/mezmo:setup governance`. It asks for the API URL and the service
    account token, checks both Mezmo Governance and the [ledger](#ledger) without recording
    anything, and saves them as plugin options. It also connects [Mezmo MCP](#mezmo-mcp) with the

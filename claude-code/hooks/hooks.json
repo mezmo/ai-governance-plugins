@@ -1,6 +1,8 @@
 {
   "description": "Mezmo status mod (footer indicator, one connection check per session, /mezmo) and the Mezmo Governance check on Bash and MCP tool calls, which stays off until an access key is configured, and the Mezmo ledger record of each of those calls, off until its settings are set",
-  "modules": ["./register.ts"],
+  "modules": [
+    "./register.ts"
+  ],
   "hooks": {
     "PreToolUse": [
       {
@@ -68,6 +70,18 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger_hook.py\"",
             "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/setup_notice.py\"",
+            "timeout": 5
           }
         ]
       }
