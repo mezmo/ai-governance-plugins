@@ -40,15 +40,19 @@ This clears the plugin's governance options, overwriting the saved key (a sensit
 ## MCP
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" remove
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" remove --mcp-only
 ```
 
-This removes the user-scope `mezmo` MCP server, and its service key with it. Exit code **4** means the server comes from a project's `.mcp.json` or local config, so the user has to remove it there.
+This turns off the plugin's `mezmo` MCP server by saving its MCP URL as `off`, so it connects
+nowhere, and removes a user-scope `mezmo` server an earlier setup added. Governance and the ledger
+keep their key. Removing governance (above) turns the MCP server off too, since it shares the key.
+A `mezmo` server from a project's `.mcp.json` or local config isn't the plugin's: the user removes
+it there.
 
 ## Tell the user
 
-- Start a new Claude Code session for the change to take effect.
-- Uninstalling the plugin doesn't remove the telemetry settings or the MCP server. That's why this command exists.
+- Run `/reload-plugins` to apply plugin option changes now, or start a new Claude Code session; telemetry changes apply in a new session.
+- Uninstalling the plugin removes its own MCP server, but not the telemetry settings or a `mezmo` server an earlier setup added. That's why this command exists.
 - Settings deployed through managed settings have to be removed by the administrator.
 
 If governance removal reports incomplete cleanup, explain which settings were removed and that the plugin token may remain. Do not claim governance is fully removed. Retry once Claude Code can read and write its plugin options again.

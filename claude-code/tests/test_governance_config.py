@@ -379,11 +379,24 @@ class CliTest(CliCase):
         # An empty string can't clear a sensitive option, so the key is overwritten and the switch turned off.
         self.assertEqual(json.loads(saved(claude)), {
             "governance_access_key": "off", "api_url": "", "governance_enabled": "false", "ledger_enabled": "false",
+            # The plugin's MCP server would otherwise keep connecting with "Bearer off".
+            "mcp_url": "off",
         })
         self.assertEqual(json.loads(self.settings.read_text()), {"model": "opus", "env": {"FOO": "1"}})
         code, out, _ = self.run_cli("status", "--json", claude=claude)
         self.assertFalse(json.loads(out)["configured"])
         self.assertFalse(json.loads(out)["ledger"]["on"])
+
+    def test_remove_mcp_only_turns_off_the_plugins_server_and_an_earlier_one(self):
+        claude = FakeClaude(key_set=True)
+        claude.mcp = {"scope": "user", "url": PROD_MCP_URL}
+        code, out, err = self.run_cli("remove", "--mcp-only", claude=claude)
+        self.assertEqual(code, 0, err)
+        # Only the MCP URL changes: governance and the ledger keep their key.
+        self.assertEqual(json.loads(saved(claude)), {"mcp_url": "off"})
+        self.assertIsNone(claude.mcp)
+        self.assertIn("connects nowhere", out)
+        self.assertEqual(out.splitlines()[-1], "Run /reload-plugins (or start a new Claude Code session) to apply it.")
 
     def test_remove_overwrites_key_even_when_governance_is_disabled(self):
         claude = FakeClaude(key_set=True, enabled=False)
