@@ -15,11 +15,11 @@ allowed-tools:
 
 The plugin does three independent things:
 
-- **Governance**: before each Bash or MCP tool call, a hook asks Mezmo Governance whether this exact call may run and blocks it when the answer is no, and the Mezmo ledger records the call. Both use one service account token, a standard Mezmo service key, and one Mezmo API URL. Until a token is configured, the hooks do nothing. For this user, setting up governance also connects Mezmo's MCP server with the same token, so Claude can read the ledger when it investigates.
+- **Governance**: before each Bash or MCP tool call, a hook asks Mezmo Governance whether this exact call may run and blocks it when the answer is no, and the Mezmo ledger records the call. Both use one service account token, a standard Mezmo service key, and one Mezmo API URL. Until a token is configured, the hooks do nothing. The plugin also brings Mezmo's MCP server, `mezmo`, connected with the same token, so Claude can read the ledger when it investigates.
 - **Telemetry**: Claude Code exports OpenTelemetry metrics, events and traces to Mezmo's endpoint, `https://logs.mezmo.com/otel`, authenticated with an ingestion key in an `apikey` header.
-- **MCP**: Claude Code connects to Mezmo's MCP server, `https://mcp.mezmo.com/mcp`, with a service key, so Claude can query Mezmo logs and work on pipelines.
+- **MCP**: the plugin's `mezmo` MCP server connects to Mezmo MCP (`https://mcp.mezmo.com/mcp`, or the plugin's `mcp_url` option for another environment) with the plugin's token, so Claude can read the ledger, query Mezmo logs and work on pipelines. Its tools are named `mcp__plugin_mezmo_mezmo__<tool>`.
 
-All three take effect in new Claude Code sessions. Claude Code loads MCP servers when a session starts, so the session that ran setup doesn't have the `mezmo` MCP server's tools: restart Claude Code (`claude --continue` keeps the conversation) to use them.
+Installing the plugin with a token in its options dialog turns on governance, the ledger and MCP in that session; this setup isn't needed for them. It checks a token against Mezmo before saving it, sets up telemetry, and writes an organization's managed settings. Options it saves apply after `/reload-plugins`, or in a new session; telemetry applies in a new session.
 
 Arguments: $ARGUMENTS
 
@@ -98,10 +98,10 @@ sufficient; target machines still need the supported runtime and installed plugi
 #### Already configured
 
 For Just me, when status shows governance already configured (the plugin's install dialog asks
-for the key and the API URL, so this is common right after installing), ask whether to keep it or
-enter a new key. To keep it, skip the rest of this section and go on to
-[Mezmo MCP](#5-mezmo-mcp) even if the user didn't choose MCP: governance connects the MCP only
-when this section runs `configure`, and the investigate skill needs it to read the ledger.
+for the token and the API URL, so this is common right after installing), say that governance,
+the ledger and Mezmo MCP already work with it, and ask whether to keep it or enter a new token. To
+keep it, skip the rest of this section. If the API URL isn't production, remind the user that the
+plugin's `mcp_url` option must be that environment's MCP URL (`/plugin configure mezmo@mezmo`).
 
 #### Reuse a saved key
 
@@ -143,7 +143,7 @@ Before saving, tell the user what changes:
 - If Mezmo Governance can't be reached, calls are blocked.
 - Mezmo Governance rejects argument names that aren't plain identifiers, such as `max-results`, so an MCP tool with one is blocked until the service accepts it.
 - The Mezmo ledger records each Bash and MCP tool call, with its arguments and output, under the token's account. The plugin's `ledger_enabled` option turns it off (`/plugin configure mezmo@mezmo`).
-- Just me: Claude Code connects to Mezmo's MCP server as the user-scope server `mezmo`, with the same token, kept as plain text in `~/.claude.json`. Setup replaces a user-scope server already called `mezmo`. While `claude mcp add` runs, the token is in its process arguments. Some of the server's tools change pipelines; see [Mezmo MCP](#5-mezmo-mcp).
+- Just me: the plugin's `mezmo` MCP server connects to Mezmo MCP with the same token, which stays a sensitive option. Setup removes a user-scope server called `mezmo` that an earlier setup added, since the plugin brings its own. Some of the server's tools change pipelines; see [Mezmo MCP](#5-mezmo-mcp).
 
 ### Just me
 
@@ -151,11 +151,11 @@ Before saving, tell the user what changes:
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" configure --key-file "<KEY_FILE>" --delete-key-file --api-url <API URL> --mcp-url <MCP URL>
 ```
 
-Leave out `--api-url` and `--mcp-url` for production. The script checks prerequisites, validates the token against Mezmo Governance without recording a decision, and sends the ledger an empty batch, which records nothing. It then saves the API URL and the token as plugin options and says what it turned on. Last, it checks the token against the MCP URL and adds the `mezmo` MCP server. If that fails, governance and the ledger stay set up: report the warning, and that `/mezmo:setup mcp` connects MCP alone. Claude Code keeps the token as a sensitive option: in the macOS Keychain, or, if the Keychain refuses it and on Linux and Windows, in `~/.claude/.credentials.json`. A failed ledger check doesn't stop the save: report its message, and that records wait in the retry file until the ledger takes them.
+Leave out `--api-url` and `--mcp-url` for production. The script checks prerequisites, validates the token against Mezmo Governance without recording a decision, and sends the ledger an empty batch, which records nothing. It then saves the API URL, the MCP URL and the token as plugin options and says what it turned on. Last, it checks the token against the MCP URL, and removes a user-scope `mezmo` server an earlier setup added. If the MCP check fails, everything is still saved: report the warning. Claude Code keeps the token as a sensitive option: in the macOS Keychain, or, if the Keychain refuses it and on Linux and Windows, in `~/.claude/.credentials.json`. A failed ledger check doesn't stop the save: report its message, and that records wait in the retry file until the ledger takes them.
 
 What each exit code means:
 
-- **0**: done. Report what the script printed. When it connected the MCP server, end with its last line: "Restart Claude Code (`claude --continue` keeps this conversation) to apply it and to use the Mezmo MCP."
+- **0**: done. Report what the script printed, and end with its last line: "Run /reload-plugins (or start a new Claude Code session) to apply it."
 - **5**: unsupported runtime. Stop before asking for a token; show the upgrade instruction.
 - **3**: Mezmo Governance rejected the key, or couldn't be reached. Show the message. Nothing was saved.
 - **4**: the plugin isn't installed from a marketplace (for example, it was loaded with `--plugin-dir`), so it has no options to save. Ask whether to keep the key in the settings file's `env` instead, which stores it as plain text. If yes, run the same command with `--store settings`.
@@ -239,41 +239,32 @@ Check the key with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" --key
 
 ## 5. Mezmo MCP
 
-Run this section only when the user chose MCP, or kept governance that was already configured for
-Just me (see [Already configured](#already-configured)). Otherwise skip it: governance's `configure`
-connects the MCP itself, and telemetry or an organization's settings need no MCP. First run
-`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" status`, with `--url <MCP URL>` for an API
-URL other than production. If it shows `mezmo` set up for that URL and connecting, say so and skip
-the rest of this section. MCP is set up for this user, even when the rest is for an organization.
-
-The scripts can't read the key given in the plugin's install dialog: Claude Code keeps it as a
-sensitive option that only its hooks receive. So connecting the MCP needs the key once more: on
-macOS, offer the key the Codex setup saved (`governance_config.py saved-key`, exit 0) and pass
-`--use-saved-key`; otherwise ask for it through the private key file, and say why in one sentence.
+Run this section only when the user chose MCP without governance. The plugin brings Mezmo's MCP
+server, `mezmo`, connected with the plugin's token at the plugin's `mcp_url` option, so with
+governance set up, or a token given in the install dialog, it already works.
 
 Mezmo's MCP server lets Claude query Mezmo logs (root-cause analysis, patterns, histograms, correlated timelines), look at traces and AI investigations, and inspect and change Telemetry Pipelines.
 
-Ask for a **service key**, from **Settings > API Keys** in Mezmo. It's a different key from the ingestion key; the governance service account token works too. On macOS, offer a key the Codex setup saved, as in [Reuse a saved key](#reuse-a-saved-key), with `--use-saved-key`.
+Ask for a **service key**, from **Settings > API Keys** in Mezmo; the governance service account
+token works too. On macOS, offer a key the Codex setup saved, as in
+[Reuse a saved key](#reuse-a-saved-key), with `--use-saved-key`. The server goes to
+`https://mcp.mezmo.com/mcp` unless the user works with another Mezmo environment: then ask once for
+its MCP URL, with no default.
 
-The server goes to `https://mcp.mezmo.com/mcp` unless the user works with another Mezmo environment: then ask once for its MCP URL, with no default, and pass `--url <MCP URL>`.
+Before saving it, tell the user:
 
-Before adding it, tell the user:
-
-- The key is stored as plain text in Claude Code's user config (`~/.claude.json`), the way Mezmo's own instructions add it.
+- The key is kept as the plugin's sensitive token option, the same one governance uses, with
+  governance and the ledger turned off.
 - Some of the server's tools change pipelines: create, update, delete, pause and publish. Claude Code asks before each MCP tool call unless the user allows them. With governance on, these calls also go through Mezmo Governance, under namespace `mezmo`, so a policy can send them to a person.
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" add --key-file "<KEY_FILE>" --delete-key-file [--url <MCP URL>]
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/governance_config.py" configure --mcp-only --key-file "<KEY_FILE>" --delete-key-file [--api-url <API URL> --mcp-url <MCP URL>]
 ```
 
 With the Codex key, use `--use-saved-key` in place of `--key-file "<KEY_FILE>" --delete-key-file`.
-
-What each exit code means:
-
-- **0**: done. Report what the script printed, including Claude Code's connection status, and end with its last line: "Restart Claude Code (`claude --continue` keeps this conversation) to use the Mezmo MCP."
-- **3**: Mezmo MCP rejected the key, or couldn't be reached. Nothing was added.
-- **4**: Claude Code already has an MCP server called `mezmo`. If it's in user scope, ask whether to replace it, and if yes, run the same command with `--force`. If it comes from a project's `.mcp.json` or local config, tell the user to remove it there.
-- **2** or **1**: show the message.
+It checks the key against the MCP URL, saves it, and removes a user-scope `mezmo` server an
+earlier setup added. Report what it printed, and end with its last line: "Run /reload-plugins (or
+start a new Claude Code session) to apply it."
 
 ## 6. Deploying the managed-settings file
 
@@ -295,8 +286,8 @@ Don't run `sudo` or copy the file into a system directory yourself.
 
 Tell the user:
 
-- Start a new Claude Code session. The current one keeps its old settings. If setup added or changed the `mezmo` MCP server, say last: "Restart Claude Code (`claude --continue` keeps this conversation) to use the Mezmo MCP." This session doesn't have its tools.
+- Run `/reload-plugins` to apply saved plugin options in this session, or start a new Claude Code session; telemetry applies only in a new session.
 - Governance: decisions show up in Mezmo Governance under the agent for this service account token, and each Bash and MCP tool call is recorded in the Mezmo ledger. While a call waits for a person, a band above the prompt shows it, and the footer counts this session's checks. After each approved call, the hook appends a line to `~/.mezmo/governance-audit.jsonl`.
 - Telemetry: Mezmo routes the data once a pipeline has an **OpenTelemetry** source. In Mezmo, look for `service.name` = `claude-code`: metrics such as `claude_code.cost.usage` and `claude_code.token.usage`, events such as `claude_code.api_request` and `claude_code.tool_result`, and spans such as `claude_code.interaction`.
-- MCP: new sessions have the `mezmo` MCP server, and its tools are named `mcp__mezmo__<tool>`. To try it, ask Claude something like "what errors did my apps log in the last hour?" With governance, ask Claude to investigate an incident: it reads the ledger first.
+- MCP: the plugin's `mezmo` MCP server, with tools named `mcp__plugin_mezmo_mezmo__<tool>`. To try it, ask Claude something like "what errors did my apps log in the last hour?" With governance, ask Claude to investigate an incident: it reads the ledger first.
 - `/mezmo:test` checks the setup again, and `/mezmo:remove` undoes it.

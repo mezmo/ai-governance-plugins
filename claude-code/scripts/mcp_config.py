@@ -34,6 +34,8 @@ MCP_URL = "https://mcp.mezmo.com/mcp"
 # The API URL whose MCP server is MCP_URL. Any other API URL needs its MCP URL given.
 PRODUCTION_API_URL = "https://api.mezmo.com"
 SERVER = "mezmo"
+# The plugin's own server, as `claude mcp get` names it.
+PLUGIN_SERVER = "plugin:mezmo:mezmo"
 KEY_ENV = "MEZMO_SERVICE_KEY"
 # Claude Code loads MCP servers when a session starts, so a server added or changed mid-session has no tools in it.
 RESTART = "Restart Claude Code (`claude --continue` keeps this conversation) to use the Mezmo MCP."
@@ -117,9 +119,9 @@ def parse_get(output: str) -> Dict[str, Any]:
     return {"scope": scope, "status": status, "connected": "connected" in status.lower(), "url": fields.get("url")}
 
 
-def server_info(claude: ClaudeRunner) -> Optional[Dict[str, Any]]:
-    """The server named mezmo, as Claude Code sees it, or None when there isn't one."""
-    code, output = claude(["mcp", "get", SERVER], None)
+def server_info(claude: ClaudeRunner, name: str = SERVER) -> Optional[Dict[str, Any]]:
+    """The server called `name` (mezmo by default), as Claude Code sees it, or None when there isn't one."""
+    code, output = claude(["mcp", "get", name], None)
     return parse_get(output) if code == 0 else None
 
 
@@ -249,9 +251,13 @@ def main(
             return 0
 
         if args.command == "status":
-            info = server_info(claude)
+            plugin = server_info(claude, PLUGIN_SERVER)
+            old = server_info(claude)
+            info = plugin or old
             report = {
                 "configured": info is not None,
+                "plugin": plugin is not None,
+                "old_server_scope": (old or {}).get("scope") if plugin is not None else None,
                 "scope": (info or {}).get("scope"),
                 "url": (info or {}).get("url"),
                 "is_mezmo": bool(info) and _is_mezmo(info, args.url),
@@ -261,10 +267,16 @@ def main(
             if args.json:
                 print(json.dumps(report, indent=2))
             elif info is None:
-                print("Mezmo MCP isn't set up. Run /mezmo:setup mcp to add it.")
+                print("Mezmo MCP isn't set up: the plugin brings it once it has a service key "
+                      "(/plugin configure mezmo@mezmo, then /reload-plugins).")
             else:
-                name = "Mezmo MCP" if report["is_mezmo"] else f"An MCP server called {SERVER}"
+                name = ("Mezmo MCP (the plugin's server)" if plugin is not None
+                        else "Mezmo MCP" if report["is_mezmo"] else f"An MCP server called {SERVER}")
                 print(f"{name}: {_describe(info)}")
+                if report["old_server_scope"]:
+                    print(f"Claude Code also has a {SERVER} server in {report['old_server_scope']} scope, from an "
+                          f"earlier setup; it duplicates the plugin's tools. Remove it: "
+                          f"claude mcp remove {SERVER} -s {report['old_server_scope']}")
             return 0
     except ValueError as err:
         print(f"Error: {err}", file=sys.stderr)

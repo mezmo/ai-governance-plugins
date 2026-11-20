@@ -788,6 +788,22 @@ class HostileInputTests(unittest.TestCase):
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(decision_of(json.loads(result.stdout)), "deny")
 
+    def test_this_plugins_own_mcp_server_keeps_the_mezmo_namespace(self) -> None:
+        # Claude Code names the plugin's server plugin_mezmo_mezmo; policies, decision ids and the
+        # ledger see it as the user-scope server called mezmo they saw before.
+        arguments = {"incident_key": "pagerduty:Q1"}
+        plugin = hook.normalize_tool_call({**hook_event("PreToolUse"),
+                                           "tool_name": "mcp__plugin_mezmo_mezmo__get_ledger_investigation",
+                                           "tool_input": arguments})
+        user = hook.normalize_tool_call({**hook_event("PreToolUse"),
+                                         "tool_name": "mcp__mezmo__get_ledger_investigation", "tool_input": arguments})
+        self.assertEqual(plugin, user)
+        self.assertEqual((plugin.namespace, plugin.name), ("mezmo", "get_ledger_investigation"))
+        # Another plugin's server keeps its own name.
+        other = hook.normalize_tool_call({**hook_event("PreToolUse"),
+                                          "tool_name": "mcp__plugin_other_mezmo__x", "tool_input": {}})
+        self.assertEqual(other.namespace, "plugin_other_mezmo")
+
     def test_an_mcp_server_named_like_the_agent_denies_without_asking(self) -> None:
         for name in ("mcp__claude_code__Bash", "mcp__Claude_Code__Bash"):
             with self.subTest(name=name):

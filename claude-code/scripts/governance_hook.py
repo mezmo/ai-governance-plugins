@@ -267,11 +267,16 @@ def session_state_path(session_id: str) -> Path:
     return state_dir() / (re.sub(r"[^A-Za-z0-9_.-]", "_", session_id)[:128] + ".json")
 
 
+# Claude Code names a plugin's MCP server plugin_<plugin>_<server> in its tool names. This plugin's
+# own server is Mezmo MCP, so its calls keep the namespace a user-scope server called mezmo had.
+OWN_MCP_SERVERS = {"plugin_mezmo_mezmo": "mezmo"}
+
+
 def server_namespace(name: str) -> str:
     """Refuse a server or extension named like the agent: its tools would pass as built-ins."""
     if name.lower() == AGENT:
         raise HookContractError(f"a tool namespace named {name!r} would pass as a built-in tool")
-    return name
+    return OWN_MCP_SERVERS.get(name, name)
 
 
 def normalize_tool_call(event: Mapping[str, Any]) -> NormalizedToolCall:

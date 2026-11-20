@@ -48,6 +48,8 @@ LEGACY_URL_OPTION = "governance_url"
 KEY_OPTION = "governance_access_key"
 ENABLED_OPTION = "governance_enabled"
 LEDGER_ENABLED_OPTION = "ledger_enabled"
+# The plugin declares the mezmo MCP server from this option and the key option.
+MCP_URL_OPTION = "mcp_url"
 # Claude Code keeps a sensitive option's value when given "", so remove overwrites the key
 # with this placeholder, which governance_hook treats as unset, and turns the switch off.
 REMOVED_KEY = "off"
@@ -483,6 +485,8 @@ def _build_parser() -> argparse.ArgumentParser:
     configure.add_argument("--store", choices=("plugin", "settings"), default="plugin",
                            help="plugin: plugin options, key kept as a sensitive option (default); settings: the settings file's env")
     configure.add_argument("--skip-check", action="store_true", help="Save without checking the key first")
+    configure.add_argument("--mcp-only", action="store_true",
+                           help="Save the key for Mezmo MCP only: governance and the ledger stay off")
 
     sub.add_parser("remove", help="Clear the plugin options and the settings-file variables")
 
@@ -552,8 +556,12 @@ def main(
                     print(f"Error: {api} isn't the production API, so give its Mezmo MCP URL with --mcp-url, "
                           "or leave MCP out with --no-mcp. Nothing was saved.", file=sys.stderr)
                     return EXIT_USAGE
+            if args.mcp_only and (args.no_mcp or args.store != "plugin"):
+                print("Error: --mcp-only saves the key for the plugin's MCP server, so it can't go with --no-mcp "
+                      "or --store settings.", file=sys.stderr)
+                return EXIT_USAGE
             ledger_result = None
-            if not args.skip_check:
+            if not args.mcp_only and not args.skip_check:
                 result = check_access(key, url, send)
                 if not result.ok:
                     print(f"Not saved. {result.detail}", file=sys.stderr)
@@ -563,12 +571,15 @@ def main(
                 print(ledger_result.detail)
             if args.store == "plugin":
                 try:
-                    save_plugin_options(claude, args.plugin_id, {
+                    values = {
                         KEY_OPTION: key,
                         API_URL_OPTION: "" if api == DEFAULT_API_URL else api,
-                        ENABLED_OPTION: "true",
-                        LEDGER_ENABLED_OPTION: "true",
-                    })
+                        ENABLED_OPTION: "false" if args.mcp_only else "true",
+                        LEDGER_ENABLED_OPTION: "false" if args.mcp_only else "true",
+                    }
+                    if mcp_url:
+                        values[MCP_URL_OPTION] = mcp_url
+                    save_plugin_options(claude, args.plugin_id, values)
                 except NotInstalled:
                     print(
                         f"The plugin {args.plugin_id} isn't installed, so its options can't be saved. Install it "
@@ -593,11 +604,32 @@ def main(
                 cco.write_settings(settings_file, {**settings, "env": env})
                 where = f"the env block of {settings_file}"
             print(f"Saved Mezmo service account token {mc.mask(key)} for {api} in {where}.")
-            print(f"Mezmo Governance is on: every Bash and MCP tool call is checked at {url} before it runs.")
-            print(f"The Mezmo ledger is on: every Bash and MCP tool call is recorded at {ledger}. "
-                  "Set the plugin's ledger_enabled option to false to turn it off.")
+            if args.mcp_only:
+                print("Mezmo Governance and the ledger are off: the key is saved for Mezmo MCP only.")
+            else:
+                print(f"Mezmo Governance is on: every Bash and MCP tool call is checked at {url} before it runs.")
+                print(f"The Mezmo ledger is on: every Bash and MCP tool call is recorded at {ledger}. "
+                      "Set the plugin's ledger_enabled option to false to turn it off.")
             if ledger_result is not None and not ledger_result.ok:
                 print("Warning: the ledger check failed, so records wait in the retry file until the ledger takes them.")
+            if mcp_url and args.store == "plugin":
+                # The plugin declares the server from these options, so there's nothing to add, and a
+                # user-scope server an earlier setup added would only duplicate its tools.
+                if not args.skip_check:
+                    mcp_check = mcp_config.check_key(mcp_config.clean_key(key), send, mcp_url)
+                    if not mcp_check.ok:
+                        print(f"Warning: Mezmo MCP at {mcp_url} didn't accept the key: {mcp_check.detail}")
+                existing = mcp_config.server_info(claude)
+                if existing is not None and existing.get("scope") == "user":
+                    claude(["mcp", "remove", mcp_config.SERVER, "-s", "user"], None)
+                    print(f"Removed the user-scope {mcp_config.SERVER} MCP server an earlier setup added "
+                          f"({existing.get('url')}): the plugin brings its own.")
+                elif existing is not None:
+                    print(f"Note: Claude Code also has an MCP server called {mcp_config.SERVER} in {existing.get('scope')} "
+                          "scope, from a project's .mcp.json or local config. Remove it there to avoid duplicate tools.")
+                print(f"Mezmo MCP: the plugin connects to {mcp_url} with this key.")
+                print("Run /reload-plugins (or start a new Claude Code session) to apply it.")
+                return 0
             connected = False
             if mcp_url:
                 connected = mcp_config.connect(mcp_config.clean_key(key), mcp_url, claude, send,
