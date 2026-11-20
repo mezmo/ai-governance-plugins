@@ -239,8 +239,9 @@ Check the key with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mezmo_check.py" --key
 
 ## 5. Mezmo MCP
 
-Skip this section only when the user didn't choose MCP and governance's `configure` ran in this
-setup, which connects it. Otherwise, first run
+Run this section only when the user chose MCP, or kept governance that was already configured for
+Just me (see [Already configured](#already-configured)). Otherwise skip it: governance's `configure`
+connects the MCP itself, and telemetry or an organization's settings need no MCP. First run
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/mcp_config.py" status`, with `--url <MCP URL>` for an API
 URL other than production. If it shows `mezmo` set up for that URL and connecting, say so and skip
 the rest of this section. MCP is set up for this user, even when the rest is for an organization.
