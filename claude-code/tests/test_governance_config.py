@@ -398,6 +398,32 @@ class CliTest(CliCase):
         self.assertIn("connects nowhere", out)
         self.assertEqual(out.splitlines()[-1], "Run /reload-plugins (or start a new Claude Code session) to apply it.")
 
+    def test_remove_mcp_only_reports_a_server_it_couldnt_remove(self):
+        claude = FakeClaude(key_set=True)
+        claude.mcp = {"scope": "user", "url": PROD_MCP_URL}
+        real = claude.__call__
+
+        def refuse_remove(args, stdin=None):
+            if args[:2] == ["mcp", "remove"]:
+                claude.calls.append({"args": list(args), "stdin": stdin})
+                return 1, "permission denied"
+            return real(args, stdin)
+
+        code, out, err = self.run_cli("remove", "--mcp-only", claude=refuse_remove)
+        self.assertEqual(code, gc.EXIT_ERROR)
+        self.assertNotIn("Removed the user-scope", out)
+        self.assertIn("Removal incomplete: the user-scope mezmo MCP server is still there", err)
+
+    def test_remove_mcp_only_still_removes_an_earlier_server_without_plugin_options(self):
+        # Loaded with --plugin-dir, the plugin has no options to save; the old server still goes.
+        claude = FakeClaude(installed=False)
+        claude.mcp = {"scope": "user", "url": PROD_MCP_URL}
+        code, out, err = self.run_cli("remove", "--mcp-only", claude=claude)
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(claude.mcp)
+        self.assertIn("isn't installed from a marketplace", out)
+        self.assertIn("Removed the user-scope mezmo MCP server", out)
+
     def test_remove_overwrites_key_even_when_governance_is_disabled(self):
         claude = FakeClaude(key_set=True, enabled=False)
         code, out, _ = self.run_cli("remove", claude=claude)

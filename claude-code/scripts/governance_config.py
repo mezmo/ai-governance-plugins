@@ -514,6 +514,13 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _remove_user_server(claude: ClaudeRunner, existing: Mapping[str, Any]) -> bool:
+    """Remove the user-scope mezmo server, and whether it's gone: Claude Code no longer lists it there."""
+    code, _ = claude(["mcp", "remove", mcp_config.SERVER, "-s", "user"], None)
+    after = mcp_config.server_info(claude)
+    return code == 0 and (after is None or after.get("scope") != "user")
+
+
 def _codex_api_url(environ: Mapping[str, str]) -> Optional[str]:
     """The api_url the Codex setup saved in ~/.mezmo/codex.json, or None for production or no file."""
     home = environ.get("HOME") or str(pathlib.Path.home())
@@ -629,9 +636,12 @@ def main(
                         print(f"Warning: Mezmo MCP at {mcp_url} didn't accept the key: {mcp_check.detail}")
                 existing = mcp_config.server_info(claude)
                 if existing is not None and existing.get("scope") == "user":
-                    claude(["mcp", "remove", mcp_config.SERVER, "-s", "user"], None)
-                    print(f"Removed the user-scope {mcp_config.SERVER} MCP server an earlier setup added "
-                          f"({existing.get('url')}): the plugin brings its own.")
+                    if _remove_user_server(claude, existing):
+                        print(f"Removed the user-scope {mcp_config.SERVER} MCP server an earlier setup added "
+                              f"({existing.get('url')}): the plugin brings its own.")
+                    else:
+                        print(f"Warning: couldn't remove the user-scope {mcp_config.SERVER} MCP server an earlier setup "
+                              f"added; it duplicates the plugin's tools. Remove it: claude mcp remove {mcp_config.SERVER} -s user")
                 elif existing is not None:
                     print(f"Note: Claude Code also has an MCP server called {mcp_config.SERVER} in {existing.get('scope')} "
                           "scope, from a project's .mcp.json or local config. Remove it there to avoid duplicate tools.")
@@ -662,17 +672,25 @@ def main(
             return 0
 
         if args.command == "remove" and args.mcp_only:
+            failed = []
             try:
                 save_plugin_options(claude, args.plugin_id, {MCP_URL_OPTION: MCP_OFF})
-            except (RuntimeError, OSError, NotInstalled):
-                print("Could not turn off the plugin's Mezmo MCP server.", file=sys.stderr)
-                return EXIT_ERROR
-            print("Turned off the plugin's Mezmo MCP server: its MCP URL is now off, so it connects nowhere.")
+                print("Turned off the plugin's Mezmo MCP server: its MCP URL is now off, so it connects nowhere.")
+            except NotInstalled:
+                # Loaded with --plugin-dir: no options to save, but an earlier server may still need removing.
+                print(f"The plugin {args.plugin_id} isn't installed from a marketplace, so it has no options to turn off.")
+            except (RuntimeError, OSError):
+                failed.append("the plugin's Mezmo MCP server is still on")
             existing = mcp_config.server_info(claude)
             if existing is not None and existing.get("scope") == "user":
-                claude(["mcp", "remove", mcp_config.SERVER, "-s", "user"], None)
-                print(f"Removed the user-scope {mcp_config.SERVER} MCP server an earlier setup added ({existing.get('url')}).")
+                if _remove_user_server(claude, existing):
+                    print(f"Removed the user-scope {mcp_config.SERVER} MCP server an earlier setup added ({existing.get('url')}).")
+                else:
+                    failed.append(f"the user-scope {mcp_config.SERVER} MCP server is still there")
             print("Run /reload-plugins (or start a new Claude Code session) to apply it.")
+            if failed:
+                print(f"Removal incomplete: {'; '.join(failed)}. Retry /mezmo:remove mcp.", file=sys.stderr)
+                return EXIT_ERROR
             return 0
 
         if args.command == "remove":
