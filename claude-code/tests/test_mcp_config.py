@@ -37,14 +37,19 @@ def get_output(scope="User config (available in all your projects)", status="✔
 class FakeClaude:
     """Stands in for `claude mcp add|get|remove`."""
 
-    def __init__(self, existing=None, status="✔ Connected"):
+    def __init__(self, existing=None, status="✔ Connected", plugin=None):
         self.calls = []
         self.server = existing  # (scope text, url) or None
         self.status = status
+        self.plugin = plugin  # the plugin's own server's url, or None
 
     def __call__(self, args, stdin=None):
         self.calls.append(list(args))
         verb = args[1]
+        if verb == "get" and args[2] == mcp.PLUGIN_SERVER:
+            if self.plugin is None:
+                return 1, 'No MCP server named "plugin:mezmo:mezmo".'
+            return 0, get_output(scope="Dynamic config (from command line)", status=self.status, url=self.plugin)
         if verb == "get":
             if self.server is None:
                 return 1, 'No MCP server named "mezmo". Configured servers: '
@@ -234,6 +239,30 @@ class NonProductionUrlTest(unittest.TestCase):
 
     def test_a_token_prefix_is_dropped_too(self):
         self.assertEqual(mcp.clean_key(f"Token {KEY}"), KEY)
+
+
+class PluginServerStatusTest(unittest.TestCase):
+    """The plugin brings the mezmo server; status finds it first, and names a duplicate an earlier setup left."""
+
+    def test_status_reports_the_plugins_server(self):
+        code, out, _, claude = run("status", claude=FakeClaude(plugin=URL))
+        self.assertEqual(code, 0)
+        self.assertIn("Mezmo MCP (the plugin's server):", out)
+        self.assertNotIn("duplicates", out)
+        self.assertEqual(claude.calls[0], ["mcp", "get", "plugin:mezmo:mezmo"])
+
+    def test_status_names_an_earlier_user_scope_server_as_a_duplicate(self):
+        claude = FakeClaude(existing=("User config (available in all your projects)", URL), plugin=URL)
+        code, out, _, _ = run("status", claude=claude)
+        self.assertEqual(code, 0)
+        self.assertIn("duplicates the plugin's tools. Remove it: claude mcp remove mezmo -s user", out)
+        _, out, _, _ = run("status", "--json", claude=claude)
+        report = json.loads(out)
+        self.assertEqual((report["plugin"], report["old_server_scope"]), (True, "user"))
+
+    def test_status_without_any_server_says_how_to_add_the_key(self):
+        _, out, _, _ = run("status", claude=FakeClaude())
+        self.assertIn("the plugin brings it once it has a service key (/plugin configure mezmo@mezmo", out)
 
 
 if __name__ == "__main__":

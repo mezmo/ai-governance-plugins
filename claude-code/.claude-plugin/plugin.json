@@ -1,8 +1,8 @@
 {
   "name": "mezmo",
   "displayName": "Mezmo",
-  "version": "0.8.2",
-  "description": "Check Claude Code's Bash and MCP tool calls with Mezmo Governance, send Claude Code telemetry to Mezmo, and connect Claude to Mezmo MCP.",
+  "version": "0.9.0",
+  "description": "Check Claude Code's Bash and MCP tool calls with Mezmo Governance, record them in the Mezmo ledger, connect Claude to Mezmo MCP, and send Claude Code telemetry to Mezmo.",
   "author": {
     "name": "Mezmo",
     "url": "https://www.mezmo.com"
@@ -23,14 +23,20 @@
   "userConfig": {
     "governance_access_key": {
       "type": "string",
-      "title": "Mezmo Governance service account token",
-      "description": "Token of the service account that the Claude Code agent uses in Mezmo Governance, a standard Mezmo service key. Leave empty to keep governance and the ledger off. With a key, every Bash and MCP tool call is checked before it runs and recorded in the Mezmo ledger.",
+      "title": "Mezmo service key",
+      "description": "A standard Mezmo service key: the token of the service account registered for Claude Code in Mezmo Governance. It turns on all three: every Bash and MCP tool call is checked by Mezmo Governance and recorded in the Mezmo ledger, and Claude connects to Mezmo MCP to read the ledger. Leave it empty and none of them work.",
       "sensitive": true
     },
     "api_url": {
       "type": "string",
       "title": "Mezmo API URL",
-      "description": "Leave empty for https://api.mezmo.com. Governance uses <API URL>/governance/workflow/authorize and the ledger <API URL>/v1/audit/events."
+      "description": "Leave empty for production, https://api.mezmo.com. For another Mezmo environment, its API URL, such as https://api.example.test."
+    },
+    "mcp_url": {
+      "type": "string",
+      "title": "Mezmo MCP URL",
+      "description": "Leave as is for production. For another Mezmo environment, its MCP URL, such as https://mcp.example.test/mcp.",
+      "default": "https://mcp.mezmo.com/mcp"
     },
     "governance_enabled": {
       "type": "boolean",
@@ -43,6 +49,15 @@
       "title": "Record tool calls in the Mezmo ledger",
       "description": "Turn off to stop sending each Bash and MCP tool call to the Mezmo ledger. A ledger URL from managed settings still applies.",
       "default": true
+    }
+  },
+  "mcpServers": {
+    "mezmo": {
+      "type": "http",
+      "url": "${user_config.mcp_url}",
+      "headers": {
+        "Authorization": "Bearer ${user_config.governance_access_key}"
+      }
     }
   }
 }

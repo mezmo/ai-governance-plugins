@@ -114,10 +114,11 @@ Arguments: $ARGUMENTS
 
    | What you see | What to tell the user |
    | --- | --- |
-   | Not set up | Run `/mezmo:setup governance`, which connects it with the governance token, or `/mezmo:setup mcp` for MCP alone. |
-   | `✔ Connected` | Claude Code connects. New sessions have tools named `mcp__mezmo__<tool>`. |
-   | Failed to connect, `401` | Mezmo rejected the service key. Run `/mezmo:setup mcp` with a current key and replace the server. |
-   | A server called `mezmo` with another URL | Something else uses the name `mezmo`. `/mezmo:setup mcp` can replace it if it's in user scope. |
+   | Not set up | The plugin brings the server once it has a service key: `/plugin configure mezmo@mezmo`, then `/reload-plugins`. |
+   | `✔ Connected` | Claude Code connects. This session has tools named `mcp__plugin_mezmo_mezmo__<tool>` (or `mcp__mezmo__<tool>` from an earlier setup's server). |
+   | Failed to connect, `401` | Mezmo rejected the service key, or none is set. Add a current key with `/plugin configure mezmo@mezmo`, then `/reload-plugins`. |
+   | A server called `mezmo` with another URL | Something else uses the name `mezmo`. Remove it if it's in user scope: `claude mcp remove mezmo -s user`. |
+   | Also has a `mezmo` server from an earlier setup | It duplicates the plugin's tools. Remove it with the command shown. |
 
 3. If the server is set up, check whether this session has its tools: whether a tool named `mcp__mezmo__get_ledger_investigation` is among your tools, loaded or deferred. Don't call it. Claude Code loads MCP servers when a session starts, so a server added or changed during this session has no tools here. If it isn't available, tell the user: "Restart Claude Code (`claude --continue` keeps this conversation) to use the Mezmo MCP."
 

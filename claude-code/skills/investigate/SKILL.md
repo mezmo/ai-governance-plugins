@@ -5,6 +5,7 @@ argument-hint: "<PagerDuty incident, Jira key or Slack channel>"
 allowed-tools:
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/ledger_investigation.py" join*)
   - Bash(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/ledger_investigation.py" close*)
+  - mcp__plugin_mezmo_mezmo__get_ledger_investigation
   - mcp__mezmo__get_ledger_investigation
 ---
 
@@ -58,6 +59,10 @@ shows.
 Call the `get_ledger_investigation` MCP tool with the same `incident_key`. It shows what other
 agents and people already ran, what they changed, and what is waiting for approval. Build on that
 work: don't repeat a change someone already made, or undo one they are waiting on.
+
+If no `get_ledger_investigation` tool is available, the Mezmo plugin has no service key: tell the
+user to add it with `/plugin configure mezmo@mezmo`, then `/reload-plugins`, and go on without the
+read only if they say to.
 
 ## 4. Work the incident
 

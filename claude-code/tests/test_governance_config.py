@@ -570,37 +570,23 @@ class FakeSecurity:
 
 
 class SetupConnectsMcpTest(CliCase):
-    """configure also adds Mezmo's MCP server, named mezmo, with the same key."""
+    """The plugin declares the mezmo MCP server from its options, so configure saves the MCP URL with
+    the key, checks the key against it, and adds no server of its own."""
 
-    def mcp_adds(self, claude):
-        return [call["args"] for call in claude.calls if call["args"][:2] == ["mcp", "add"]]
+    def mcp_calls(self, claude, verb):
+        return [call["args"] for call in claude.calls if call["args"][:2] == ["mcp", verb]]
 
-    def test_production_connects_the_production_mcp_server_with_the_same_key(self):
+    def test_production_saves_the_mcp_url_and_checks_the_key_without_adding_a_server(self):
         claude, http = FakeClaude(), FakeHttp()
         code, out, err = self.run_cli("configure", "--key", KEY, claude=claude, http=http)
         self.assertEqual(code, 0, err)
-        (add,) = self.mcp_adds(claude)
-        self.assertEqual(add[:7], ["mcp", "add", "--scope", "user", "--transport", "http", "mezmo"])
-        self.assertEqual(add[7:], [PROD_MCP_URL, "--header", f"Authorization: Bearer {KEY}"])
+        self.assertEqual(json.loads(saved(claude))["mcp_url"], PROD_MCP_URL)
+        self.assertEqual(self.mcp_calls(claude, "add"), [])
         (check,) = [call for call in http.calls if call["url"] == PROD_MCP_URL]
         self.assertEqual(check["headers"]["Authorization"], f"Bearer {KEY}")
-        self.assertIn(f"Added the mezmo MCP server ({PROD_MCP_URL})", out)
+        self.assertIn(f"Mezmo MCP: the plugin connects to {PROD_MCP_URL} with this key.", out)
+        self.assertEqual(out.splitlines()[-1], "Run /reload-plugins (or start a new Claude Code session) to apply it.")
         self.assertNotIn(KEY, out + err)
-
-    def test_connecting_the_mcp_server_ends_by_telling_the_user_to_restart_claude_code(self):
-        code, out, err = self.run_cli("configure", "--key", KEY)
-        self.assertEqual(code, 0, err)
-        self.assertEqual(out.count("Restart Claude Code"), 1, out)
-        self.assertEqual(
-            out.splitlines()[-1],
-            "Restart Claude Code (`claude --continue` keeps this conversation) to apply it and to use the Mezmo MCP.",
-        )
-        for args, http in ((("--no-mcp",), FakeHttp()), ((), FakeHttp(mcp=(401, "{}")))):
-            with self.subTest(args=args):
-                code, out, err = self.run_cli("configure", "--key", KEY, *args, http=http)
-                self.assertEqual(code, 0, err)
-                self.assertNotIn("Restart Claude Code", out)
-                self.assertEqual(out.splitlines()[-1], "Start a new Claude Code session to apply it.")
 
     def test_another_api_url_needs_its_mcp_url_before_anything_is_checked_or_saved(self):
         claude, http = FakeClaude(), FakeHttp()
@@ -610,44 +596,56 @@ class SetupConnectsMcpTest(CliCase):
         self.assertEqual(http.calls, [])
         self.assertFalse(any("--values-stdin" in call["args"] for call in claude.calls))
 
-    def test_another_api_url_connects_the_mcp_url_given(self):
+    def test_another_api_url_saves_the_mcp_url_given(self):
         claude = FakeClaude()
         code, _, err = self.run_cli("configure", "--key", KEY, "--api-url", OTHER_API, "--mcp-url", OTHER_MCP_URL,
                                     claude=claude)
         self.assertEqual(code, 0, err)
-        self.assertEqual(self.mcp_adds(claude)[0][7], OTHER_MCP_URL)
-        self.assertEqual(json.loads(saved(claude))["api_url"], OTHER_API)
+        values = json.loads(saved(claude))
+        self.assertEqual((values["api_url"], values["mcp_url"]), (OTHER_API, OTHER_MCP_URL))
 
     def test_an_mcp_url_that_is_not_https_is_refused(self):
         code, _, err = self.run_cli("configure", "--key", KEY, "--mcp-url", "http://mcp.example.test/mcp")
         self.assertEqual(code, gc.EXIT_ERROR)
         self.assertIn("https://", err)
 
-    def test_a_rejected_mcp_key_still_saves_governance_and_warns(self):
+    def test_a_rejected_mcp_key_still_saves_and_warns(self):
         claude = FakeClaude()
         code, out, err = self.run_cli("configure", "--key", KEY, claude=claude, http=FakeHttp(mcp=(401, "{}")))
         self.assertEqual(code, 0, err)
         self.assertTrue(claude.key_set)
-        self.assertEqual(self.mcp_adds(claude), [])
-        self.assertIn("Warning: Mezmo MCP isn't connected", out)
+        self.assertIn(f"Warning: Mezmo MCP at {PROD_MCP_URL} didn't accept the key", out)
 
-    def test_a_user_scope_server_is_replaced_and_a_project_one_is_left(self):
+    def test_an_earlier_user_scope_server_is_removed_and_a_project_one_is_named(self):
         claude = FakeClaude()
-        claude.mcp = {"scope": "user", "url": OTHER_MCP_URL}
+        claude.mcp = {"scope": "user", "url": PROD_MCP_URL}
         code, out, err = self.run_cli("configure", "--key", KEY, claude=claude)
-        self.assertEqual((code, claude.mcp), (0, {"scope": "user", "url": PROD_MCP_URL}), err)
-        self.assertIn("Replaced", out)
+        self.assertEqual((code, claude.mcp), (0, None), err)
+        self.assertEqual(self.mcp_calls(claude, "remove"), [["mcp", "remove", "mezmo", "-s", "user"]])
+        self.assertIn("the plugin brings its own", out)
         claude = FakeClaude()
         claude.mcp = {"scope": "project", "url": OTHER_MCP_URL}
         code, out, err = self.run_cli("configure", "--key", KEY, claude=claude)
-        self.assertEqual((code, self.mcp_adds(claude)), (0, []), err)
-        self.assertIn(".mcp.json", err)
-        self.assertIn("Warning: Mezmo MCP isn't connected", out)
+        self.assertEqual((code, self.mcp_calls(claude, "remove")), (0, []), err)
+        self.assertIn("Remove it there to avoid duplicate tools", out)
 
-    def test_no_mcp_leaves_it_out(self):
+    def test_no_mcp_leaves_the_mcp_url_alone(self):
         claude = FakeClaude()
         self.assertEqual(self.run_cli("configure", "--key", KEY, "--no-mcp", claude=claude)[0], 0)
+        self.assertNotIn("mcp_url", json.loads(saved(claude)))
         self.assertFalse(any(call["args"][:1] == ["mcp"] for call in claude.calls))
+
+    def test_mcp_only_saves_the_key_with_governance_and_the_ledger_off(self):
+        claude, http = FakeClaude(), FakeHttp()
+        code, out, err = self.run_cli("configure", "--key", KEY, "--mcp-only", claude=claude, http=http)
+        self.assertEqual(code, 0, err)
+        values = json.loads(saved(claude))
+        self.assertEqual((values["governance_enabled"], values["ledger_enabled"]), ("false", "false"))
+        self.assertEqual([call["url"] for call in http.calls], [PROD_MCP_URL])
+        self.assertIn("Mezmo Governance and the ledger are off", out)
+        for args in (("--no-mcp",), ("--store", "settings")):
+            with self.subTest(args=args):
+                self.assertEqual(self.run_cli("configure", "--key", KEY, "--mcp-only", *args)[0], gc.EXIT_USAGE)
 
 
 class SavedKeyTest(CliCase):
