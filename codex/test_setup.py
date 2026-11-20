@@ -474,19 +474,26 @@ class NonInteractiveTests(SettingsCase):
                 self.assertIn("no key to save: run this in a terminal to be asked for it, or give --key-file or --keep-key", text)
                 self.assertFalse((self.dir / "codex.json").exists())
 
-    def test_status_names_a_saved_key_it_cannot_read_from_codexs_sandbox(self) -> None:
+    def test_status_tells_a_missing_key_from_one_it_cannot_check(self) -> None:
         self.assertEqual(self.main("--api-url", API, "--key-file", str(self.key_file()), "--delete-key-file")[0], 0)
-        code, text = self.main("--status")
-        self.assertIn("key: saved in", text)
-        self.assertNotIn("can't be read", text)
-        # As inside Codex's sandbox: codex.json names the store, but reading it fails.
-        with patch.object(mezmo_settings, "stored_key", lambda: mezmo_settings.Setting(None, "file")), \
-                patch.object(mezmo_setup, "saved_key", lambda platform=None: (None, "")):
-            code, text = self.main("--status")
-        self.assertEqual(code, 0, text)
-        self.assertIn("key: saved in", text)
-        self.assertIn("but it can't be read from here, as inside Codex's sandbox", text)
-        self.assertNotIn("none saved", text)
+        self.assertEqual(self.config()["key_store"], "file")
+        self.assertIn("key: saved in", self.main("--status")[1])
+        # The key file is readable even inside Codex's sandbox, so a deleted one is missing.
+        mezmo_settings._read_store.cache_clear()
+        mezmo_settings.key_path().unlink()
+        mezmo_settings._read_store.cache_clear()
+        text = self.main("--status")[1]
+        self.assertIn("key: none saved", text)
+        self.assertNotIn("checked from here", text)
+        # The Keychain answers "not found" inside the sandbox whether or not it holds the key.
+        for store in ("keychain", "secret-tool"):
+            with self.subTest(store=store):
+                path = mezmo_settings.config_path()
+                path.write_text(json.dumps({**self.config(), "key_store": store}), encoding="utf-8")
+                mezmo_settings._read_store.cache_clear()
+                text = self.main("--status")[1]
+                self.assertIn("but it can't be checked from here, as inside Codex's sandbox", text)
+                self.assertNotIn("key: saved in", text)
 
     def test_at_a_terminal_the_flags_leave_out_only_what_they_give(self) -> None:
         # The command the setup skill hands out: --api-url alone, for an API with no known MCP URL.
