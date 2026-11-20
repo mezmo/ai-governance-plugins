@@ -491,7 +491,9 @@ def _build_parser() -> argparse.ArgumentParser:
     configure.add_argument("--mcp-only", action="store_true",
                            help="Save the key for Mezmo MCP only: governance and the ledger stay off")
 
-    sub.add_parser("remove", help="Clear the plugin options and the settings-file variables")
+    remove = sub.add_parser("remove", help="Clear the plugin options and the settings-file variables")
+    remove.add_argument("--mcp-only", action="store_true",
+                        help="Turn off only the plugin's Mezmo MCP server, and remove a user-scope one an earlier setup added")
 
     sub.add_parser("saved-key", help="Whether the Codex setup saved a Mezmo key in the macOS Keychain; never prints it")
 
@@ -659,6 +661,20 @@ def main(
                   else f"Codex uses it with the production Mezmo API URL, {DEFAULT_API_URL}.")
             return 0
 
+        if args.command == "remove" and args.mcp_only:
+            try:
+                save_plugin_options(claude, args.plugin_id, {MCP_URL_OPTION: MCP_OFF})
+            except (RuntimeError, OSError, NotInstalled):
+                print("Could not turn off the plugin's Mezmo MCP server.", file=sys.stderr)
+                return EXIT_ERROR
+            print("Turned off the plugin's Mezmo MCP server: its MCP URL is now off, so it connects nowhere.")
+            existing = mcp_config.server_info(claude)
+            if existing is not None and existing.get("scope") == "user":
+                claude(["mcp", "remove", mcp_config.SERVER, "-s", "user"], None)
+                print(f"Removed the user-scope {mcp_config.SERVER} MCP server an earlier setup added ({existing.get('url')}).")
+            print("Run /reload-plugins (or start a new Claude Code session) to apply it.")
+            return 0
+
         if args.command == "remove":
             removed = []
             options, plugin_error = available_plugin_options(claude, args.plugin_id)
@@ -668,6 +684,8 @@ def main(
                 try:
                     save_plugin_options(claude, args.plugin_id, {
                         KEY_OPTION: REMOVED_KEY, API_URL_OPTION: "", ENABLED_OPTION: "false", LEDGER_ENABLED_OPTION: "false",
+                        # The plugin's MCP server would otherwise keep connecting, with the placeholder as its key.
+                        MCP_URL_OPTION: MCP_OFF,
                     })
                     removed.append(f"the {args.plugin_id} plugin options (the saved key is overwritten)")
                 except (RuntimeError, OSError, NotInstalled):
