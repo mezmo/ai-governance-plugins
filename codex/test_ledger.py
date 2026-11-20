@@ -1415,6 +1415,29 @@ class RolloutTests(LedgerTestCase):
         ids = {zero["extra"]["call_id"], quiet["extra"]["call_id"]}
         self.assertEqual([event for event in stopped if event["extra"].get("call_id") in ids], [])
 
+    def test_an_exit_code_another_calls_hook_read_first_is_kept_for_this_call(self) -> None:
+        self.sent(self.shell())
+        self.append(self.command(1))
+        # A parallel call's hook reads past this call's completed record first.
+        self.sent(hook_input(tool_use_id="parallel", transcript_path=str(self.rollout)))
+        (ended,) = [event for event in self.sent(self.shell("PostToolUse", tool_response="Unable to connect"))]
+        self.assertEqual((ended["event"], ended["extra"]["exit_status"]), ("agent.tool_call.failed", 1))
+
+    def test_stop_keeps_a_call_awaiting_its_exit_code_until_the_rollout_is_read_to_the_end(self) -> None:
+        (started,) = self.sent(self.shell())
+        self.sent(self.shell("PostToolUse", tool_response="Unable to connect"))
+        with patch.object(ledger, "MAX_ROLLOUT_READ_BYTES", 300):
+            # A long message the Stop's one read can't get past, then the exit code.
+            self.append(self.said("x" * 2000), self.command(1))
+            self.sent(self.shell("Stop"))
+            failed = []
+            for attempt in range(12):
+                failed += [event for event in self.sent(hook_input(tool_use_id=f"later-{attempt}",
+                                                                   transcript_path=str(self.rollout)))
+                           if event["extra"].get("call_id") == started["extra"]["call_id"]]
+        self.assertEqual([(event["event"], event["extra"]["exit_status"]) for event in failed],
+                         [("agent.tool_call.failed", 1)])
+
     def test_a_partial_last_line_waits_for_the_next_read(self) -> None:
         self.write_state({"investigation": {"incident_key": INCIDENT_KEY}})
         line = json.dumps({"payload": {"type": "item_completed", "item": self.said("Half way.")}})

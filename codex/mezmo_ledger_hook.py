@@ -171,6 +171,8 @@ PENDING_INCIDENT_KEY = "incident_key"
 # Set on a shell call already recorded as ran before its exit code was in the rollout: a non-zero
 # one found later is sent as a `failed` end, which replaces the `ran` as the call's last record.
 PENDING_AWAITING_EXIT = "awaiting_exit"
+# A shell call's exit code another hook read from the rollout before this call's own PostToolUse.
+PENDING_EXIT_CODE = "exit_code"
 MAX_PENDING_CALLS = 200
 # The most of the rollout one hook run reads; the rest waits for the next run.
 MAX_ROLLOUT_READ_BYTES = 8 * 1024 * 1024
@@ -2101,6 +2103,8 @@ def _catch_up(
             offset = state.get(ROLLOUT_OFFSET_FIELD)
             offset = offset if isinstance(offset, int) and offset >= 0 else 0
             records, offset = _rollout_records(path=path, offset=offset)
+            # Read to the end: anything still awaited won't show up in this rollout.
+            read_all = offset >= os.path.getsize(path)
             for record in records:
                 payload = record.get("payload")
                 item = payload.get("item") if isinstance(payload, dict) and payload.get("type") == "item_completed" else None
@@ -2120,14 +2124,27 @@ def _catch_up(
                     pending.pop(item_id)
                     if found_exits[item_id]:
                         ended.append((kept, "failed", item))
+                elif isinstance(kept, dict) and item_id in found_exits:
+                    # Read by another call's hook before this call's PostToolUse: kept for it, since
+                    # the offset moves past it now.
+                    pending[item_id] = {**kept, PENDING_EXIT_CODE: found_exits[item_id]}
                 elif item.get("status") == "failed" and isinstance(kept, dict) and not kept.get(PENDING_AWAITING_EXIT):
                     ended.append((pending.pop(item_id), "failed", item))
+            for call_id, kept in pending.items():
+                saved = kept.get(PENDING_EXIT_CODE) if isinstance(kept, dict) else None
+                if isinstance(saved, int) and not isinstance(saved, bool):
+                    found_exits.setdefault(call_id, saved)
             if stop:
                 ended.extend(
                     (kept, "no_result", {}) for kept in pending.values()
                     if isinstance(kept, dict) and not kept.get(PENDING_AWAITING_EXIT)
                 )
-                pending = {}
+                # A call already recorded as ran keeps waiting for its exit code until the rollout
+                # has been read to the end.
+                pending = {} if read_all else {
+                    call_id: kept for call_id, kept in pending.items()
+                    if isinstance(kept, dict) and kept.get(PENDING_AWAITING_EXIT)
+                }
             _set_pending(state, pending)
             state[ROLLOUT_OFFSET_FIELD] = offset
 
