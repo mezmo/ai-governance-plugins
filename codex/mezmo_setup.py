@@ -595,9 +595,10 @@ def status(platform: str = sys.platform) -> int:
     named = config.get("key_store")
     if key:
         print(f"key: saved in {store_name(store)}")
-    elif named in mezmo_settings.KEY_STORES:
-        # Codex's sandbox can't read the Keychain or the keyring, so --status run by Codex lands here.
-        print(f"key: saved in {store_name(named)}, but it can't be read from here, as inside Codex's sandbox")
+    elif named in (mezmo_settings.KEYCHAIN, mezmo_settings.SECRET_TOOL):
+        # Inside Codex's sandbox the Keychain answers "not found" for a key it holds, so a missing key
+        # and an unreadable store look the same here. The key file is readable, so it never lands here.
+        print(f"key: codex.json says {store_name(named)}, but it can't be checked from here, as inside Codex's sandbox")
     else:
         print("key: none saved")
     print(f"Codex MCP: {mcp_status()}")
