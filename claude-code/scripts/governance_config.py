@@ -50,6 +50,9 @@ ENABLED_OPTION = "governance_enabled"
 LEDGER_ENABLED_OPTION = "ledger_enabled"
 # The plugin declares the mezmo MCP server from this option and the key option.
 MCP_URL_OPTION = "mcp_url"
+# The plugin's server always connects with the saved key, so turning MCP off saves a URL Claude Code
+# refuses ("URL is unset or invalid"), and nothing is contacted. An empty one would mean production.
+MCP_OFF = "off"
 # Claude Code keeps a sensitive option's value when given "", so remove overwrites the key
 # with this placeholder, which governance_hook treats as unset, and turns the switch off.
 REMOVED_KEY = "off"
@@ -577,8 +580,7 @@ def main(
                         ENABLED_OPTION: "false" if args.mcp_only else "true",
                         LEDGER_ENABLED_OPTION: "false" if args.mcp_only else "true",
                     }
-                    if mcp_url:
-                        values[MCP_URL_OPTION] = mcp_url
+                    values[MCP_URL_OPTION] = mcp_url or MCP_OFF
                     save_plugin_options(claude, args.plugin_id, values)
                 except NotInstalled:
                     print(
@@ -612,6 +614,10 @@ def main(
                       "Set the plugin's ledger_enabled option to false to turn it off.")
             if ledger_result is not None and not ledger_result.ok:
                 print("Warning: the ledger check failed, so records wait in the retry file until the ledger takes them.")
+            if not mcp_url and args.store == "plugin":
+                print("Mezmo MCP is off: the plugin's mezmo server connects nowhere. Set the plugin's MCP URL to turn it on.")
+                print("Run /reload-plugins (or start a new Claude Code session) to apply it.")
+                return 0
             if mcp_url and args.store == "plugin":
                 # The plugin declares the server from these options, so there's nothing to add, and a
                 # user-scope server an earlier setup added would only duplicate its tools.
