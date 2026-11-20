@@ -1195,8 +1195,31 @@ class DripGovernance(ThreadingHTTPServer):
         return f"http://127.0.0.1:{self.server_address[1]}/governance/workflow/authorize"
 
 
+REAL_MEZMO = Path.home() / ".mezmo"
+
+
+def real_mezmo_files() -> dict[str, tuple[int, int]]:
+    """(size, mtime) of each file in the developer's real ~/.mezmo, outside its session folders."""
+    found: dict[str, tuple[int, int]] = {}
+    for path in REAL_MEZMO.glob("*") if REAL_MEZMO.is_dir() else ():
+        if path.is_file():
+            info = path.stat()
+            found[path.name] = (info.st_size, info.st_mtime_ns)
+    return found
+
+
 class EndToEndTests(unittest.TestCase):
     """Run the script as the runtime does: JSON on stdin, decision on stdout."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.real_home = real_mezmo_files()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        # The hook runs as a real process, so only a look at the real folder shows a leak.
+        if real_mezmo_files() != cls.real_home:
+            raise AssertionError(f"EndToEndTests changed the developer's {REAL_MEZMO}")
 
     def run_hook(
         self,
@@ -1210,13 +1233,19 @@ class EndToEndTests(unittest.TestCase):
             if not key.startswith(("MEZMO_GOVERNANCE_", "MEZMO_LEDGER_"))
             and key.lower() not in {"http_proxy", "https_proxy", "all_proxy"}
         }
+        scratch = Path(self.tmp.name)
         env.update(
             {
+                # Its own home: the ledger the hook derives from the stub's URL can't take events,
+                # so it saves them for retry, which must never land in the developer's ~/.mezmo.
+                "HOME": str(scratch / "home"),
                 "NO_PROXY": "*",
                 "MEZMO_GOVERNANCE_TOKEN": "sts_test",
                 "MEZMO_GOVERNANCE_TIMEOUT_SECONDS": "20",
                 "MEZMO_GOVERNANCE_POLL_INTERVAL_SECONDS": "1",
-                "MEZMO_GOVERNANCE_AUDIT_LOG": str(Path(self.tmp.name) / "audit.jsonl"),
+                "MEZMO_GOVERNANCE_AUDIT_LOG": str(scratch / "audit.jsonl"),
+                "MEZMO_GOVERNANCE_STATE_DIR": str(scratch / "sessions"),
+                "MEZMO_LEDGER_SPOOL": str(scratch / "ledger-spool.jsonl"),
             }
         )
         if url is not None:
