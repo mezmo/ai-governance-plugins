@@ -103,10 +103,9 @@ expected: with no key, the hooks let every call run and record nothing.
 ## 5. Check what it saved
 
 Run `--status` again (step 1) and confirm the API URL and the MCP entry. For the key, go by what
-setup printed in the user's terminal: it ends with "saved the key in ..." only after the key
+setup printed in the user's terminal: "saved the key in ..." or "kept the key in ..." means the key
 passed its checks. Inside the sandbox `--status` can't see the Keychain or the keyring, so it says
-the key "can't be checked from here"; if the user didn't see "saved the key in", setup didn't
-finish: ask what it printed.
+the key "can't be checked from here". If the user didn't see either message, ask what it printed.
 
 ## 6. Start a new session and trust the hooks
 

@@ -794,6 +794,11 @@ class SkillTests(unittest.TestCase):
         # It says what the command asks, and checks the result itself.
         self.assertIn("the MCP URL (only for\nanother API URL", text)
         self.assertIn("Run `--status` again (step 1)", text)
+        # Both of setup's success lines, as mezmo_setup.py prints them.
+        source = (ADAPTER_DIR / "mezmo_setup.py").read_text(encoding="utf-8")
+        for line in ("saved the key in ", "kept the key in "):
+            self.assertIn(f'"{line}...', text)
+            self.assertIn(line, source)
         self.assertIn("/hooks", text)
         self.assertIn("Start a new Codex session to use the Mezmo MCP", text)
         self.assertIn("Start a new Codex session to use the Mezmo MCP", (ADAPTER_DIR / "mezmo_setup.py").read_text(encoding="utf-8"))
