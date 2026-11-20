@@ -14,6 +14,10 @@ NO_KEY = (
     "Mezmo is installed but has no service key, so Mezmo Governance, the Mezmo ledger and Mezmo MCP are off. "
     "Run /plugin configure mezmo@mezmo to add it, then /reload-plugins."
 )
+NO_PLUGIN_KEY = (
+    "Mezmo's key comes from your settings, not the plugin's options, so the plugin's Mezmo MCP server can't "
+    "connect. Add the key with /plugin configure mezmo@mezmo, then /reload-plugins."
+)
 OLD_SERVER = (
     "Claude Code has a mezmo MCP server an earlier Mezmo setup added, and the plugin now brings its own, so "
     "their tools are duplicated. Remove the old one: claude mcp remove mezmo -s {scope}"
@@ -119,6 +123,27 @@ class SetupNoticeTests(unittest.TestCase):
             (handler,) = group["hooks"]
             self.assertEqual(handler["command"], command)
             self.assertLessEqual(handler["timeout"], 5)
+
+    def test_a_key_only_in_settings_never_calls_a_working_server_a_duplicate(self) -> None:
+        env_key = {"MEZMO_GOVERNANCE_ACCESS_KEY": KEY}
+        self.assert_says(self.run_hook(env_key), NO_PLUGIN_KEY)
+        # The user's own mezmo server is then the one that works: leave it alone.
+        self.write_claude_json({"mcpServers": {"mezmo": {"type": "http"}}})
+        self.assertIsNone(self.run_hook(env_key))
+
+    def test_mcp_turned_off_says_nothing_about_it(self) -> None:
+        self.write_claude_json({"mcpServers": {"mezmo": {}}})
+        self.assertIsNone(self.run_hook({**self.keyed(), "CLAUDE_PLUGIN_OPTION_MCP_URL": "off"}))
+        self.assertIsNone(self.run_hook({"MEZMO_GOVERNANCE_ACCESS_KEY": KEY, "CLAUDE_PLUGIN_OPTION_MCP_URL": "off"}))
+
+    def test_another_api_with_productions_mcp_url_says_to_set_it(self) -> None:
+        other = {**self.keyed(), "CLAUDE_PLUGIN_OPTION_API_URL": "https://api.example.test/"}
+        message = ("Mezmo MCP points at production, but your Mezmo API URL is https://api.example.test. Set that "
+                   "environment's MCP URL with /plugin configure mezmo@mezmo, then /reload-plugins.")
+        self.assert_says(self.run_hook(other), message)
+        self.assert_says(self.run_hook({**other, "CLAUDE_PLUGIN_OPTION_MCP_URL": "https://mcp.mezmo.com/mcp"}), message)
+        self.assertIsNone(self.run_hook({**other, "CLAUDE_PLUGIN_OPTION_MCP_URL": "https://mcp.example.test/mcp"}))
+        self.assertIsNone(self.run_hook({**self.keyed(), "CLAUDE_PLUGIN_OPTION_API_URL": "https://api.mezmo.com"}))
 
 
 class ManifestTests(unittest.TestCase):

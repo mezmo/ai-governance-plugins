@@ -30,6 +30,15 @@ class SetupSkillTests(unittest.TestCase):
         self.assertIn("Run /reload-plugins", section)
 
 
+class TestSkillTests(unittest.TestCase):
+    def test_it_finds_the_plugins_tools_and_says_to_reload_not_restart(self) -> None:
+        text = " ".join((ROOT / "skills" / "test" / "SKILL.md").read_text(encoding="utf-8").split())
+        step = text[text.index("3. If the server is set up"):text.index("## Verify arrival")]
+        self.assertIn("`mcp__plugin_mezmo_mezmo__get_ledger_investigation`", step)
+        self.assertIn("Run /reload-plugins", step)
+        self.assertNotIn("Restart Claude Code", step)
+
+
 class InvestigateSkillTests(unittest.TestCase):
     def test_the_plugins_ledger_tool_is_pre_approved_and_its_absence_explained(self) -> None:
         text = INVESTIGATE.read_text(encoding="utf-8")

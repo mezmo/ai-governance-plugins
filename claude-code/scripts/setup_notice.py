@@ -6,11 +6,15 @@ the `mezmo` server), with no restart. No hook runs on install, so a plugin insta
 speaks first on the next prompt, and one installed before the session at its start. It names:
 
 - no key: governance, the ledger and Mezmo MCP are all off, and how to add it;
+- a key only in settings (managed or the settings file's env), which the plugin's MCP server can't
+  use: how to give the plugin the key, unless a `mezmo` server of the user's own already works;
 - a `mezmo` server an earlier setup added to Claude Code's user or local config: it duplicates the
-  plugin's tools, and how to remove it.
+  plugin's tools, and how to remove it;
+- a Mezmo API URL other than production with the MCP URL still production's: the key would go to
+  production's MCP, so how to set the right one.
 
-It says nothing when governance is turned off in the plugin options (and no key is set), or when
-nothing is missing. It reads local files only, never the network or the `claude` CLI, and always
+It says nothing when governance is turned off in the plugin options (and no key is set), when Mezmo
+MCP is turned off (its URL saved as `off`), or when nothing is missing. It reads local files only, never the network or the `claude` CLI, and always
 exits 0.
 """
 
@@ -22,6 +26,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, Mapping, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -37,6 +42,17 @@ OLD_SERVER = (
     "Claude Code has a mezmo MCP server an earlier Mezmo setup added, and the plugin now brings its own, so "
     "their tools are duplicated. Remove the old one: claude mcp remove mezmo -s {scope}"
 )
+NO_PLUGIN_KEY = (
+    "Mezmo's key comes from your settings, not the plugin's options, so the plugin's Mezmo MCP server can't "
+    "connect. Add the key with /plugin configure mezmo@mezmo, then /reload-plugins."
+)
+OTHER_API = (
+    "Mezmo MCP points at production, but your Mezmo API URL is {api}. Set that environment's MCP URL with "
+    "/plugin configure mezmo@mezmo, then /reload-plugins."
+)
+MCP_URL_OPTION = "CLAUDE_PLUGIN_OPTION_MCP_URL"
+PRODUCTION_API_HOST = "api.mezmo.com"
+PRODUCTION_MCP_HOST = "mcp.mezmo.com"
 # Markers of sessions already told, kept this long.
 MARKER_SECONDS = 7 * 24 * 3600
 
@@ -67,12 +83,25 @@ def old_server_scope(*, cwd: str, environ: Mapping[str, str]) -> Optional[str]:
 def notice(*, cwd: str, environ: Mapping[str, str]) -> Optional[str]:
     """What's missing, or None. Never raises."""
     try:
-        if governance_hook.load_config() is None and governance_hook.option_key() is None:
+        plugin_key = governance_hook.option_key()
+        if governance_hook.load_config() is None and plugin_key is None:
             enabled = (environ.get(governance_hook.ENABLED_OPTION) or "").strip().lower()
             # Turned off on purpose, as the plugin options allow: say nothing.
             return None if enabled in governance_hook.FALSE_VALUES else NO_KEY
+        mcp_url = (environ.get(MCP_URL_OPTION) or "").strip()
+        if mcp_url.lower() == "off":
+            return None
         scope = old_server_scope(cwd=cwd, environ=environ)
-        return OLD_SERVER.format(scope=scope) if scope else None
+        if plugin_key is None:
+            # The key is in settings: a mezmo server of the user's own is then the one that works.
+            return None if scope else NO_PLUGIN_KEY
+        if scope:
+            return OLD_SERVER.format(scope=scope)
+        api = (environ.get(governance_hook.API_URL_OPTION) or "").strip()
+        mcp_host = urlparse(mcp_url).hostname if mcp_url else PRODUCTION_MCP_HOST
+        if api and urlparse(api).hostname not in (None, PRODUCTION_API_HOST) and mcp_host == PRODUCTION_MCP_HOST:
+            return OTHER_API.format(api=api.rstrip("/"))
+        return None
     except Exception:
         return None
 

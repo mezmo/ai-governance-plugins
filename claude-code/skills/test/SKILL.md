@@ -119,8 +119,9 @@ Arguments: $ARGUMENTS
    | Failed to connect, `401` | Mezmo rejected the service key, or none is set. Add a current key with `/plugin configure mezmo@mezmo`, then `/reload-plugins`. |
    | A server called `mezmo` with another URL | Something else uses the name `mezmo`. Remove it if it's in user scope: `claude mcp remove mezmo -s user`. |
    | Also has a `mezmo` server from an earlier setup | It duplicates the plugin's tools. Remove it with the command shown. |
+   | `off (HTTP)`, URL unset or invalid | Mezmo MCP was turned off (`--no-mcp` saves the MCP URL as `off`). To turn it on, set the plugin's MCP URL with `/plugin configure mezmo@mezmo`, then `/reload-plugins`. |
 
-3. If the server is set up, check whether this session has its tools: whether a tool named `mcp__mezmo__get_ledger_investigation` is among your tools, loaded or deferred. Don't call it. Claude Code loads MCP servers when a session starts, so a server added or changed during this session has no tools here. If it isn't available, tell the user: "Restart Claude Code (`claude --continue` keeps this conversation) to use the Mezmo MCP."
+3. If the server is set up, check whether this session has its tools: whether a tool named `mcp__plugin_mezmo_mezmo__get_ledger_investigation` (the plugin's server) or `mcp__mezmo__get_ledger_investigation` (an earlier setup's) is among your tools, loaded or deferred. Don't call it. If neither is available, tell the user: "Run /reload-plugins (or start a new Claude Code session) to use the Mezmo MCP."
 
 ## Verify arrival and an actual governed call
 

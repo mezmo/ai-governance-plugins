@@ -301,6 +301,7 @@ class CliTest(CliCase):
         self.assertEqual(save["args"][:4], ["plugin", "configure", "mezmo@mezmo", "--values-stdin"])
         self.assertEqual(json.loads(save["stdin"]), {
             "governance_access_key": KEY, "api_url": OTHER_API, "governance_enabled": "true", "ledger_enabled": "true",
+            "mcp_url": "off",
         })
         self.assertNotIn(KEY, out + err)
         self.assertIn("sts_…cdef", out)
@@ -629,11 +630,17 @@ class SetupConnectsMcpTest(CliCase):
         self.assertEqual((code, self.mcp_calls(claude, "remove")), (0, []), err)
         self.assertIn("Remove it there to avoid duplicate tools", out)
 
-    def test_no_mcp_leaves_the_mcp_url_alone(self):
-        claude = FakeClaude()
-        self.assertEqual(self.run_cli("configure", "--key", KEY, "--no-mcp", claude=claude)[0], 0)
-        self.assertNotIn("mcp_url", json.loads(saved(claude)))
-        self.assertFalse(any(call["args"][:1] == ["mcp"] for call in claude.calls))
+    def test_no_mcp_turns_the_plugins_server_off_so_the_key_goes_nowhere(self):
+        # The plugin's server always sends the saved key; an empty URL would mean production's.
+        for args in ((), ("--api-url", OTHER_API)):
+            with self.subTest(args=args):
+                claude, http = FakeClaude(), FakeHttp()
+                code, out, err = self.run_cli("configure", "--key", KEY, "--no-mcp", *args, claude=claude, http=http)
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(saved(claude))["mcp_url"], "off")
+                self.assertFalse(any(call["args"][:1] == ["mcp"] for call in claude.calls))
+                self.assertNotIn(PROD_MCP_URL, [call["url"] for call in http.calls])
+                self.assertIn("Mezmo MCP is off", out)
 
     def test_mcp_only_saves_the_key_with_governance_and_the_ledger_off(self):
         claude, http = FakeClaude(), FakeHttp()
