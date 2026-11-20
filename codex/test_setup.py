@@ -271,6 +271,8 @@ class SetupTests(SettingsCase):
     def run_setup(self, platform: str, which: Any, fake: FakeStore, mcp: str = "", **kwargs: Any) -> tuple[int, str]:
         out = StringIO()
         with (
+            # A person at a terminal answers each prompt.
+            patch.object(mezmo_setup, "interactive", lambda: True),
             patch("builtins.input", lambda prompt: API if "API URL" in prompt else mcp),
             patch.object(mezmo_setup.getpass, "getpass", return_value=KEY),
             patch.object(mezmo_setup.shutil, "which", which),
@@ -464,10 +466,27 @@ class NonInteractiveTests(SettingsCase):
         return (self.codex / "config.toml").read_text(encoding="utf-8")
 
     def test_without_a_terminal_a_missing_key_is_named_not_asked_for(self) -> None:
-        code, text = self.main("--api-url", API)
-        self.assertEqual(code, 1, text)
-        self.assertIn("no key to save: run this in a terminal to be asked for it, or give --key-file or --keep-key", text)
-        self.assertFalse((self.dir / "codex.json").exists())
+        # With or without flags: input and getpass would fail this test if they were called.
+        for argv in (("--api-url", API), ()):
+            with self.subTest(argv=argv):
+                code, text = self.main(*argv)
+                self.assertEqual(code, 1, text)
+                self.assertIn("no key to save: run this in a terminal to be asked for it, or give --key-file or --keep-key", text)
+                self.assertFalse((self.dir / "codex.json").exists())
+
+    def test_status_names_a_saved_key_it_cannot_read_from_codexs_sandbox(self) -> None:
+        self.assertEqual(self.main("--api-url", API, "--key-file", str(self.key_file()), "--delete-key-file")[0], 0)
+        code, text = self.main("--status")
+        self.assertIn("key: saved in", text)
+        self.assertNotIn("can't be read", text)
+        # As inside Codex's sandbox: codex.json names the store, but reading it fails.
+        with patch.object(mezmo_settings, "stored_key", lambda: mezmo_settings.Setting(None, "file")), \
+                patch.object(mezmo_setup, "saved_key", lambda platform=None: (None, "")):
+            code, text = self.main("--status")
+        self.assertEqual(code, 0, text)
+        self.assertIn("key: saved in", text)
+        self.assertIn("but it can't be read from here, as inside Codex's sandbox", text)
+        self.assertNotIn("none saved", text)
 
     def test_at_a_terminal_the_flags_leave_out_only_what_they_give(self) -> None:
         # The command the setup skill hands out: --api-url alone, for an API with no known MCP URL.
