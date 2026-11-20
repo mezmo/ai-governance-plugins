@@ -30,7 +30,10 @@ working.
    anything, and saves them as plugin options. It also connects [Mezmo MCP](#mezmo-mcp) with the
    same token, so Claude can read the ledger. One token and one URL turn on all three. For an API
    URL other than production, it asks once for the MCP URL. On a Mac where the Codex plugin's
-   setup already saved a Mezmo key, it offers to use that key instead of asking for one.
+   setup already saved a Mezmo key, it offers to use that key instead of asking for one. If the
+   install dialog already configured governance, keeping it still connects the MCP: Claude Code
+   doesn't let setup read the token from the dialog, so it asks for it once more (or uses the Codex
+   key).
 3. **Check it**: restart Claude Code (`claude --continue` keeps the conversation), since a session
    loads MCP servers only when it starts, and run `/mezmo:test`. It shows the ledger's last send,
    such as `Ledger: last send 16:14:40 UTC to api.mezmo.com, HTTP 202, 2 events`.
