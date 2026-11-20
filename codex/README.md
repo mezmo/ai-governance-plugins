@@ -21,18 +21,20 @@ The script needs Python 3.9 or later and uses only the standard library.
    governance is off: the hooks let every call run and record nothing, and
    Codex warns once a session "Mezmo Governance is off until you set up
    Mezmo" (once the hooks are trusted, step 5).
-4. Ask Codex to "set up Mezmo". Its `mezmo-setup` skill:
-   - checks what is saved and asks for the Mezmo API URL (production by
-     default);
-   - creates a private file and asks you to paste the key into it in your own
-     editor, then tell Codex you're done;
-   - asks to run setup outside the sandbox, since it writes `~/.mezmo`,
-     Codex's `config.toml` and the Keychain. **Approve that one prompt.**
-     Setup checks the key, saves it, and connects the Mezmo MCP.
+4. Ask Codex to "set up Mezmo". Its `mezmo-setup` skill checks what is saved,
+   says what setup turns on, and asks you to run one command in your own
+   terminal, outside Codex:
 
-   If Codex can't ask (approval policy `never`) or you decline, it asks you
-   to run `~/.mezmo/bin/mezmo-setup` in your terminal instead. That asks for
-   the URL and the key, without showing the key. See [Setup](#setup).
+   ```bash
+   ~/.mezmo/bin/mezmo-setup
+   ```
+
+   It asks for the Mezmo API URL (Enter keeps production), the MCP URL for
+   another API URL, and the key, at a prompt that shows nothing. It checks the
+   key, saves it in the Keychain, and connects the Mezmo MCP. Codex can't do
+   this itself: its sandbox can't write `~/.mezmo`, Codex's `config.toml` or
+   the Keychain. Then tell Codex it's done, and it checks what was saved. See
+   [Setup](#setup).
 5. Setup ends with "Start a new Codex session to use the Mezmo MCP". Start
    one, run `/hooks`, and trust all five Mezmo hooks.
 6. Ask Codex to investigate an incident, such as "investigate PagerDuty
@@ -47,12 +49,11 @@ yourself, type `$` and pick it, or run `/skills`: Codex lists them as
 
 ## Setup
 
-The `mezmo-setup` skill runs `mezmo_setup.py` for you, outside the sandbox
-with your approval. Run by hand, `mezmo_setup.py` asks for two things: the Mezmo API URL (default
-`https://api.mezmo.com`) and the key, a Mezmo service key read with
-`getpass`, so it never shows on screen, in shell history, in a command line or
-in an agent transcript. With no flags, run it in your own terminal, not
-through Codex:
+Setup runs in your own terminal, not through Codex: the `mezmo-setup` skill
+hands you the command. It asks for the Mezmo API URL (default
+`https://api.mezmo.com`), the MCP URL for another API URL, and the key, a
+Mezmo service key read with `getpass`, so it never shows on screen, in shell
+history, in a command line or in an agent transcript:
 
 ```bash
 ~/.mezmo/bin/mezmo-setup
@@ -63,7 +64,9 @@ That launcher stays at the same path across plugin updates: it runs
 cache, with any flags you give it. Setup writes it, and so does the
 governance hook the first time it runs in a session with no key.
 
-The skill runs it with flags instead, so nothing is asked:
+At a terminal it asks for whatever its flags leave out. Without one, as when a
+script runs it, it asks nothing and needs a key from `--key-file` or
+`--keep-key`:
 
 | Flag | What it does |
 | --- | --- |

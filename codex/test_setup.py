@@ -434,6 +434,8 @@ class NonInteractiveTests(SettingsCase):
             patch.object(mezmo_setup.shutil, "which", lambda name: self.which(name)),
             patch("builtins.input", side_effect=AssertionError("asked")),
             patch.object(mezmo_setup.getpass, "getpass", side_effect=AssertionError("asked")),
+            # As when Codex runs it: no terminal, whatever runs the tests.
+            patch.object(mezmo_setup, "interactive", lambda: False),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -460,6 +462,29 @@ class NonInteractiveTests(SettingsCase):
 
     def codex_config(self) -> str:
         return (self.codex / "config.toml").read_text(encoding="utf-8")
+
+    def test_without_a_terminal_a_missing_key_is_named_not_asked_for(self) -> None:
+        code, text = self.main("--api-url", API)
+        self.assertEqual(code, 1, text)
+        self.assertIn("no key to save: run this in a terminal to be asked for it, or give --key-file or --keep-key", text)
+        self.assertFalse((self.dir / "codex.json").exists())
+
+    def test_at_a_terminal_the_flags_leave_out_only_what_they_give(self) -> None:
+        # The command the setup skill hands out: --api-url alone, for an API with no known MCP URL.
+        asked: list[str] = []
+
+        def answer(prompt: str) -> str:
+            asked.append(prompt)
+            return "https://mcp.example.test/mcp"
+
+        with patch.object(mezmo_setup, "interactive", lambda: True), patch("builtins.input", answer), \
+                patch.object(mezmo_setup.getpass, "getpass", return_value=KEY):
+            code, text = self.main("--api-url", API)
+        self.assertEqual(code, 0, text)
+        self.assertEqual(asked, ["Mezmo MCP URL (blank to skip the MCP): "])
+        self.assertEqual(self.config()["api_url"], API)
+        self.assertEqual(mezmo_settings.governance_key().value, KEY)
+        self.assertIn('url = "https://mcp.example.test/mcp"', self.codex_config())
 
     def test_a_key_file_saves_what_the_prompt_saves_and_is_deleted(self) -> None:
         path = self.key_file()
@@ -724,29 +749,26 @@ class SkillTests(unittest.TestCase):
                 self.assertIsNone(re.search(r"\b\d+\.\d+\.\d+\b", text))
                 self.assertIn(f"<plugin root>/skills/{name}/SKILL.md", text)
 
-    def test_setup_passes_the_key_only_through_a_private_file_or_the_store(self) -> None:
+    def test_setup_hands_the_user_one_terminal_command_that_asks_for_the_key(self) -> None:
         text = self.skills()["mezmo-setup"]
-        self.assertIn('mezmo_key_file.py" create-key-file', text)
-        self.assertIn('--key-file "<KEY_FILE>" --delete-key-file', text)
-        self.assertIn("--keep-key", text)
-        self.assertIn("--no-ledger", text)
-        self.assertIn("/hooks", text)
-        self.assertNotIn("--key ", text)
-
-    def test_setup_runs_outside_the_sandbox_or_hands_over_the_stable_command(self) -> None:
-        text = self.skills()["mezmo-setup"]
-        # Codex's shell tool asks the user to approve a call made with this.
-        self.assertIn('`sandbox_permissions` set to `"require_escalated"`', text)
-        self.assertIn("`never`", text)
-        # The terminal route names the launcher setup and the hook install, never a versioned path.
-        self.assertIn("~/.mezmo/bin/mezmo-setup", text)
+        # Codex can't save the key: its sandbox can't reach the Keychain, and a fresh Codex can't
+        # approve running outside it. So the skill never runs setup and never takes the key.
+        self.assertIn("Don't try to run setup\nyourself, inside or outside the sandbox.", text)
+        for never in ("require_escalated", "with_additional_permissions", "--key-file", "create-key-file", "--key "):
+            self.assertNotIn(never, text)
+        # One stable command, never a versioned path, with only the choices the user made.
+        self.assertIn("```bash\n~/.mezmo/bin/mezmo-setup\n```", text)
         self.assertEqual(mezmo_settings.launcher_path(), mezmo_settings.settings_dir() / "bin" / "mezmo-setup")
         self.assertNotIn("find ", text)
         self.assertNotIn("--disable hooks", text)
-        # Choices the user made carry onto the terminal route too: the ledger off, and replacing an MCP.
-        fallback = text[text.index("If it prints `ok`"):text.index("It asks for the Mezmo API URL")]
-        self.assertEqual(fallback.count("--no-ledger"), 2)
-        self.assertEqual(fallback.count("--replace-mcp"), 2)
+        handover = text[text.index("If it prints `ok`"):text.index("## 5. Check what it saved")]
+        for flag in ("--no-ledger", "--keep-key", "--replace-mcp"):
+            self.assertIn(flag, handover)
+        self.assertNotIn("--api-url", handover)
+        # It says what the command asks, and checks the result itself.
+        self.assertIn("the MCP URL (only for\nanother API URL", text)
+        self.assertIn("Run `--status` again (step 1)", text)
+        self.assertIn("/hooks", text)
         self.assertIn("Start a new Codex session to use the Mezmo MCP", text)
         self.assertIn("Start a new Codex session to use the Mezmo MCP", (ADAPTER_DIR / "mezmo_setup.py").read_text(encoding="utf-8"))
 

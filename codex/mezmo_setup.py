@@ -8,8 +8,9 @@
     python3 mezmo_setup.py --remove   # delete the saved key, ~/.mezmo/codex.json and the MCP entry
 
 Asked, the key is read with getpass, so it never shows on screen, in shell history or in a command
-line. --key-file reads it from a private file instead (mezmo_key_file.py create-key-file makes one),
-which is how the mezmo-setup skill passes it without it entering the chat or a governed command.
+line. At a terminal, setup asks for whatever the flags leave out; the mezmo-setup skill hands the
+user `~/.mezmo/bin/mezmo-setup` to run that way. --key-file reads the key from a private file
+instead (mezmo_key_file.py create-key-file makes one), for a run with no terminal.
 It goes to the macOS Keychain, the Linux keyring (secret-tool), or else ~/.mezmo/codex-key (0600).
 ~/.mezmo/codex.json (0600) holds the URL, whether the ledger is on, and which store has the key,
 never the key. Nothing is saved unless both checks pass. Environment variables still win over
@@ -449,6 +450,14 @@ def mcp_status() -> str:
 # --- commands -----------------------------------------------------------------------------------
 
 
+def interactive() -> bool:
+    """Whether a person can answer: stdin is a terminal. Never raises."""
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
 class Choices:
     """What setup was told on the command line. All None/False: ask, as before."""
 
@@ -463,14 +472,21 @@ class Choices:
 
 
 def read_inputs(choices: Choices, old: dict, platform: str) -> Tuple[str, Optional[str], str, Optional[str]]:
-    """(api_url, mcp_url, key, the store the key is already in or None)."""
+    """(api_url, mcp_url, key, the store the key is already in or None).
+
+    With no flags it asks for everything. At a terminal it also asks for whatever the flags leave
+    out, so `--api-url URL` alone asks for the MCP URL and the key; without one, nothing is asked.
+    """
     default = old.get("api_url") if isinstance(old.get("api_url"), str) else mezmo_settings.DEFAULT_API_URL
-    if choices.asking:
+    ask = choices.asking or interactive()
+    if choices.api_url:
+        api_url = check_url(choices.api_url)
+    elif ask:
         api_url = check_url(input(f"Mezmo API URL [{default}]: ") or default)
     else:
-        api_url = check_url(choices.api_url or default)
+        api_url = check_url(default)
     mcp_url = choices.mcp_url or default_mcp_url(api_url)
-    if mcp_url is None and choices.asking:
+    if mcp_url is None and ask:
         mcp_url = input("Mezmo MCP URL (blank to skip the MCP): ").strip() or None
     if mcp_url is not None:
         mcp_url = check_url(mcp_url, "the MCP URL")
@@ -485,8 +501,8 @@ def read_inputs(choices: Choices, old: dict, platform: str) -> Tuple[str, Option
         except ValueError as error:
             raise SetupError(str(error).rstrip(".")) from error
         return api_url, mcp_url, check_key(key), None
-    if not choices.asking:
-        raise SetupError("give --key-file or --keep-key")
+    if not ask:
+        raise SetupError("no key to save: run this in a terminal to be asked for it, or give --key-file or --keep-key")
     return api_url, mcp_url, check_key(getpass.getpass("Mezmo key (not shown): ")), None
 
 
