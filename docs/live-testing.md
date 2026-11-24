@@ -101,9 +101,9 @@ To test the plugin route instead of `install droid`, uninstall the file hook
 first, then:
 
 ```bash
-droid plugin marketplace add mezmo/ai-governance-plugins
-droid plugin marketplace list    # shows ai-governance-plugins
-droid plugin install mezmo-governance@ai-governance-plugins --scope user
+droid plugin marketplace add mezmo/agent-plugins
+droid plugin marketplace list    # shows agent-plugins
+droid plugin install mezmo-governance@agent-plugins --scope user
 ```
 
 ### Windsurf (Devin Desktop)
@@ -394,7 +394,7 @@ For Zed, remove the `env` blocks you added under `agent_servers` and delete the
 scratch folder `$S`. It holds the Codex login.
 
 Stop each mock with Ctrl-C. Remove a Droid plugin with
-`droid plugin uninstall mezmo-governance@ai-governance-plugins --scope user`, and delete the cloud
+`droid plugin uninstall mezmo-governance@agent-plugins --scope user`, and delete the cloud
 agent test repository.
 
 ## What the tests confirm

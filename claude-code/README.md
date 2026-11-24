@@ -17,7 +17,7 @@ working.
 1. **Install** from inside Claude Code:
 
    ```text
-   /plugin marketplace add mezmo/ai-governance-plugins
+   /plugin marketplace add mezmo/agent-plugins
    /plugin install mezmo@mezmo
    ```
 
@@ -70,7 +70,7 @@ hook crash blocked the call.
 From inside Claude Code, as in [Getting started](#getting-started), or from a shell:
 
 ```bash
-claude plugin marketplace add mezmo/ai-governance-plugins
+claude plugin marketplace add mezmo/agent-plugins
 ```
 
 ```bash
@@ -108,7 +108,7 @@ again. Telemetry settings live in `~/.claude/settings.json` and the MCP server i
 | `/mezmo` | Shows this session's status right away, without a Claude turn |
 
 To try the plugin for one session without installing it, run
-`claude --plugin-dir /path/to/ai-governance-plugins/claude-code`.
+`claude --plugin-dir /path/to/agent-plugins/claude-code`.
 
 ## Verify
 

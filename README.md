@@ -1,13 +1,16 @@
-# Mezmo Governance plugins
+# Mezmo agent plugins
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white)](#requirements)
 [![Node 22.18+](https://img.shields.io/badge/node-22.18%2B-5FA04E?logo=nodedotjs&logoColor=white)](#requirements)
-[![Last commit](https://img.shields.io/github/last-commit/mezmo/ai-governance-plugins)](https://github.com/mezmo/ai-governance-plugins/commits/main)
+[![Last commit](https://img.shields.io/github/last-commit/mezmo/agent-plugins)](https://github.com/mezmo/agent-plugins/commits/main)
 
-Plugins that ask Mezmo Governance before a coding agent runs a tool. If Mezmo
-denies the call, or never answers, the tool does not run. (The Claude Code
-plugin needs a key first: see [Claude Code](#claude-code).)
+Plugins that connect coding agents and agent frameworks to Mezmo. Each one asks
+Mezmo Governance before the agent runs a tool: if Mezmo denies the call, or
+never answers, the tool does not run. Select plugins also record each tool call
+in the Mezmo ledger, for incident investigations, and connect the agent to
+Mezmo's MCP server. (The Claude Code plugin needs a key first: see
+[Claude Code](#claude-code).)
 
 To get access to Mezmo Governance, see [mezmo.com/platform/governance](https://www.mezmo.com/platform/governance).
 
@@ -42,15 +45,15 @@ call before you connect it to anything. You need Python 3.9+ and Claude Code
 1. Start the mock and deny `Bash`:
 
    ```bash
-   git clone https://github.com/mezmo/ai-governance-plugins
-   cd ai-governance-plugins
+   git clone https://github.com/mezmo/agent-plugins
+   cd agent-plugins
    ./mezmo-governance mock --deny Bash
    ```
 
 2. In a second terminal, start Claude Code with the plugin loaded:
 
    ```bash
-   cd ai-governance-plugins
+   cd agent-plugins
    export MEZMO_GOVERNANCE_URL=http://127.0.0.1:8787/governance/workflow/authorize
    export MEZMO_GOVERNANCE_TOKEN=local-test
    claude --plugin-dir ./claude-code
@@ -343,7 +346,7 @@ in your local audit log.
 ### Claude Code
 
 ```text
-/plugin marketplace add mezmo/ai-governance-plugins
+/plugin marketplace add mezmo/agent-plugins
 /plugin install mezmo@mezmo
 ```
 
@@ -360,16 +363,16 @@ The same repository is a marketplace for each, and each reads its own manifest
 and gets its own adapter. Use this or `./mezmo-governance install`, not both:
 both run the hook twice. `smoke` checks only the file install; `doctor` also checks the native Codex plugin.
 
-- Codex CLI: `codex plugin marketplace add mezmo/ai-governance-plugins`, then `codex plugin add mezmo-governance@mezmo`, then trust all five hooks in `/hooks` (governance and ledger, for `PreToolUse` and `PostToolUse`, and the ledger for `Stop`).
+- Codex CLI: `codex plugin marketplace add mezmo/agent-plugins`, then `codex plugin add mezmo-governance@mezmo`, then trust all five hooks in `/hooks` (governance and ledger, for `PreToolUse` and `PostToolUse`, and the ledger for `Stop`).
   **Until you trust them, Codex skips the hooks without a warning and every tool runs ungoverned** (seen live on 0.163.0).
   `doctor` asks `codex app-server` for the trust state and fails when the PreToolUse hook is not trusted or changed since you trusted it.
   For a headless setup, `codex app-server` method `hooks/list` gives each hook's key and current hash; add a
   `[hooks.state."<key>"]` table with `trusted_hash = "<hash>"` to `$CODEX_HOME/config.toml` for each.
   After each plugin update, approve every hook again; until then Codex runs tools ungoverned (see [Upgrading](codex/README.md#upgrading)).
-- Copilot CLI: `copilot plugin marketplace add mezmo/ai-governance-plugins`, then `copilot plugin install mezmo-governance@mezmo`.
+- Copilot CLI: `copilot plugin marketplace add mezmo/agent-plugins`, then `copilot plugin install mezmo-governance@mezmo`.
   A local-path marketplace loads the hook from that checkout, so editing it or switching its branch changes the hook.
-- Droid: `droid plugin marketplace add mezmo/ai-governance-plugins`, then `droid plugin install mezmo-governance@ai-governance-plugins --scope user`.
-  Droid names the marketplace after its source repository, `ai-governance-plugins`; `droid plugin marketplace list` shows it. Run live on 2026-10-17. See [droid/](droid/).
+- Droid: `droid plugin marketplace add mezmo/agent-plugins`, then `droid plugin install mezmo-governance@agent-plugins --scope user`.
+  Droid names the marketplace after its source repository, `agent-plugins`; `droid plugin marketplace list` shows it. Run live on 2026-10-17. See [droid/](droid/).
 
 ### Install by hand
 
@@ -378,7 +381,7 @@ does not fit your setup.
 
 | Agent | Hook | Fails closed? | Install |
 | --- | --- | --- | --- |
-| [Claude Code](claude-code/) | `PreToolUse` command hook (plugin), Bash and MCP calls only: Read, Edit, Write and other built-in tools run ungoverned | on a crash or timeout yes, with `onFailure: "block"`, on Claude Code 2.1.295 and later; with no key it lets every call run unless `MEZMO_GOVERNANCE_REQUIRED=1` (see [Fail behavior](claude-code/README.md#fail-behavior)) | `/plugin marketplace add mezmo/ai-governance-plugins`, then `/plugin install mezmo@mezmo` and `/mezmo:setup governance` |
+| [Claude Code](claude-code/) | `PreToolUse` command hook (plugin), Bash and MCP calls only: Read, Edit, Write and other built-in tools run ungoverned | on a crash or timeout yes, with `onFailure: "block"`, on Claude Code 2.1.295 and later; with no key it lets every call run unless `MEZMO_GOVERNANCE_REQUIRED=1` (see [Fail behavior](claude-code/README.md#fail-behavior)) | `/plugin marketplace add mezmo/agent-plugins`, then `/plugin install mezmo@mezmo` and `/mezmo:setup governance` |
 | [Codex CLI](codex/) | `PreToolUse` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no; an untrusted hook is skipped, also in headless `codex exec`; with no key it lets every call run unless `MEZMO_GOVERNANCE_REQUIRED=1` (see [Fail behavior](codex/README.md#fail-behavior)) | copy the two scripts, merge `hooks.example.json`, trust the four entries in `/hooks` |
 | [Cursor](cursor/) | `preToolUse` hook | yes, with `failClosed: true`; cloud agents do not load `~/.cursor/hooks.json` and run ungoverned (see [Fail behavior](cursor/README.md#fail-behavior)) | copy the script, merge `hooks.example.json` |
 | [Gemini CLI](gemini-cli/) | `BeforeTool` command hook | on a crash yes (with the `\|\| exit 2` guard); on a timeout no | `gemini extensions install ./gemini-cli`, or copy the script and merge `settings.example.json` |

@@ -15,7 +15,7 @@ The script needs Python 3.9 or later and uses only the standard library.
 
 ## Getting started
 
-1. `codex plugin marketplace add mezmo/ai-governance-plugins`
+1. `codex plugin marketplace add mezmo/agent-plugins`
 2. `codex plugin add mezmo-governance@mezmo`
 3. Start `codex` as usual, in the default sandbox. Until Mezmo is set up,
    governance is off: the hooks let every call run and record nothing, and
@@ -285,7 +285,7 @@ ledger handler shares the group, so a narrower `matcher` also narrows what the
 ### As a Codex plugin
 
 ```bash
-codex plugin marketplace add mezmo/ai-governance-plugins
+codex plugin marketplace add mezmo/agent-plugins
 codex plugin add mezmo-governance@mezmo
 ```
 
