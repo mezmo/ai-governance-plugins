@@ -1,7 +1,7 @@
 {
   "name": "mezmo",
   "displayName": "Mezmo",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "description": "Check Claude Code's Bash and MCP tool calls with Mezmo Governance, record them in the Mezmo ledger, connect Claude to Mezmo MCP, and send Claude Code telemetry to Mezmo.",
   "author": {
     "name": "Mezmo",
@@ -24,7 +24,7 @@
     "governance_access_key": {
       "type": "string",
       "title": "Mezmo service key",
-      "description": "A standard Mezmo service key: the token of the service account registered for Claude Code in Mezmo Governance. It turns on all three: every Bash and MCP tool call is checked by Mezmo Governance and recorded in the Mezmo ledger, and Claude connects to Mezmo MCP to read the ledger. Leave it empty and none of them work.",
+      "description": "A standard Mezmo service key: the token of the service account registered for Claude Code in Mezmo Governance. It turns on all three: every Bash and MCP tool call is checked by Mezmo Governance, every tool call is recorded in the Mezmo ledger (Bash and MCP calls with their arguments and result; other built-in tools with only their tool, path, URL host or description and whether they worked), and Claude connects to Mezmo MCP to read the ledger. Leave it empty and none of them work.",
       "sensitive": true
     },
     "api_url": {
@@ -47,7 +47,7 @@
     "ledger_enabled": {
       "type": "boolean",
       "title": "Record tool calls in the Mezmo ledger",
-      "description": "Turn off to stop sending each Bash and MCP tool call to the Mezmo ledger. A ledger URL from managed settings still applies.",
+      "description": "Turn off to stop sending tool calls to the Mezmo ledger. A ledger URL from managed settings still applies.",
       "default": true
     }
   },

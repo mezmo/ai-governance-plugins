@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Set up Mezmo for Claude Code - check Bash and MCP tool calls with Mezmo Governance and record them in the Mezmo ledger (which also connects Mezmo's MCP server, so Claude can read the ledger), send telemetry (metrics, events and traces) to Mezmo, or connect only Mezmo's MCP server, in any combination - for this user or, for governance and telemetry, as a managed-settings file for an organization.
+description: Set up Mezmo for Claude Code - check Bash and MCP tool calls with Mezmo Governance and record every tool call in the Mezmo ledger (which also connects Mezmo's MCP server, so Claude can read the ledger), send telemetry (metrics, events and traces) to Mezmo, or connect only Mezmo's MCP server, in any combination - for this user or, for governance and telemetry, as a managed-settings file for an organization.
 argument-hint: "[governance|telemetry|mcp|all]"
 disable-model-invocation: true
 allowed-tools:
@@ -15,7 +15,7 @@ allowed-tools:
 
 The plugin does three independent things:
 
-- **Governance**: before each Bash or MCP tool call, a hook asks Mezmo Governance whether this exact call may run and blocks it when the answer is no, and the Mezmo ledger records the call. Both use one service account token, a standard Mezmo service key, and one Mezmo API URL. Until a token is configured, the hooks do nothing. The plugin also brings Mezmo's MCP server, `mezmo`, connected with the same token, so Claude can read the ledger when it investigates.
+- **Governance**: before each Bash or MCP tool call, a hook asks Mezmo Governance whether this exact call may run and blocks it when the answer is no, and the Mezmo ledger records every tool call. Both use one service account token, a standard Mezmo service key, and one Mezmo API URL. Until a token is configured, the hooks do nothing. The plugin also brings Mezmo's MCP server, `mezmo`, connected with the same token, so Claude can read the ledger when it investigates.
 - **Telemetry**: Claude Code exports OpenTelemetry metrics, events and traces to Mezmo's endpoint, `https://logs.mezmo.com/otel`, authenticated with an ingestion key in an `apikey` header.
 - **MCP**: the plugin's `mezmo` MCP server connects to Mezmo MCP (`https://mcp.mezmo.com/mcp`, or the plugin's `mcp_url` option for another environment) with the plugin's token, so Claude can read the ledger, query Mezmo logs and work on pipelines. Its tools are named `mcp__plugin_mezmo_mezmo__<tool>`.
 
@@ -142,7 +142,7 @@ Before saving, tell the user what changes:
 - A call the policy sends to a person waits for their decision, up to about 10 minutes, and is blocked if nobody decides.
 - If Mezmo Governance can't be reached, calls are blocked.
 - Mezmo Governance rejects argument names that aren't plain identifiers, such as `max-results`, so an MCP tool with one is blocked until the service accepts it.
-- The Mezmo ledger records each Bash and MCP tool call, with its arguments and output, under the token's account. The plugin's `ledger_enabled` option turns it off (`/plugin configure mezmo@mezmo`).
+- The Mezmo ledger records each tool call under the token's account: Bash and MCP calls with their arguments and output, other built-in tools (Read, Edit, Grep, WebFetch...) with only their path, URL host or description and whether they worked. The plugin's `ledger_enabled` option turns it off (`/plugin configure mezmo@mezmo`).
 - Just me: the plugin's `mezmo` MCP server connects to Mezmo MCP with the same token, which stays a sensitive option. Setup removes a user-scope server called `mezmo` that an earlier setup added, since the plugin brings its own. Some of the server's tools change pipelines; see [Mezmo MCP](#5-mezmo-mcp).
 
 ### Just me
@@ -287,7 +287,7 @@ Don't run `sudo` or copy the file into a system directory yourself.
 Tell the user:
 
 - Run `/reload-plugins` to apply saved plugin options in this session, or start a new Claude Code session; telemetry applies only in a new session.
-- Governance: decisions show up in Mezmo Governance under the agent for this service account token, and each Bash and MCP tool call is recorded in the Mezmo ledger. While a call waits for a person, a band above the prompt shows it, and the footer counts this session's checks. After each approved call, the hook appends a line to `~/.mezmo/governance-audit.jsonl`.
+- Governance: decisions show up in Mezmo Governance under the agent for this service account token, and each tool call is recorded in the Mezmo ledger. While a call waits for a person, a band above the prompt shows it, and the footer counts this session's checks. After each approved call, the hook appends a line to `~/.mezmo/governance-audit.jsonl`.
 - Telemetry: Mezmo routes the data once a pipeline has an **OpenTelemetry** source. In Mezmo, look for `service.name` = `claude-code`: metrics such as `claude_code.cost.usage` and `claude_code.token.usage`, events such as `claude_code.api_request` and `claude_code.tool_result`, and spans such as `claude_code.interaction`.
 - MCP: the plugin's `mezmo` MCP server, with tools named `mcp__plugin_mezmo_mezmo__<tool>`. To try it, ask Claude something like "what errors did my apps log in the last hour?" With governance, ask Claude to investigate an incident: it reads the ledger first.
 - `/mezmo:test` checks the setup again, and `/mezmo:remove` undoes it.

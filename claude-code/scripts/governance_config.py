@@ -619,7 +619,7 @@ def main(
                 print("Mezmo Governance and the ledger are off: the key is saved for Mezmo MCP only.")
             else:
                 print(f"Mezmo Governance is on: every Bash and MCP tool call is checked at {url} before it runs.")
-                print(f"The Mezmo ledger is on: every Bash and MCP tool call is recorded at {ledger}. "
+                print(f"The Mezmo ledger is on: every tool call is recorded at {ledger} (Bash and MCP calls with their arguments and output; other built-in tools with only their path, URL host or description and whether they worked). "
                       "Set the plugin's ledger_enabled option to false to turn it off.")
             if ledger_result is not None and not ledger_result.ok:
                 print("Warning: the ledger check failed, so records wait in the retry file until the ledger takes them.")
@@ -789,7 +789,7 @@ def main(
                 who = " (decided by a person)" if last.get("by_person") else ""
                 print(f"  Last check: {last.get('ts')} {last.get('tool')} {last.get('outcome')}{who}{detail}")
             if ledger["on"]:
-                print(f"The Mezmo ledger is on ({ledger['why']}): every Bash and MCP tool call is recorded.")
+                print(f"The Mezmo ledger is on ({ledger['why']}): every tool call is recorded (Bash and MCP calls with their arguments and output; other built-in tools with only their path, URL host or description and whether they worked).")
                 print(f"  URL:        {ledger['url']}")
                 print(f"  Service account token: {ledger['key']}, from {ledger['source']}")
             else:

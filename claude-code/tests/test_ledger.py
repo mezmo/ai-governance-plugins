@@ -545,11 +545,33 @@ class EventTests(LedgerTestCase):
         self.assertEqual(fake.calls, [])
         self.assertEqual(ledger_hook.LEDGER_THREADS, [])
 
-    def test_calls_governance_skips_send_nothing(self) -> None:
+    def test_the_desktop_apps_own_servers_send_nothing(self) -> None:
         fake = self.fake()
-        self.run_hook(hook_input(tool_name="Read", tool_input={"file_path": "/etc/hosts"}), fake)
         self.run_hook(mcp_input(tool_name="mcp__ccd_session__list"), fake)
+        self.run_hook(mcp_input(tool_name="mcp__ccd_view__show_pane"), fake)
         self.assertEqual(fake.calls, [])
+
+    def test_built_in_tools_governance_skips_are_recorded(self) -> None:
+        cases = [
+            ("Read", {"file_path": "/etc/hosts"}, "Read /etc/hosts", "read"),
+            ("Edit", {"file_path": "/srv/app.yaml", "old_string": "a", "new_string": "b"}, "Edit /srv/app.yaml", "write"),
+            ("Write", {"file_path": "/tmp/out.txt", "content": "x"}, "Write /tmp/out.txt", "write"),
+            ("Grep", {"pattern": "OOMKilled", "path": "/var/log"}, "Grep /var/log", "read"),
+            ("WebFetch", {"url": "https://example.com/status", "prompt": "summarize"}, "WebFetch https://example.com", "read"),
+            ("TodoWrite", {"todos": []}, "claude_code.TodoWrite", "read"),
+        ]
+        for tool_name, tool_input, message, access in cases:
+            with self.subTest(tool=tool_name):
+                fake = self.fake()
+                self.run_hook(hook_input(tool_name=tool_name, tool_input=tool_input), fake)
+                (event,) = fake.calls[0]["events"]
+                self.assertEqual(event["event"], "agent.tool_call.started")
+                self.assertEqual(event["message"], message)
+                self.assertEqual(event["extra"]["access"], access)
+                self.assertEqual(event["extra"]["tool_name"], tool_name)
+                self.assertEqual(
+                    event["extra"]["intent_source"], "none" if tool_name == "TodoWrite" else "tool_arguments"
+                )
 
 class FieldTests(LedgerTestCase):
     def test_messages_and_intent_source(self) -> None:
@@ -721,6 +743,122 @@ class FieldTests(LedgerTestCase):
         off, on = fake.events()
         self.assertNotIn("decision_id", off["extra"])
         self.assertEqual(on["extra"]["decision_id"], on["extra"]["call_id"])
+
+    def test_an_ungoverned_call_has_no_decision_id(self) -> None:
+        self.env_update(GOVERNANCE)
+        fake = self.fake()
+        self.run_hook(hook_input("PostToolUse", tool_name="Read", tool_input={"file_path": "/etc/hosts"}), fake)
+        (event,) = fake.events()
+        self.assertNotIn("decision_id", event["extra"])
+        self.assertIn("call_id", event["extra"])
+
+    def test_file_contents_are_never_sent(self) -> None:
+        secret = "sts_0123456789abcdef"
+        cases = [
+            ("Write", {"file_path": "/tmp/k/key", "content": secret}, {"filePath": "/tmp/k/key", "content": secret}),
+            ("Edit", {"file_path": "/srv/a.env", "old_string": secret, "new_string": "x"},
+             {"filePath": "/srv/a.env", "originalFile": secret, "structuredPatch": [secret]}),
+            ("Read", {"file_path": "/srv/a.env"}, {"file": {"content": secret, "filePath": "/srv/a.env"}}),
+            ("Grep", {"path": "/srv", "pattern": "token="}, {"content": f"a.env:1:token={secret}", "mode": "content"}),
+        ]
+        for tool_name, tool_input, response in cases:
+            with self.subTest(tool=tool_name):
+                fake = self.fake()
+                self.run_hook(hook_input(tool_name=tool_name, tool_input=tool_input), fake)
+                self.run_hook(hook_input("PostToolUse", tool_name=tool_name, tool_input=tool_input,
+                                         tool_response=response), fake)
+                started, ran = fake.events()
+                self.assertNotIn(secret, json.dumps(started))
+                self.assertNotIn(secret, json.dumps(ran))
+                subject = tool_input.get("file_path") or tool_input["path"]
+                self.assertIn(subject, started["extra"]["arguments"])
+                self.assertNotIn("output", ran["extra"])
+                self.assertEqual(ran["message"], f"{tool_name} {subject}: ok")
+
+    def test_an_ungoverned_built_in_sends_only_what_it_is_about(self) -> None:
+        secret = "sts_0123456789abcdef"
+        cases = [
+            ("Grep", {"pattern": secret, "path": "/srv", "output_mode": "content"}, {"content": f"a.env:1:{secret}"}),
+            ("WebSearch", {"query": f"what is {secret}"}, {"results": [secret]}),
+            ("Agent", {"description": "Check the pods", "prompt": f"use {secret}", "subagent_type": "general-purpose"},
+             {"content": [{"text": f"the key is {secret}", "type": "text"}]}),
+        ]
+        for tool_name, tool_input, response in cases:
+            with self.subTest(tool=tool_name):
+                fake = self.fake()
+                self.run_hook(hook_input(tool_name=tool_name, tool_input=tool_input), fake)
+                self.run_hook(hook_input("PostToolUse", tool_name=tool_name, tool_input=tool_input,
+                                         tool_response=response), fake)
+                started, ran = fake.events()
+                self.assertNotIn(secret, json.dumps([started, ran]))
+                self.assertLessEqual(set(json.loads(started["extra"]["arguments"])), set(ledger.BUILT_IN_SHARED_ARGUMENTS))
+                self.assertNotIn("output", ran["extra"])
+
+    def test_a_blocked_built_in_keeps_its_outcome_but_not_the_reason(self) -> None:
+        secret = "sts_0123456789abcdef"
+        fake = self.fake()
+        self.run_hook(hook_input("PermissionDenied", tool_name="Grep", tool_input={"pattern": secret, "path": "/srv"},
+                                 reason=f"searching for {secret} is not allowed"), fake)
+        (event,) = fake.events()
+        self.assertEqual(event["event"], "agent.tool_call.not_run")
+        self.assertNotIn(secret, json.dumps(event))
+        self.assertEqual(json.loads(event["extra"]["output"]), {"outcome": "blocked_by_auto_mode"})
+
+        bash = self.fake()
+        self.run_hook(hook_input("PermissionDenied", reason="rm -rf is not allowed"), bash)
+        (event,) = bash.events()
+        self.assertEqual(json.loads(event["extra"]["output"])["reason"], "rm -rf is not allowed", "Bash keeps it")
+
+    def test_a_fetched_url_goes_without_what_can_carry_a_credential(self) -> None:
+        cases = [
+            ("https://user:pw@files.example.test:8443/a/b.tgz?X-Amz-Signature=sts_secret#frag",
+             "https://files.example.test:8443"),
+            ("https://[2001:db8::1]/status?token=sts_secret", "https://[2001:db8::1]"),
+            ("https://share.example.test/s/sts_secret/report.pdf", "https://share.example.test"),
+        ]
+        for url, shared in cases:
+            with self.subTest(url=url):
+                fake = self.fake()
+                self.run_hook(hook_input(tool_name="WebFetch", tool_input={"url": url, "prompt": "summarize"}), fake)
+                (event,) = fake.events()
+                self.assertNotIn("sts_secret", json.dumps(event))
+                self.assertNotIn("pw@", json.dumps(event))
+                self.assertEqual(json.loads(event["extra"]["arguments"]), {"url": shared})
+                self.assertEqual(event["message"], f"WebFetch {shared}")
+
+    def test_a_limited_calls_ids_dont_depend_on_its_input(self) -> None:
+        events = []
+        for pattern in ("sts_guess_one", "sts_guess_two"):
+            fake = self.fake()
+            self.run_hook(hook_input(tool_name="Grep", tool_input={"pattern": pattern, "path": "/srv"}), fake)
+            self.run_hook(hook_input("PostToolUse", tool_name="Grep", tool_input={"pattern": pattern, "path": "/srv"}), fake)
+            events.append(fake.events())
+        (first_start, first_end), (second_start, _) = events
+        self.assertEqual(first_start["extra"]["request_id"], second_start["extra"]["request_id"])
+        self.assertEqual(first_start["extra"]["call_id"], second_start["extra"]["call_id"])
+        self.assertEqual(first_start["extra"]["call_id"], first_end["extra"]["call_id"], "start and end still pair")
+        digest = hook.call_digest("claude_code", "Grep", {"pattern": "sts_guess_one", "path": "/srv"})
+        self.assertNotIn(digest, json.dumps(first_start))
+
+    def test_bash_keeps_its_whole_record(self) -> None:
+        fake = self.fake()
+        self.run_hook(hook_input(tool_input={"command": "grep token= .env", "description": "Look"}), fake)
+        self.run_hook(hook_input("PostToolUse", tool_input={"command": "grep token= .env", "description": "Look"}), fake)
+        started, ran = fake.events()
+        self.assertEqual(json.loads(started["extra"]["arguments"])["command"], "grep token= .env")
+        self.assertIn("output", ran["extra"])
+
+    def test_a_failed_file_call_ends_failed_without_its_error(self) -> None:
+        secret = "sts_0123456789abcdef"
+        fake = self.fake()
+        self.run_hook(hook_input("PostToolUseFailure", tool_name="Edit",
+                                 tool_input={"file_path": "/srv/a.env", "old_string": secret, "new_string": "x"},
+                                 error=f"String to replace not found in file.\nString: {secret}"), fake)
+        (event,) = fake.events()
+        self.assertEqual(event["event"], "agent.tool_call.failed")
+        self.assertNotIn(secret, json.dumps(event))
+        self.assertNotIn("output", event["extra"])
+        self.assertEqual(event["message"], "Edit /srv/a.env: failed")
 
     def test_application_version_comes_from_plugin_json(self) -> None:
         manifest = json.loads((SCRIPTS.parent / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))

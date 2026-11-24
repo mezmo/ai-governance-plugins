@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Claude Code hook that records each Bash and MCP tool call in the Mezmo ledger.
+"""Claude Code hook that records each tool call in the Mezmo ledger.
 
-hooks/hooks.json registers it beside governance_hook.py for the same calls, and Claude Code runs
-the two in parallel:
+hooks/hooks.json registers it for every tool, in a group of its own beside governance_hook.py's
+Bash and MCP group, and Claude Code runs the two in parallel:
 
 - PreToolUse sends `started`. PostToolUse and PostToolUseFailure send `ran` or `failed`.
   PermissionDenied, auto mode's block, sends `not_run`. A call governance refuses gets its
@@ -32,7 +32,7 @@ from functools import partial
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 import ledger
-from governance_hook import governed, session_state_path, update_session_state
+from governance_hook import CLAUDE_APP_SERVERS, MCP_TOOL_PREFIX, session_state_path, update_session_state
 
 LEDGER_EVENTS = frozenset({"PermissionDenied", "PostToolUse", "PostToolUseFailure", "PreToolUse"})
 # The longest a join, a close or a reference write waits for the session state's lock. Past it the
@@ -59,6 +59,18 @@ def start_ledger_thread(*, work: Callable[[], None]) -> threading.Thread:
     LEDGER_THREADS.append(thread)
     thread.start()
     return thread
+
+
+def _recorded(event: Mapping[str, Any]) -> bool:
+    """Whether the ledger records this call: every tool but the Claude desktop app's own servers,
+    whose session, pane and task-list calls aren't work on anything."""
+    name = event.get("tool_name")
+    if not isinstance(name, str) or not name:
+        return False
+    if not name.startswith(MCP_TOOL_PREFIX):
+        return True
+    parts = name.split("__", 2)
+    return len(parts) != 3 or parts[1] not in CLAUDE_APP_SERVERS
 
 
 def _new_event(*, config: ledger.LedgerConfig, hook_input: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
@@ -235,7 +247,7 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
     try:
         # Looked up per call, not bound at definition, so tests can stand in for it.
         ledger_http = ledger_http or ledger.post_ledger_events
-        if event.get("hook_event_name") not in LEDGER_EVENTS or not governed(event):
+        if event.get("hook_event_name") not in LEDGER_EVENTS or not _recorded(event):
             return
         if ledger._skip_ledger_mcp_tool(hook_input=event):
             return
