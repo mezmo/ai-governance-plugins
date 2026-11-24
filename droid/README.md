@@ -111,12 +111,12 @@ lists the plugin in this folder. Droid reads that file before
 Code plugin.
 
 ```bash
-droid plugin marketplace add mezmo/ai-governance-plugins
+droid plugin marketplace add mezmo/agent-plugins
 droid plugin marketplace list
-droid plugin install mezmo-governance@ai-governance-plugins --scope user
+droid plugin install mezmo-governance@agent-plugins --scope user
 ```
 
-Droid names the marketplace after its source repository, `ai-governance-plugins`;
+Droid names the marketplace after its source repository, `agent-plugins`;
 `droid plugin marketplace list` shows it. The plugin's [hooks/hooks.json](hooks/hooks.json) is the
 example with `${DROID_PLUGIN_ROOT}` for the script path. Use the plugin or the
 file install, not both: both run the hook twice. `doctor` and `smoke` check
@@ -126,7 +126,8 @@ was denied, with no marker file, and `Read` was approved.
 Before this folder existed, the same commands offered the Claude Code plugin
 `mezmo`. In Droid it sends the Claude Code origin, and Droid 0.244.0 drops its
 `onFailure: block`, so a hook crash lets the tool run. If you installed it, run
-`droid plugin uninstall mezmo@ai-governance-plugins --scope user`.
+`droid plugin uninstall mezmo@ai-governance-plugins --scope user` (the marketplace keeps the
+repository's old name it was added under).
 
 ## Verify
 

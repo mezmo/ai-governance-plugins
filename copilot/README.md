@@ -82,7 +82,7 @@ not `bash`). The hook reads that payload, but `doctor` flags the entry.
 ### As a Copilot CLI plugin
 
 ```bash
-copilot plugin marketplace add mezmo/ai-governance-plugins
+copilot plugin marketplace add mezmo/agent-plugins
 copilot plugin install mezmo-governance@mezmo
 ```
 
