@@ -24,8 +24,8 @@ working.
    The options dialog asks for the **Mezmo service key** (the token of the service account
    registered for Claude Code in Mezmo Governance), the **Mezmo API URL** (empty means
    `https://api.mezmo.com`) and the **Mezmo MCP URL** (production's by default). That's all:
-   in the same session, every Bash and MCP tool call is checked by Mezmo Governance and recorded
-   in the [ledger](#ledger), and the plugin's [Mezmo MCP](#mezmo-mcp) server connects with the
+   in the same session, every Bash and MCP tool call is checked by Mezmo Governance, every tool
+   call is recorded in the [ledger](#ledger), and the plugin's [Mezmo MCP](#mezmo-mcp) server connects with the
    same key, so Claude can read the ledger. No restart and no `/mezmo:setup`.
 
    If something's missing, the plugin says so on your next message (once per session, and at the
@@ -290,14 +290,25 @@ the audit log, and `/mezmo` shows the count. Governance doesn't hear about these
 ## Ledger
 
 The ledger keeps a record of the tool calls Claude Code makes: Mezmo gets one record when each
-Bash and MCP tool call is requested and one when it ends. It is on whenever the plugin has a
-service account token, and sends to `<API URL>/v1/audit/events` with that token. The ledger
+tool call is requested and one when it ends. That covers built-in tools such as Read, Edit, Write,
+Grep and WebFetch, which governance leaves alone, as well as Bash and MCP calls. The Claude desktop
+app's own servers (`ccd_*`) aren't recorded.
+
+Bash and MCP calls are recorded with their arguments and result. For the built-in tools governance
+leaves alone, only what a call is about leaves the machine: the tool, its file path, search path,
+URL host or description, and whether it worked. Nothing else they're given or return is sent: not a
+file's contents, a Grep pattern, a search query, a subagent's prompt or answer, or an error or an
+auto-mode denial's reason, which can quote any of those. Such a call is titled by its subject, such as `Read /etc/hosts`, and one
+that changes files is recorded as a write.
+
+The ledger is on whenever the plugin has a service account token, and sends to `<API URL>/v1/audit/events` with that token. The ledger
 service takes the account from the token, so there is no account to set. Turn it off with the
 `ledger_enabled` plugin option (`/plugin configure mezmo@mezmo`). It also works with governance
 switched off.
 
-The ledger has its own hook script, `scripts/ledger_hook.py`, which Claude Code runs beside the
-governance hook, in parallel with it. When governance refuses a call, Claude Code runs no other
+The ledger has its own hook script, `scripts/ledger_hook.py`, in a hook group of its own that
+matches every tool. For Bash and MCP calls Claude Code runs it beside the governance hook, in
+parallel with it. When governance refuses a call, Claude Code runs no other
 hook, so the governance hook reports that call to the ledger itself, with a 2 second timeout.
 
 | Event | When |
@@ -311,9 +322,11 @@ A call you reject at Claude Code's permission prompt has only `started`, because
 runs no hook then.
 
 Each record carries the session id, a call id shared by its start and end, and the tool's name.
-`started` also carries the tool's arguments. `ran` and `failed` carry the result or error, the
-exit status and how long the tool took. `not_run` carries why the call didn't run. Arguments and
-results are cut at 4,096 characters and are not redacted.
+For Bash and MCP calls, `started` also carries the tool's arguments, `ran` and `failed` carry the
+result or error, the exit status and how long the tool took, and `not_run` carries why the call
+didn't run. Those arguments and results are cut at 4,096 characters and are not redacted. A
+built-in call governance leaves alone carries only what the section above lists: no result, error
+or reason, and a call id made from the session and tool-use ids, not from the input.
 
 Each record also carries your git email (`git config user.email`) when one is set, so the ledger
 can show who ran the session.

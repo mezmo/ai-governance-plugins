@@ -1,6 +1,6 @@
 """The Mezmo ledger: tool-call events for Mezmo audit-service, shared by two hooks.
 
-- ledger_hook.py, registered beside governance_hook.py, sends `started` for each Bash or MCP
+- ledger_hook.py, registered for every tool beside governance_hook.py, sends `started` for each
   call and, when Claude Code reports back, `ran`, `failed` or auto mode's `not_run`. After a
   Bash call that ran ledger_investigation.py's join or close, it also sends `joined` or `closed`.
   After a Mezmo Memory brief or Insights read, it saves the references that call gives in the
@@ -31,6 +31,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.client import HTTPException
@@ -38,7 +39,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
 from urllib.error import HTTPError
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 from urllib.request import Request, build_opener
 
 from governance_hook import (
@@ -54,7 +55,9 @@ from governance_hook import (
     _setting,
     api_url,
     authorization_header,
+    bounded_request_id,
     call_identity,
+    governed,
     load_config as load_governance_config,
     normalize_tool_call,
     option_key,
@@ -504,6 +507,53 @@ def _mcp_access(name: str) -> str:
     if tokens and tokens[0] in MCP_READ_PREFIXES:
         return "read"
     return "write" if any(token in MCP_WRITE_WORDS for token in tokens) else "read"
+
+
+# The built-in tools governance doesn't decide are recorded with only these arguments, the ones that
+# say what a call is about, and with no result or error, which can hold anything a file or a
+# subagent held. A Grep pattern, a search query or a prompt can be a secret, so none is sent.
+BUILT_IN_SHARED_ARGUMENTS = ("description", "file_path", "notebook_path", "path", "subagent_type", "url")
+# The shared argument that titles each tool's call: "Read /etc/hosts".
+BUILT_IN_INTENT_ARGUMENTS = {
+    "Agent": "description",
+    "Edit": "file_path",
+    "Glob": "path",
+    "Grep": "path",
+    "MultiEdit": "file_path",
+    "NotebookEdit": "notebook_path",
+    "Read": "file_path",
+    "Task": "description",
+    "WebFetch": "url",
+    "Write": "file_path",
+}
+# The built-in tools that change files.
+BUILT_IN_WRITE_TOOLS = frozenset({"Edit", "MultiEdit", "NotebookEdit", "Write"})
+
+
+def _shareable_url(url: str) -> str:
+    """`url`'s scheme, host and port only: its user, password, path, query and fragment can each
+    carry a credential, such as a share link's token."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        if parts.port is not None:
+            host = f"{host}:{parts.port}"
+        return urlunsplit((parts.scheme, host, "", "", ""))
+    except ValueError:
+        return ""
+
+
+def _limited_identity(hook_input: Mapping[str, Any]) -> Any:
+    """call_identity for a call recorded without its contents: from the session and tool-use ids
+    alone, since a hash of the input lets anyone who can guess the rest of it confirm a secret."""
+    identity = call_identity(hook_input)
+    base = identity.request_id.split("#", 1)[0]
+    request_id = base + "#" + hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
+    return identity._replace(
+        decision_id=str(uuid.uuid5(uuid.NAMESPACE_URL, request_id)), request_id=bounded_request_id(request_id)
+    )
 
 
 def resolve_target(namespace: str, name: str, arguments: Mapping[str, Any]) -> Tuple[str, str]:
@@ -1092,21 +1142,37 @@ def ledger_event(
     """One tool-call event: `kind` is started, ran, failed or not_run. None without an identity."""
     try:
         tool = normalize_tool_call(hook_input)
-        identity = call_identity(hook_input)
+        # A built-in governance doesn't decide, such as Read or Grep, is recorded without its contents.
+        limited = tool.namespace == AGENT and not governed(hook_input)
+        identity = _limited_identity(hook_input) if limited else call_identity(hook_input)
     except Exception:
         return None
     target, access = resolve_target(tool.namespace, tool.name, tool.arguments)
+    if tool.namespace == AGENT and tool.name in BUILT_IN_WRITE_TOOLS:
+        access = "write"
     description = tool.arguments.get("description") if (tool.namespace, tool.name) == (AGENT, "Bash") else None
     described = isinstance(description, str) and bool(description.strip())
+    argument = tool.arguments.get(BUILT_IN_INTENT_ARGUMENTS.get(tool.name, "")) if tool.namespace == AGENT else None
+    if tool.name == "WebFetch" and isinstance(argument, str):
+        argument = _shareable_url(argument)
+    argued = not described and isinstance(argument, str) and bool(argument.strip())
     investigation = _investigation_intent(tool)
-    intent = investigation or (_one_line(description) if described else f"{tool.namespace}.{tool.name}")
+    intent = investigation or (
+        _one_line(description) if described
+        else f"{tool.name} {_one_line(argument)}" if argued
+        else f"{tool.namespace}.{tool.name}"
+    )
     context = ledger_context(hook_input=hook_input)
 
     extra: Dict[str, Any] = {"access": access, "agent": AGENT}
     if kind == "started":
-        extra["arguments"] = ledger_json(tool.arguments)
+        shared = {name: value for name, value in tool.arguments.items() if name in BUILT_IN_SHARED_ARGUMENTS}
+        if isinstance(shared.get("url"), str):
+            shared["url"] = _shareable_url(shared["url"])
+        extra["arguments"] = ledger_json(shared if limited else tool.arguments)
     extra["call_id"] = identity.decision_id
-    if load_governance_config() is not None:
+    # Only a call governance decides has a decision to point at.
+    if load_governance_config() is not None and governed(hook_input):
         extra["decision_id"] = identity.decision_id
     duration = _duration_ms(value=hook_input.get("duration_ms"))
     if kind in ("failed", "ran") and duration is not None:
@@ -1116,11 +1182,17 @@ def ledger_event(
         extra["exit_status"] = exit_status
     if "incident_key" in context:
         extra["incident_key"] = context["incident_key"]
-    extra["intent_source"] = "investigation" if investigation else "tool_description" if described else "none"
+    extra["intent_source"] = (
+        "investigation" if investigation
+        else "tool_description" if described
+        else "tool_arguments" if argued
+        else "none"
+    )
 
     line = ""
     if kind == "not_run":
-        detail = _one_line(reason)[:MAX_DETAIL_CHARACTERS] if isinstance(reason, str) else ""
+        # A denial's reason can quote the call's input, so a limited call keeps only its outcome.
+        detail = _one_line(reason)[:MAX_DETAIL_CHARACTERS] if isinstance(reason, str) and not limited else ""
         result: Dict[str, Any] = {"outcome": outcome}
         if detail:
             result["reason"] = detail
@@ -1128,13 +1200,15 @@ def ledger_event(
         line = detail
     elif kind in ("failed", "ran"):
         error = hook_input.get("error") if kind == "failed" else None
-        if error is not None:
+        # Nor its result or error, which can quote a file (an Edit's can echo the text it tried to
+        # replace). The call still ends failed.
+        if error is not None and not limited:
             extra["output"] = ledger_json(error)
-        elif "tool_response" in hook_input:
+        elif "tool_response" in hook_input and not limited:
             extra["output"] = ledger_json(hook_input["tool_response"])
-        if hook_input.get("hook_event_name") == "PostToolUseFailure" and isinstance(error, str):
+        if not limited and hook_input.get("hook_event_name") == "PostToolUseFailure" and isinstance(error, str):
             line = _first_line(_skip_exit_code(error))
-        else:
+        elif not limited:
             line = _first_line(_output_text(error if error is not None else hook_input.get("tool_response")))
 
     if "references" in context:

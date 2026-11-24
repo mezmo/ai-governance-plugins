@@ -191,8 +191,9 @@ daily work.
 1. `./mezmo-governance doctor --probe`: every Mezmo line is `ok`.
 2. Start `claude --plugin-dir ./claude-code` from this repository, with
    `MEZMO_GOVERNANCE_URL` and `MEZMO_GOVERNANCE_TOKEN` exported. Ask it to
-   read a file: it runs, and nothing reaches Mezmo. The plugin only sends
-   Bash and MCP tool calls.
+   read a file: it runs, and nothing reaches Mezmo Governance, which only
+   checks Bash and MCP tool calls. (With the ledger on, the read is still
+   recorded there, with only its file path.)
 3. Ask it to run `ls`: Claude Code shows your deny message.
 4. Ask it to call an MCP tool, such as listing your Mezmo pipelines once
    `/mezmo:setup mcp` has connected Mezmo's MCP server: Claude Code waits;
@@ -449,8 +450,10 @@ Not every plugin sends only that, and not only to the Governance service:
 - Claude Code's ledger sending is on whenever the plugin has a service account
   token, unless its `ledger_enabled` option is off. It sends the ledger service,
   at the Mezmo API URL plus `/v1/audit/events` (or `MEZMO_LEDGER_URL`), a record
-  when each Bash and MCP call is requested and one when it ends, with the
-  arguments and the result or error, each cut at 4,096 characters. Records that
+  when each tool call is requested and one when it ends. Bash and MCP calls
+  carry their arguments and the result or error, each cut at 4,096
+  characters. Other built-in tools carry only their file path, search path,
+  URL host or description and whether they worked. Records that
   can't be sent wait in a local retry file. This happens with governance's own
   switch on or off. When `MEZMO_LEDGER_KEY` isn't set, it sends the governance
   key, so with `MEZMO_LEDGER_URL` set the key goes to that host, whatever it

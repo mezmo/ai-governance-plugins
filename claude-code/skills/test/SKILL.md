@@ -56,7 +56,7 @@ Arguments: $ARGUMENTS
 | `FAIL: Ledger: last send ... failed` | The hook couldn't reach the ledger. Check the API URL, proxy, VPN or firewall. |
 | `FAIL: Ledger: last send ..., HTTP <other>` | Anything but `202` is a failure. Check the API URL in `/plugin configure mezmo@mezmo`. |
 | `Ledger: no send recorded yet` | No session has sent anything since setup. In a new session, ask Claude to run `printf 'mezmo-onboarding-test\n'`, then run `/mezmo:test` again. |
-| On, and the check says the ledger accepted the token | Each Bash and MCP tool call is recorded in the Mezmo ledger under the token's account. |
+| On, and the check says the ledger accepted the token | Mezmo accepted the token. To verify built-in tool recording, run a harmless `Read` and confirm it appears in the ledger. |
 | Off: no service account token | The ledger uses the governance token. Run `/mezmo:setup governance`. |
 | Off: the `ledger_enabled` option is off | The user turned it off. `/plugin configure mezmo@mezmo` turns it back on. |
 | `rejected the service account token (HTTP 401)` | Rerun `/mezmo:setup governance` with a current token. Records wait in the retry file and are resent once the token works. |
