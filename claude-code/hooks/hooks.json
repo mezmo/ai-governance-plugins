@@ -1,5 +1,5 @@
 {
-  "description": "Mezmo status mod (footer indicator, one connection check per session, /mezmo) and the Mezmo Governance check on Bash and MCP tool calls, which stays off until an access key is configured, and the Mezmo ledger record of each of those calls, off until its settings are set",
+  "description": "Mezmo status mod (footer indicator, one connection check per session, /mezmo) and the Mezmo Governance check on Bash and MCP tool calls, which stays off until an access key is configured, and the Mezmo ledger record of every tool call, off until its settings are set",
   "modules": [
     "./register.ts"
   ],
@@ -14,7 +14,12 @@
             "timeout": 600,
             "onFailure": "block",
             "statusMessage": "Checking Mezmo Governance"
-          },
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger_hook.py\"",
@@ -31,7 +36,12 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/governance_hook.py\"",
             "timeout": 15
-          },
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger_hook.py\"",
@@ -48,7 +58,12 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/governance_hook.py\"",
             "timeout": 15
-          },
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger_hook.py\"",
@@ -65,7 +80,12 @@
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/governance_hook.py\"",
             "timeout": 15
-          },
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/ledger_hook.py\"",

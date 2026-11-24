@@ -1,6 +1,6 @@
 """The Mezmo ledger: tool-call events for Mezmo audit-service, shared by two hooks.
 
-- ledger_hook.py, registered beside governance_hook.py, sends `started` for each Bash or MCP
+- ledger_hook.py, registered for every tool beside governance_hook.py, sends `started` for each
   call and, when Claude Code reports back, `ran`, `failed` or auto mode's `not_run`. After a
   Bash call that ran ledger_investigation.py's join or close, it also sends `joined` or `closed`.
   After a Mezmo Memory brief or Insights read, it saves the references that call gives in the
@@ -55,6 +55,7 @@ from governance_hook import (
     api_url,
     authorization_header,
     call_identity,
+    governed,
     load_config as load_governance_config,
     normalize_tool_call,
     option_key,
@@ -504,6 +505,35 @@ def _mcp_access(name: str) -> str:
     if tokens and tokens[0] in MCP_READ_PREFIXES:
         return "read"
     return "write" if any(token in MCP_WRITE_WORDS for token in tokens) else "read"
+
+
+# The argument that says what a built-in tool call is about, for its title: "Read /etc/hosts".
+BUILT_IN_INTENT_ARGUMENTS = {
+    "Agent": "description",
+    "Edit": "file_path",
+    "Glob": "pattern",
+    "Grep": "pattern",
+    "MultiEdit": "file_path",
+    "NotebookEdit": "notebook_path",
+    "Read": "file_path",
+    "Task": "description",
+    "WebFetch": "url",
+    "WebSearch": "query",
+    "Write": "file_path",
+}
+# The built-in tools that change files.
+BUILT_IN_WRITE_TOOLS = frozenset({"Edit", "MultiEdit", "NotebookEdit", "Write"})
+# The arguments that carry file contents, never sent: setup has Claude Write a key into a private
+# file, and a file read or written can hold any secret.
+BUILT_IN_CONTENT_ARGUMENTS = {
+    "Edit": ("new_string", "old_string"),
+    "MultiEdit": ("edits",),
+    "NotebookEdit": ("new_source",),
+    "Write": ("content",),
+}
+# The built-in tools whose result is file contents, Grep's matching lines included, so no output
+# is sent for them.
+BUILT_IN_CONTENT_RESULTS = frozenset({"Edit", "Grep", "MultiEdit", "NotebookEdit", "Read", "Write"})
 
 
 def resolve_target(namespace: str, name: str, arguments: Mapping[str, Any]) -> Tuple[str, str]:
@@ -1096,17 +1126,28 @@ def ledger_event(
     except Exception:
         return None
     target, access = resolve_target(tool.namespace, tool.name, tool.arguments)
+    if tool.namespace == AGENT and tool.name in BUILT_IN_WRITE_TOOLS:
+        access = "write"
     description = tool.arguments.get("description") if (tool.namespace, tool.name) == (AGENT, "Bash") else None
     described = isinstance(description, str) and bool(description.strip())
+    argument = tool.arguments.get(BUILT_IN_INTENT_ARGUMENTS.get(tool.name, "")) if tool.namespace == AGENT else None
+    argued = not described and isinstance(argument, str) and bool(argument.strip())
     investigation = _investigation_intent(tool)
-    intent = investigation or (_one_line(description) if described else f"{tool.namespace}.{tool.name}")
+    intent = investigation or (
+        _one_line(description) if described
+        else f"{tool.name} {_one_line(argument)}" if argued
+        else f"{tool.namespace}.{tool.name}"
+    )
     context = ledger_context(hook_input=hook_input)
 
+    built_in = tool.namespace == AGENT
     extra: Dict[str, Any] = {"access": access, "agent": AGENT}
     if kind == "started":
-        extra["arguments"] = ledger_json(tool.arguments)
+        withheld = BUILT_IN_CONTENT_ARGUMENTS.get(tool.name, ()) if built_in else ()
+        extra["arguments"] = ledger_json({name: value for name, value in tool.arguments.items() if name not in withheld})
     extra["call_id"] = identity.decision_id
-    if load_governance_config() is not None:
+    # Only a call governance decides has a decision to point at.
+    if load_governance_config() is not None and governed(hook_input):
         extra["decision_id"] = identity.decision_id
     duration = _duration_ms(value=hook_input.get("duration_ms"))
     if kind in ("failed", "ran") and duration is not None:
@@ -1116,7 +1157,12 @@ def ledger_event(
         extra["exit_status"] = exit_status
     if "incident_key" in context:
         extra["incident_key"] = context["incident_key"]
-    extra["intent_source"] = "investigation" if investigation else "tool_description" if described else "none"
+    extra["intent_source"] = (
+        "investigation" if investigation
+        else "tool_description" if described
+        else "tool_arguments" if argued
+        else "none"
+    )
 
     line = ""
     if kind == "not_run":
@@ -1128,13 +1174,16 @@ def ledger_event(
         line = detail
     elif kind in ("failed", "ran"):
         error = hook_input.get("error") if kind == "failed" else None
-        if error is not None:
+        # A file's contents stay out of the record and its title, and so does an error, which can
+        # quote them (an Edit's can echo the text it tried to replace). The call still ends failed.
+        withheld = built_in and tool.name in BUILT_IN_CONTENT_RESULTS
+        if error is not None and not withheld:
             extra["output"] = ledger_json(error)
-        elif "tool_response" in hook_input:
+        elif "tool_response" in hook_input and not withheld:
             extra["output"] = ledger_json(hook_input["tool_response"])
-        if hook_input.get("hook_event_name") == "PostToolUseFailure" and isinstance(error, str):
+        if not withheld and hook_input.get("hook_event_name") == "PostToolUseFailure" and isinstance(error, str):
             line = _first_line(_skip_exit_code(error))
-        else:
+        elif not withheld:
             line = _first_line(_output_text(error if error is not None else hook_input.get("tool_response")))
 
     if "references" in context:

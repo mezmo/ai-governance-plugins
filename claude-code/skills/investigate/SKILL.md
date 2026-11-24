@@ -11,7 +11,7 @@ allowed-tools:
 
 # Investigate an incident
 
-The Mezmo ledger records each Bash and MCP tool call. Once this session joins an investigation,
+The Mezmo ledger records each tool call. Once this session joins an investigation,
 every record carries the incident's key, and the ledger files it under the incident's
 investigation, the same one any other agent of your Mezmo account working on the incident joins.
 The investigation comes from the incident's key, so agents that start from the same key meet in the

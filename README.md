@@ -449,7 +449,8 @@ Not every plugin sends only that, and not only to the Governance service:
 - Claude Code's ledger sending is on whenever the plugin has a service account
   token, unless its `ledger_enabled` option is off. It sends the ledger service,
   at the Mezmo API URL plus `/v1/audit/events` (or `MEZMO_LEDGER_URL`), a record
-  when each Bash and MCP call is requested and one when it ends, with the
+  when each tool call is requested and one when it ends, built-in tools
+  included, with the
   arguments and the result or error, each cut at 4,096 characters. Records that
   can't be sent wait in a local retry file. This happens with governance's own
   switch on or off. When `MEZMO_LEDGER_KEY` isn't set, it sends the governance

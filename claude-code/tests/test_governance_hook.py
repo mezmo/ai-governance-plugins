@@ -888,12 +888,29 @@ class WhichCallsAreGovernedTests(unittest.TestCase):
         hooks = json.loads((pathlib.Path(__file__).resolve().parents[1] / "hooks" / "hooks.json").read_text())["hooks"]
         for event_name in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied"):
             with self.subTest(event=event_name):
-                (entry,) = hooks[event_name]
+                (entry,) = [
+                    group for group in hooks[event_name]
+                    if any("governance_hook.py" in handler["command"] for handler in group["hooks"])
+                ]
                 matcher = re.compile(entry["matcher"])
                 for name in ("Bash", "mcp__mezmo__list_pipelines", "mcp__ccd_turn__wrap_up"):
                     self.assertTrue(matcher.search(name), name)
                 for name in ("Read", "BashOutput", "ToolSearch", "Xmcp__a__b"):
                     self.assertFalse(matcher.search(name), name)
+
+
+    def test_the_ledger_hook_runs_once_for_every_tool_in_a_group_of_its_own(self) -> None:
+        hooks = json.loads((pathlib.Path(__file__).resolve().parents[1] / "hooks" / "hooks.json").read_text())["hooks"]
+        for event_name in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionDenied"):
+            with self.subTest(event=event_name):
+                for name in ("Bash", "mcp__mezmo__list_pipelines", "Read", "Edit", "Grep", "WebFetch"):
+                    ledger_groups = [
+                        group for group in hooks[event_name]
+                        if re.compile(group["matcher"]).search(name)
+                        and any("ledger_hook.py" in handler["command"] for handler in group["hooks"])
+                    ]
+                    self.assertEqual(len(ledger_groups), 1, name)
+                    self.assertEqual(len(ledger_groups[0]["hooks"]), 1, "the ledger group runs only the ledger hook")
 
 
 def bash_event(command: str, **tool_input: Any) -> Dict[str, Any]:

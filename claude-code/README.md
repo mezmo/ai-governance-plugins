@@ -24,8 +24,8 @@ working.
    The options dialog asks for the **Mezmo service key** (the token of the service account
    registered for Claude Code in Mezmo Governance), the **Mezmo API URL** (empty means
    `https://api.mezmo.com`) and the **Mezmo MCP URL** (production's by default). That's all:
-   in the same session, every Bash and MCP tool call is checked by Mezmo Governance and recorded
-   in the [ledger](#ledger), and the plugin's [Mezmo MCP](#mezmo-mcp) server connects with the
+   in the same session, every Bash and MCP tool call is checked by Mezmo Governance, every tool
+   call is recorded in the [ledger](#ledger), and the plugin's [Mezmo MCP](#mezmo-mcp) server connects with the
    same key, so Claude can read the ledger. No restart and no `/mezmo:setup`.
 
    If something's missing, the plugin says so on your next message (once per session, and at the
@@ -290,14 +290,21 @@ the audit log, and `/mezmo` shows the count. Governance doesn't hear about these
 ## Ledger
 
 The ledger keeps a record of the tool calls Claude Code makes: Mezmo gets one record when each
-Bash and MCP tool call is requested and one when it ends. It is on whenever the plugin has a
+tool call is requested and one when it ends. That covers built-in tools such as Read, Edit, Write,
+Grep and WebFetch, which governance leaves alone, as well as Bash and MCP calls. The Claude desktop
+app's own servers (`ccd_*`) aren't recorded. A built-in call is titled by what it's about, such as
+`Read /etc/hosts`, and one that changes files is recorded as a write. File contents are never
+sent: not what Write, Edit or NotebookEdit put in a file, and not what Read, Grep or those tools
+return.
+A failed call is still recorded as failed, without its error, which can quote the file. It is on whenever the plugin has a
 service account token, and sends to `<API URL>/v1/audit/events` with that token. The ledger
 service takes the account from the token, so there is no account to set. Turn it off with the
 `ledger_enabled` plugin option (`/plugin configure mezmo@mezmo`). It also works with governance
 switched off.
 
-The ledger has its own hook script, `scripts/ledger_hook.py`, which Claude Code runs beside the
-governance hook, in parallel with it. When governance refuses a call, Claude Code runs no other
+The ledger has its own hook script, `scripts/ledger_hook.py`, in a hook group of its own that
+matches every tool. For Bash and MCP calls Claude Code runs it beside the governance hook, in
+parallel with it. When governance refuses a call, Claude Code runs no other
 hook, so the governance hook reports that call to the ledger itself, with a 2 second timeout.
 
 | Event | When |

@@ -545,11 +545,33 @@ class EventTests(LedgerTestCase):
         self.assertEqual(fake.calls, [])
         self.assertEqual(ledger_hook.LEDGER_THREADS, [])
 
-    def test_calls_governance_skips_send_nothing(self) -> None:
+    def test_the_desktop_apps_own_servers_send_nothing(self) -> None:
         fake = self.fake()
-        self.run_hook(hook_input(tool_name="Read", tool_input={"file_path": "/etc/hosts"}), fake)
         self.run_hook(mcp_input(tool_name="mcp__ccd_session__list"), fake)
+        self.run_hook(mcp_input(tool_name="mcp__ccd_view__show_pane"), fake)
         self.assertEqual(fake.calls, [])
+
+    def test_built_in_tools_governance_skips_are_recorded(self) -> None:
+        cases = [
+            ("Read", {"file_path": "/etc/hosts"}, "Read /etc/hosts", "read"),
+            ("Edit", {"file_path": "/srv/app.yaml", "old_string": "a", "new_string": "b"}, "Edit /srv/app.yaml", "write"),
+            ("Write", {"file_path": "/tmp/out.txt", "content": "x"}, "Write /tmp/out.txt", "write"),
+            ("Grep", {"pattern": "OOMKilled", "path": "/var/log"}, "Grep OOMKilled", "read"),
+            ("WebFetch", {"url": "https://example.com/status", "prompt": "summarize"}, "WebFetch https://example.com/status", "read"),
+            ("TodoWrite", {"todos": []}, "claude_code.TodoWrite", "read"),
+        ]
+        for tool_name, tool_input, message, access in cases:
+            with self.subTest(tool=tool_name):
+                fake = self.fake()
+                self.run_hook(hook_input(tool_name=tool_name, tool_input=tool_input), fake)
+                (event,) = fake.calls[0]["events"]
+                self.assertEqual(event["event"], "agent.tool_call.started")
+                self.assertEqual(event["message"], message)
+                self.assertEqual(event["extra"]["access"], access)
+                self.assertEqual(event["extra"]["tool_name"], tool_name)
+                self.assertEqual(
+                    event["extra"]["intent_source"], "none" if tool_name == "TodoWrite" else "tool_arguments"
+                )
 
 class FieldTests(LedgerTestCase):
     def test_messages_and_intent_source(self) -> None:
@@ -721,6 +743,49 @@ class FieldTests(LedgerTestCase):
         off, on = fake.events()
         self.assertNotIn("decision_id", off["extra"])
         self.assertEqual(on["extra"]["decision_id"], on["extra"]["call_id"])
+
+    def test_an_ungoverned_call_has_no_decision_id(self) -> None:
+        self.env_update(GOVERNANCE)
+        fake = self.fake()
+        self.run_hook(hook_input("PostToolUse", tool_name="Read", tool_input={"file_path": "/etc/hosts"}), fake)
+        (event,) = fake.events()
+        self.assertNotIn("decision_id", event["extra"])
+        self.assertIn("call_id", event["extra"])
+
+    def test_file_contents_are_never_sent(self) -> None:
+        secret = "sts_0123456789abcdef"
+        cases = [
+            ("Write", {"file_path": "/tmp/k/key", "content": secret}, {"filePath": "/tmp/k/key", "content": secret}),
+            ("Edit", {"file_path": "/srv/a.env", "old_string": secret, "new_string": "x"},
+             {"filePath": "/srv/a.env", "originalFile": secret, "structuredPatch": [secret]}),
+            ("Read", {"file_path": "/srv/a.env"}, {"file": {"content": secret, "filePath": "/srv/a.env"}}),
+            ("Grep", {"path": "/srv", "pattern": "token="}, {"content": f"a.env:1:token={secret}", "mode": "content"}),
+        ]
+        for tool_name, tool_input, response in cases:
+            with self.subTest(tool=tool_name):
+                fake = self.fake()
+                self.run_hook(hook_input(tool_name=tool_name, tool_input=tool_input), fake)
+                self.run_hook(hook_input("PostToolUse", tool_name=tool_name, tool_input=tool_input,
+                                         tool_response=response), fake)
+                started, ran = fake.events()
+                self.assertNotIn(secret, json.dumps(started))
+                self.assertNotIn(secret, json.dumps(ran))
+                subject = tool_input.get("file_path") or tool_input["pattern"]
+                self.assertIn(subject, started["extra"]["arguments"])
+                self.assertNotIn("output", ran["extra"])
+                self.assertEqual(ran["message"], f"{tool_name} {subject}: ok")
+
+    def test_a_failed_file_call_ends_failed_without_its_error(self) -> None:
+        secret = "sts_0123456789abcdef"
+        fake = self.fake()
+        self.run_hook(hook_input("PostToolUseFailure", tool_name="Edit",
+                                 tool_input={"file_path": "/srv/a.env", "old_string": secret, "new_string": "x"},
+                                 error=f"String to replace not found in file.\nString: {secret}"), fake)
+        (event,) = fake.events()
+        self.assertEqual(event["event"], "agent.tool_call.failed")
+        self.assertNotIn(secret, json.dumps(event))
+        self.assertNotIn("output", event["extra"])
+        self.assertEqual(event["message"], "Edit /srv/a.env: failed")
 
     def test_application_version_comes_from_plugin_json(self) -> None:
         manifest = json.loads((SCRIPTS.parent / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
