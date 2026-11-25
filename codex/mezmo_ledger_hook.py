@@ -127,7 +127,7 @@ MAX_REFERENCES = 20
 MEMORY_BRIEF_TOOL_NAME = "mezmo_memory_brief"
 # For application.version. A file install has no manifest beside the script, so this is a
 # constant, and test_ledger.py checks it against .codex-plugin/plugin.json.
-LEDGER_VERSION = "0.10.0"
+LEDGER_VERSION = "0.11.0"
 # The socket timeout of each request this hook makes, and the deadline its main thread waits for
 # its ledger threads from when they start. A socket timeout alone bounds neither DNS nor the whole
 # request, hence the threads. Read at call time, so a test can patch it.
@@ -998,7 +998,13 @@ def adopt_launched_investigation(
                 current_key = current.get("incident_key") if isinstance(current, dict) else None
                 # An investigation the session already joined stays; launch's only fills an empty slot.
                 if not (isinstance(current_key, str) and current_key.strip()):
-                    state["investigation"] = {"incident_key": incident_key, "joined_at": joined_at}
+                    # Joined when launch wrote the claim, just before it started the agent, so what
+                    # the agent wrote before this first hook still counts.
+                    try:
+                        launched_at = datetime.fromtimestamp(claim.stat().st_mtime, timezone.utc).isoformat()
+                    except OSError:
+                        launched_at = joined_at
+                    state["investigation"] = {"incident_key": incident_key, "joined_at": launched_at}
                 return
             if state.get(IGNORED_INCIDENT_KEY_FIELD) != incident_key:
                 state[IGNORED_INCIDENT_KEY_FIELD] = incident_key
@@ -2053,13 +2059,20 @@ def _item_duration_ms(item: Mapping[str, Any]) -> Optional[int]:
     return seconds * 1000 + nanos // 1_000_000
 
 
-def step_event(*, hook_input: Mapping[str, Any], incident_key: str, text: str) -> Optional[Dict[str, Any]]:
-    """`agent.investigation.step`: what the agent said between its calls, in its own words."""
+def step_event(
+    *, hook_input: Mapping[str, Any], incident_key: str, step_id: Optional[str], text: str
+) -> Optional[Dict[str, Any]]:
+    """`agent.investigation.step`: what the agent said between its calls, in its own words.
+
+    `step_id` is the rollout item's id, so a step sent twice is one step to its readers.
+    """
     session_id = hook_input.get("session_id")
     if not isinstance(session_id, str) or not session_id.strip():
         return None
     text = text.strip()[:MAX_STEP_CHARACTERS]
     extra = {"agent": AGENT, "incident_key": incident_key, "session_id": session_id.strip(), "text": text}
+    if step_id is not None:
+        extra["step_id"] = step_id
     # No entity_id: the ledger service sets it to the investigation it derives from the incident key.
     return ledger_envelope(
         entity_id=None,
@@ -2094,7 +2107,7 @@ def _catch_up(
             return []
         stop = hook_input.get("hook_event_name") == "Stop"
         ended: List[Tuple[Dict[str, Any], str, Dict[str, Any]]] = []
-        steps: List[str] = []
+        steps: List[Tuple[str, Optional[str]]] = []
         found_exits: Dict[str, int] = {} if exits is None else exits
 
         def change(state: Dict[str, Any]) -> None:
@@ -2119,7 +2132,7 @@ def _catch_up(
                 if item.get("type") == "AgentMessage":
                     text = _item_text(item).strip()
                     if text:
-                        steps.append(text)
+                        steps.append((text, item_id if isinstance(item_id, str) and item_id else None))
                 elif isinstance(kept, dict) and kept.get(PENDING_AWAITING_EXIT) and item_id in found_exits:
                     pending.pop(item_id)
                     if found_exits[item_id]:
@@ -2169,8 +2182,8 @@ def _catch_up(
                 events.append(event)
         incident_key = ledger_context(hook_input=hook_input).get("incident_key")
         if incident_key:
-            for text in steps:
-                event = step_event(hook_input=hook_input, incident_key=incident_key, text=text)
+            for text, step_id in steps:
+                event = step_event(hook_input=hook_input, incident_key=incident_key, step_id=step_id, text=text)
                 if event is not None:
                     events.append(event)
         return events

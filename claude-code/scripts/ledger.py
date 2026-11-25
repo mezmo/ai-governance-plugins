@@ -5,6 +5,9 @@
   Bash call that ran ledger_investigation.py's join or close, it also sends `joined` or `closed`.
   After a Mezmo Memory brief or Insights read, it saves the references that call gives in the
   session state, and every later tool call event carries them.
+  It also sends what Claude wrote between calls, read from the transcript, as
+  `agent.investigation.step`, filed under the investigation the session was in when Claude wrote
+  it; a Stop hook sends the turn's last words.
 - governance_hook.py calls `record_governance_refusal` when governance denies a call, its
   approval expires or it errors, since no hook runs after a deny. That is its only use of this
   module.
@@ -149,6 +152,21 @@ LEDGER_DRAIN_BATCH = 10
 LEDGER_SPOOL_MAX_LINES = 200
 MAX_LEDGER_JSON_CHARACTERS = 4096
 MAX_LEDGER_MESSAGE_CHARACTERS = 200
+STEP_EVENT = "agent.investigation.step"
+MAX_STEP_CHARACTERS = 2000
+# How far the transcript has been read for steps. Only a speed-up: a step read twice is sent with
+# the same step_id, and readers keep one.
+TRANSCRIPT_OFFSET_FIELD = "transcript_offset"
+# Investigations the session has closed, {incident_key, joined_at, closed_at}, so a step Claude
+# wrote before a close but read after it is still filed under that investigation.
+CLOSED_INVESTIGATIONS_FIELD = "closed_investigations"
+MAX_CLOSED_INVESTIGATIONS = 10
+# The most of the transcript one read takes. A longer line is skipped, as Codex's rollout reader does.
+MAX_TRANSCRIPT_READ_BYTES = 8 * 1024 * 1024
+# The most one hook reads in all, a chunk at a time, so a Stop reaches the turn's last words.
+MAX_TRANSCRIPT_CATCH_UP_BYTES = 8 * MAX_TRANSCRIPT_READ_BYTES
+# The most steps one hook sends, in one request. The rest wait for the next hook.
+MAX_STEPS_PER_HOOK = 50
 EXIT_CODE_LINE = re.compile(r"Exit code (-?\d+)")
 LEDGER_ENDINGS = {"failed": "failed", "not_run": "not run", "ran": "ok"}
 
@@ -1040,7 +1058,13 @@ def adopt_launched_investigation(
                 current_key = current.get("incident_key") if isinstance(current, dict) else None
                 # An investigation the session already joined stays; launch's only fills an empty slot.
                 if not (isinstance(current_key, str) and current_key.strip()):
-                    state["investigation"] = {"incident_key": incident_key, "joined_at": joined_at}
+                    # Joined when launch wrote the claim, just before it started the agent, so what
+                    # the agent wrote before this first hook still counts.
+                    try:
+                        launched_at = datetime.fromtimestamp(claim.stat().st_mtime, timezone.utc).isoformat()
+                    except OSError:
+                        launched_at = joined_at
+                    state["investigation"] = {"incident_key": incident_key, "joined_at": launched_at}
                 return
             if state.get(IGNORED_INCIDENT_KEY_FIELD) != incident_key:
                 state[IGNORED_INCIDENT_KEY_FIELD] = incident_key
@@ -1083,6 +1107,139 @@ def ledger_context(*, hook_input: Mapping[str, Any]) -> Dict[str, Any]:
     if isinstance(incident_key, str) and incident_key.strip():
         context["incident_key"] = incident_key.strip()
     return context
+
+
+def _parse_time(value: Any) -> Optional[datetime]:
+    """An ISO 8601 time as an aware datetime, or None when it can't be read."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+def investigation_windows(state: Mapping[str, Any]) -> List[Tuple[str, datetime, Optional[datetime]]]:
+    """(incident_key, joined_at, closed_at) for each investigation the session was in, the open
+    one last with no closed_at. Ones whose times can't be read are left out."""
+    windows: List[Tuple[str, datetime, Optional[datetime]]] = []
+    closed = state.get(CLOSED_INVESTIGATIONS_FIELD)
+    entries = [entry for entry in closed if isinstance(entry, dict)] if isinstance(closed, list) else []
+    current = state.get("investigation")
+    if isinstance(current, dict):
+        entries.append({**current, "closed_at": None})
+    for entry in entries:
+        incident_key = entry.get("incident_key")
+        joined_at = _parse_time(entry.get("joined_at"))
+        closed_at = _parse_time(entry.get("closed_at"))
+        if not isinstance(incident_key, str) or not incident_key.strip() or joined_at is None:
+            continue
+        if entry.get("closed_at") is not None and closed_at is None:
+            continue
+        windows.append((incident_key.strip(), joined_at, closed_at))
+    return windows
+
+
+def close_investigation(state: Dict[str, Any], *, closed_at: str) -> None:
+    """Take the session out of its investigation, keeping it among the closed ones."""
+    current = state.pop("investigation", None)
+    if not isinstance(current, dict):
+        return
+    closed = state.get(CLOSED_INVESTIGATIONS_FIELD)
+    closed = [entry for entry in closed if isinstance(entry, dict)] if isinstance(closed, list) else []
+    closed.append({
+        "closed_at": closed_at,
+        "incident_key": current.get("incident_key"),
+        "joined_at": current.get("joined_at"),
+    })
+    state[CLOSED_INVESTIGATIONS_FIELD] = closed[-MAX_CLOSED_INVESTIGATIONS:]
+
+
+def transcript_records(*, path: str, offset: int) -> Iterator[Tuple[Optional[Dict[str, Any]], int]]:
+    """(record, offset past it) for each line after `offset`, read lazily to the end a chunk at a
+    time, up to MAX_TRANSCRIPT_CATCH_UP_BYTES, so a caller that stops early parses no more.
+
+    The record is None for a line that isn't a JSON object, so the offset still moves past it. A
+    transcript shorter than `offset` was replaced, so it is read from the start. A line longer than
+    MAX_TRANSCRIPT_READ_BYTES is skipped: its first part is passed over in one chunk, and the rest,
+    which is no JSON on its own, in the next.
+    """
+    with open(path, "rb") as transcript:
+        if offset > os.fstat(transcript.fileno()).st_size:
+            offset = 0
+            yield None, 0
+        start = offset
+        while offset - start < MAX_TRANSCRIPT_CATCH_UP_BYTES:
+            transcript.seek(offset)
+            data = transcript.read(MAX_TRANSCRIPT_READ_BYTES)
+            end = data.rfind(b"\n")
+            if end < 0:
+                # A whole read with no newline is one oversized line; a shorter one is a line still being written.
+                if len(data) == MAX_TRANSCRIPT_READ_BYTES:
+                    offset += len(data)
+                    yield None, offset
+                    continue
+                return
+            for line in data[: end + 1].splitlines(keepends=True):
+                offset += len(line)
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    record = None
+                yield (record if isinstance(record, dict) else None), offset
+            if len(data) < MAX_TRANSCRIPT_READ_BYTES:
+                return
+
+
+def transcript_step(record: Mapping[str, Any]) -> Optional[Tuple[str, Optional[str], datetime]]:
+    """(text, step_id, written_at) for a transcript record holding text Claude wrote in the main
+    conversation, or None.
+
+    Thinking is left out: the transcript keeps it without its text. So is a subagent's side of the
+    conversation, and a record with no time to file it by.
+    """
+    if record.get("type") != "assistant" or record.get("isSidechain"):
+        return None
+    written_at = _parse_time(record.get("timestamp"))
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if written_at is None or not isinstance(content, list):
+        return None
+    text = "\n\n".join(
+        block["text"].strip() for block in content
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+        and block["text"].strip()
+    )
+    if not text:
+        return None
+    step_id = record.get("uuid")
+    return text, step_id if isinstance(step_id, str) and step_id else None, written_at
+
+
+def step_event(
+    *, hook_input: Mapping[str, Any], incident_key: str, step_id: Optional[str], text: str, written_at: datetime
+) -> Optional[Dict[str, Any]]:
+    """`agent.investigation.step`: what Claude said between its calls, in its own words, at the
+    time the transcript gives it, so it sorts before the call it led to."""
+    session_id = hook_input.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    text = text.strip()[:MAX_STEP_CHARACTERS]
+    extra = {"agent": AGENT, "incident_key": incident_key, "session_id": session_id.strip(), "text": text}
+    if step_id is not None:
+        extra["step_id"] = step_id
+    # No entity_id: the ledger service sets it to the investigation it derives from the incident key.
+    event = ledger_envelope(
+        entity_id=None,
+        entity_type="investigation",
+        event=STEP_EVENT,
+        extra=extra,
+        message=_one_line(text)[:MAX_LEDGER_MESSAGE_CHARACTERS],
+        session_id=session_id.strip(),
+    )
+    event["timestamp"] = written_at.isoformat()
+    return event
 
 
 def ledger_envelope(

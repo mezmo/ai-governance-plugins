@@ -456,7 +456,9 @@ Not every plugin sends only that, and not only to the Governance service:
   when each tool call is requested and one when it ends. Bash and MCP calls
   carry their arguments and the result or error, each cut at 4,096
   characters. Other built-in tools carry only their file path, search path,
-  URL host or description and whether they worked. Records that
+  URL host or description and whether they worked. In an investigation it
+  also sends what Claude writes between calls, cut at 2,000 characters, read
+  from the session's transcript. Records that
   can't be sent wait in a local retry file. This happens with governance's own
   switch on or off. When `MEZMO_LEDGER_KEY` isn't set, it sends the governance
   key, so with `MEZMO_LEDGER_URL` set the key goes to that host, whatever it

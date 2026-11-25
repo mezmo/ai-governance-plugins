@@ -21,7 +21,7 @@ import threading
 import time
 import types
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import StringIO
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
@@ -2633,6 +2633,247 @@ class EndToEndTests(unittest.TestCase):
                 self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
         self.assertEqual(self.recorder.requests, [])
         self.assertFalse((self.dir / ".mezmo").exists())
+
+
+def at(seconds: float = 0.0) -> str:
+    """A transcript time `seconds` from now, as Claude Code writes it."""
+    return datetime.fromtimestamp(time.time() + seconds, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def assistant(*blocks: Dict[str, Any], when: Optional[str] = None, sidechain: bool = False,
+              uuid: Optional[str] = None) -> Dict[str, Any]:
+    """A transcript record of Claude's, one content block per record as Claude Code writes them."""
+    record = {"isSidechain": sidechain, "message": {"content": list(blocks), "role": "assistant"},
+              "timestamp": when or at(), "type": "assistant"}
+    if uuid is not None:
+        record["uuid"] = uuid
+    return record
+
+
+def text(value: str) -> Dict[str, Any]:
+    return {"text": value, "type": "text"}
+
+
+class StepTests(LedgerTestCase):
+    """What Claude writes between calls, sent as agent.investigation.step."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.transcript = self.dir / "transcript.jsonl"
+        self.transcript.write_text("", encoding="utf-8")
+
+    def joined(self, seconds: float = -3600.0) -> None:
+        """Put the session in the investigation, joined `seconds` from now."""
+        self.write_state({"investigation": {"incident_key": INCIDENT_KEY, "joined_at": at(seconds)}})
+
+    def append(self, *records: Mapping[str, Any]) -> None:
+        with self.transcript.open("a", encoding="utf-8") as transcript:
+            for record in records:
+                transcript.write(json.dumps(record) + "\n")
+
+    def call(self, name: str = "PreToolUse", **fields: Any) -> Dict[str, Any]:
+        return hook_input(name, transcript_path=str(self.transcript), **fields)
+
+    def steps(self, event: Mapping[str, Any]) -> List[Dict[str, Any]]:
+        """The steps one hook run on `event` sent."""
+        fake = self.fake()
+        self.run_hook(event, fake)
+        return [sent for sent in fake.events() if sent["event"] == ledger.STEP_EVENT]
+
+    def texts(self, event: Mapping[str, Any]) -> List[str]:
+        return [step["extra"]["text"] for step in self.steps(event)]
+
+    def state(self) -> Dict[str, Any]:
+        return json.loads(hook.session_state_path("session-1").read_text(encoding="utf-8"))
+
+    def test_what_claude_wrote_is_sent_as_steps_with_the_records_id_and_time(self) -> None:
+        self.joined()
+        written = at(-5)
+        self.append(
+            {"message": {"content": "check the pods", "role": "user"}, "timestamp": at(-6), "type": "user"},
+            assistant({"thinking": "", "signature": "x", "type": "thinking"}),
+            assistant(text("The pods are crash looping;"), text("checking their logs."), when=written, uuid="uuid-1"),
+            assistant(text("a subagent's words"), sidechain=True, uuid="uuid-2"),
+            assistant({"id": "t1", "input": {}, "name": "Bash", "type": "tool_use"}, uuid="uuid-3"),
+        )
+        (step,) = self.steps(self.call())
+        self.assertEqual(step["entity_type"], "investigation")
+        self.assertEqual(step["extra"], {
+            "agent": hook.AGENT, "incident_key": INCIDENT_KEY, "session_id": "session-1", "step_id": "uuid-1",
+            "text": "The pods are crash looping;\n\nchecking their logs.",
+        })
+        self.assertEqual(step["message"], "The pods are crash looping; checking their logs.")
+        self.assertEqual(datetime.fromisoformat(step["timestamp"]),
+                         datetime.fromisoformat(written.replace("Z", "+00:00")))
+        self.assertEqual(self.steps(self.call("PostToolUse")), [])
+
+    def test_a_stop_sends_the_turns_last_words_and_nothing_else(self) -> None:
+        self.joined()
+        self.append(assistant(text("Rolled back; the pods are healthy.")))
+        fake = self.fake()
+        self.run_hook(self.call("Stop"), fake)
+        self.assertEqual([(sent["event"], sent["extra"]["text"]) for sent in fake.events()],
+                         [(ledger.STEP_EVENT, "Rolled back; the pods are healthy.")])
+
+    def test_a_step_read_twice_is_sent_with_the_same_step_id(self) -> None:
+        self.joined()
+        self.append(assistant(text("checking the pods"), uuid="uuid-1"))
+        # The offset is only a speed-up: a hook whose write doesn't land sends the step again.
+        with patch.object(ledger_hook, "update_session_state", lambda *args, **options: None):
+            first = self.steps(self.call("Stop"))
+        second = self.steps(self.call("Stop"))
+        self.assertEqual([step["extra"]["step_id"] for step in first + second], ["uuid-1", "uuid-1"])
+        self.assertEqual(self.steps(self.call("Stop")), [])
+
+    def test_outside_an_investigation_nothing_is_read_or_sent(self) -> None:
+        self.append(assistant(text("before any investigation")))
+        fake = self.fake()
+        self.run_hook(self.call(), fake)
+        self.assertEqual([sent["event"] for sent in fake.events()], ["agent.tool_call.started"])
+        self.assertNotIn(ledger.TRANSCRIPT_OFFSET_FIELD, self.state(), "never read")
+
+    def test_a_join_files_only_what_came_after_it(self) -> None:
+        self.append(assistant(text("before the join"), when=at(-60)))
+        self.run_hook({**cli_call("join", "joined"), "transcript_path": str(self.transcript)}, self.fake())
+        self.append(assistant(text("after the join"), when=at(1)))
+        self.assertEqual(self.texts(self.call("Stop")), ["after the join"])
+
+    def test_a_session_with_no_saved_offset_still_skips_what_came_before_the_join(self) -> None:
+        self.joined(-60)
+        self.append(
+            assistant(text("before the join"), when=at(-120)),
+            assistant(text("after the join"), when=at(-30)),
+        )
+        self.assertEqual(self.texts(self.call("Stop")), ["after the join"])
+
+    def test_steps_read_after_a_close_go_to_the_closed_investigation_by_time(self) -> None:
+        self.joined()
+        backlog = ledger.MAX_STEPS_PER_HOOK + 7
+        self.append(*[assistant(text(f"step {index}"), when=at(-10)) for index in range(backlog)])
+        fake = self.fake()
+        self.run_hook({**cli_call("close", "closed"), "transcript_path": str(self.transcript)}, fake)
+        sent = [event["event"] for event in fake.events()]
+        self.assertIn("agent.investigation.closed", sent)
+        self.assertEqual(sent.count(ledger.STEP_EVENT), ledger.MAX_STEPS_PER_HOOK, "a close's batch is bounded too")
+        self.assertNotIn("investigation", self.state())
+
+        self.append(assistant(text("after the close"), when=at(5)))
+        later = self.steps(self.call("Stop"))
+        self.assertEqual([(step["extra"]["text"], step["extra"]["incident_key"]) for step in later],
+                         [(f"step {index}", INCIDENT_KEY) for index in range(ledger.MAX_STEPS_PER_HOOK, backlog)])
+        # Read past the close, so the closed investigation is let go.
+        self.assertNotIn(ledger.CLOSED_INVESTIGATIONS_FIELD, self.state())
+        self.assertEqual(self.steps(self.call("Stop")), [])
+
+    def test_joining_another_investigation_files_each_step_by_when_it_was_written(self) -> None:
+        self.joined(-60)
+        self.append(assistant(text("on the first"), when=at(-30)))
+        other = cli_call("join", "joined")
+        other["tool_input"]["command"] = other["tool_input"]["command"].replace(INCIDENT_KEY, "jira:OPS-2")
+        other["tool_response"]["stdout"] = json.dumps({"action": "joined", "incident_key": "jira:OPS-2"}) + "\n"
+        fake = self.fake()
+        self.run_hook({**other, "transcript_path": str(self.transcript)}, fake)
+        self.append(assistant(text("on the second"), when=at(1)))
+        steps = [event for event in fake.events() if event["event"] == ledger.STEP_EVENT] + self.steps(self.call("Stop"))
+        self.assertEqual([(step["extra"]["text"], step["extra"]["incident_key"]) for step in steps],
+                         [("on the first", INCIDENT_KEY), ("on the second", "jira:OPS-2")])
+
+    def test_steps_go_in_one_request_after_the_call_and_a_backlog_waits(self) -> None:
+        self.joined()
+        backlog = ledger.MAX_STEPS_PER_HOOK + 7
+        self.append(*[assistant(text(f"step {index}")) for index in range(backlog)])
+        fake = self.fake()
+        self.run_hook(self.call(), fake)
+        # The two requests go in parallel, so they're told apart by what they hold, not by order.
+        call, steps = sorted(fake.calls, key=lambda request: request["events"][0]["event"] == ledger.STEP_EVENT)
+        self.assertEqual([event["event"] for event in call["events"]], ["agent.tool_call.started"])
+        self.assertEqual([event["extra"]["text"] for event in steps["events"]],
+                         [f"step {index}" for index in range(ledger.MAX_STEPS_PER_HOOK)])
+        self.assertEqual(self.texts(self.call("Stop")),
+                         [f"step {index}" for index in range(ledger.MAX_STEPS_PER_HOOK, backlog)])
+
+    def test_a_backlog_longer_than_one_read_is_read_to_the_end(self) -> None:
+        self.joined()
+        filler = {"type": "progress", "data": "x" * 4096}
+        self.append(*[filler] * 40, assistant(text("the last words")))
+        with patch.object(ledger, "MAX_TRANSCRIPT_READ_BYTES", 16 * 1024):
+            self.assertEqual(self.texts(self.call("Stop")), ["the last words"])
+
+    def test_a_launched_session_keeps_what_it_wrote_before_its_first_hook(self) -> None:
+        environment = launched(INCIDENT_KEY)
+        os.environ.update(environment)
+        launched_at = time.time() - 60
+        os.utime(ledger.launches_dir() / environment["MEZMO_LEDGER_LAUNCHED"], (launched_at, launched_at))
+        self.append(
+            assistant(text("from before the launch, in a resumed session"), when=at(-120)),
+            assistant(text("The incident is a crash loop; no tool needed yet."), when=at(-30)),
+        )
+        # A reply with no tool call: Stop is the session's first hook.
+        self.assertEqual(self.texts(self.call("Stop")), ["The incident is a crash loop; no tool needed yet."])
+
+    def test_what_claude_writes_with_the_ledger_off_is_never_sent(self) -> None:
+        self.joined()
+        self.append(assistant(text("before the pause")))
+        self.assertEqual(self.texts(self.call("Stop")), ["before the pause"])
+        url = os.environ.pop("MEZMO_LEDGER_URL")
+        self.env_update({"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "o", "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED": "false"})
+        self.assertIsNone(ledger.load_ledger_config())
+        self.append(assistant(text("written while the ledger was off")))
+        self.assertEqual(self.steps(self.call("Stop")), [])
+        self.env_update({"MEZMO_LEDGER_URL": url})
+        self.append(assistant(text("after it came back")))
+        self.assertEqual(self.texts(self.call("Stop")), ["after it came back"])
+
+    def test_a_launched_session_never_sends_what_it_wrote_before_the_ledger_came_on(self) -> None:
+        url = os.environ.pop("MEZMO_LEDGER_URL")
+        self.env_update({"CLAUDE_PLUGIN_OPTION_GOVERNANCE_ACCESS_KEY": "o", "CLAUDE_PLUGIN_OPTION_LEDGER_ENABLED": "false"})
+        environment = launched(INCIDENT_KEY)
+        os.environ.update(environment)
+        launched_at = time.time() - 60
+        os.utime(ledger.launches_dir() / environment["MEZMO_LEDGER_LAUNCHED"], (launched_at, launched_at))
+        self.append(assistant(text("written while the ledger was off"), when=at(-30)))
+        self.assertEqual(self.steps(self.call("Stop")), [])
+        self.env_update({"MEZMO_LEDGER_URL": url})
+        self.append(assistant(text("after it came on")))
+        self.assertEqual(self.texts(self.call("Stop")), ["after it came on"])
+
+    def test_a_backlog_past_the_step_limit_is_left_unparsed(self) -> None:
+        self.joined()
+        self.append(*[assistant(text(f"step {index}")) for index in range(ledger.MAX_STEPS_PER_HOOK + 7)])
+        parsed: List[str] = []
+        real = json.loads
+
+        def counting(value: Any, *args: Any, **kwargs: Any) -> Any:
+            if isinstance(value, bytes):
+                parsed.append("line")
+            return real(value, *args, **kwargs)
+
+        with patch.object(ledger.json, "loads", counting):
+            self.steps(self.call("Stop"))
+        self.assertEqual(len(parsed), ledger.MAX_STEPS_PER_HOOK)
+
+    def test_a_long_step_is_cut(self) -> None:
+        self.joined()
+        self.append(assistant(text("x" * (ledger.MAX_STEP_CHARACTERS + 50))))
+        (step,) = self.steps(self.call("Stop"))
+        self.assertEqual(len(step["extra"]["text"]), ledger.MAX_STEP_CHARACTERS)
+        self.assertLessEqual(len(step["message"]), ledger.MAX_LEDGER_MESSAGE_CHARACTERS)
+
+    def test_a_transcript_that_cant_be_read_never_costs_the_call(self) -> None:
+        self.joined()
+        fake = self.fake()
+        self.run_hook(hook_input("PreToolUse", transcript_path=str(self.dir / "missing.jsonl")), fake)
+        self.assertEqual([event["event"] for event in fake.events()], ["agent.tool_call.started"])
+        self.assertIn("could not read the transcript", self.stderr)
+
+    def test_the_closed_investigations_kept_are_bounded(self) -> None:
+        state: Dict[str, Any] = {}
+        for index in range(ledger.MAX_CLOSED_INVESTIGATIONS + 3):
+            state["investigation"] = {"incident_key": f"jira:OPS-{index}", "joined_at": at(-100 + index)}
+            ledger.close_investigation(state, closed_at=at(-99 + index))
+        closed = state[ledger.CLOSED_INVESTIGATIONS_FIELD]
+        self.assertEqual([entry["incident_key"] for entry in closed],
+                         [f"jira:OPS-{index}" for index in range(3, ledger.MAX_CLOSED_INVESTIGATIONS + 3)])
 
 
 if __name__ == "__main__":
