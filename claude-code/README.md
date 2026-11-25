@@ -385,6 +385,17 @@ token's account, so every agent of the account that starts from the same key lan
 | `agent.investigation.closed` | The session left the investigation, saying where things stand: `extra.status` (`resolved`, `mitigated`, `ongoing` or `no_action`) and `extra.summary` |
 | `agent.investigation.joined` | The session joined the investigation |
 | `agent.investigation.opened` | The launcher started a command in the investigation |
+| `agent.investigation.step` | Claude wrote text between its calls: `extra.text`, at most 2,000 characters, and `extra.step_id`, the transcript record's id |
+
+While the session is in an investigation, the ledger hook reads the session's transcript and
+sends what Claude writes between its calls as steps, at the time Claude wrote it, the way the
+Codex plugin records Codex's messages. A `Stop` hook sends the turn's last words. Each step goes
+to the investigation the session was in when Claude wrote it, so text written before a join or
+after a close isn't sent. A hook sends at most 50 steps and leaves the rest to the next one, so a
+session that ends with more unsent than that loses the remainder. A step can be sent twice, with
+the same `step_id`, and readers keep one. Nothing Claude writes while the ledger is off is sent,
+even after it's turned back on. Claude's thinking isn't recorded: the transcript keeps it without
+its text. Nor is a subagent's side of the conversation.
 
 `/mezmo:investigate <incident>` works out the incident's key, preferring the PagerDuty incident
 when a Slack channel or Jira issue has one, then joins. It runs

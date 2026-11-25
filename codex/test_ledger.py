@@ -108,7 +108,7 @@ EVENT_NAME = re.compile(r"^[a-z0-9]+(?:[_-][a-z0-9]+)*(?:\.[a-z0-9]+(?:[_-][a-z0
 EXTRA_KEYS = {
     "access", "agent", "arguments", "call_id", "decision_id", "duration_ms", "entry_key", "exit_status",
     "incident_key", "intent_source", "person_email", "output", "references", "request_id", "service", "session_id",
-    "status", "summary", "target", "text", "tool_name", "tool_namespace",
+    "status", "step_id", "summary", "target", "text", "tool_name", "tool_namespace",
 }
 
 
@@ -1303,7 +1303,8 @@ class RolloutTests(LedgerTestCase):
         self.assertEqual(step["message"], "I'll check PagerDuty.")
         self.assertEqual(
             step["extra"],
-            {"agent": "codex", "incident_key": INCIDENT_KEY, "session_id": "session-1", "text": "I'll check PagerDuty."},
+            {"agent": "codex", "incident_key": INCIDENT_KEY, "session_id": "session-1", "step_id": "msg-I'll ",
+             "text": "I'll check PagerDuty."},
         )
         # The call keeps its own intent: the narration is never a call's reason.
         self.assertEqual(call["message"], "pagerduty.get_past_incidents")

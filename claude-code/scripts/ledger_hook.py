@@ -14,6 +14,10 @@ Bash and MCP group, and Claude Code runs the two in parallel:
   investigation, or takes it out, in the session state, and sends `joined` or `closed`.
 - A Mezmo Memory brief or Insights read that ran adds its references to the session state, so
   the next call's `started` carries what the agent knew when it acted.
+- Each run, and a Stop hook at the end of each turn, reads the transcript from where the last run
+  stopped and sends what Claude wrote as `agent.investigation.step`, at most MAX_STEPS_PER_HOOK a
+  run, each under the investigation the session was in when Claude wrote it. Text written outside
+  every investigation isn't sent. With the ledger off, it only moves past what is there.
 - It never prints hook output and always exits 0, so it can never block or change a tool call.
 - Each run sends its events and resends saved ones on their own threads, waits for all of them up
   to one short deadline, and saves what it couldn't send to ~/.mezmo/ledger-spool.jsonl for a
@@ -126,14 +130,24 @@ def _join(
     Never raises.
     """
     try:
-        investigation = {"incident_key": incident_key, "joined_at": datetime.now(timezone.utc).isoformat()}
+        joined_at = datetime.now(timezone.utc).isoformat()
+        investigation = {"incident_key": incident_key, "joined_at": joined_at}
         if service is not None:
             investigation["service"] = service
-        update_session_state(
-            hook_input,
-            lambda state: state.__setitem__("investigation", investigation),
-            lock_timeout=_lock_timeout(deadline=deadline),
-        )
+        path = hook_input.get("transcript_path")
+
+        def join(state: Dict[str, Any]) -> None:
+            if not ledger.investigation_windows(state) and isinstance(path, str) and path:
+                # Nothing before the join is filed under it, so there's no need to read it.
+                try:
+                    state[ledger.TRANSCRIPT_OFFSET_FIELD] = os.path.getsize(path)
+                except OSError:
+                    pass
+            # Joining another investigation ends the one the session was in.
+            ledger.close_investigation(state, closed_at=joined_at)
+            state["investigation"] = investigation
+
+        update_session_state(hook_input, join, lock_timeout=_lock_timeout(deadline=deadline))
         if _state_incident_key(hook_input=hook_input) != incident_key:
             ledger.ledger_warn(message=f"Mezmo ledger could not join {incident_key}: the session state was not written")
             return None
@@ -170,7 +184,7 @@ def _close(
         def leave(state: Dict[str, Any]) -> None:
             investigation = state.get("investigation")
             if isinstance(investigation, dict) and investigation.get("incident_key") == incident_key:
-                del state["investigation"]
+                ledger.close_investigation(state, closed_at=datetime.now(timezone.utc).isoformat())
 
         # No write for another investigation, so a close can't create a state file.
         if _state_incident_key(hook_input=hook_input) == incident_key:
@@ -180,6 +194,91 @@ def _close(
     except Exception as error:
         ledger.ledger_warn(message=f"Mezmo ledger could not close {incident_key}: {str(error) or type(error).__name__}")
     return closed
+
+
+def _steps(*, deadline: float, hook_input: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """The step events for what Claude wrote since the last read, at most MAX_STEPS_PER_HOOK. Never raises.
+
+    Each goes to the investigation whose join and close bracket the time Claude wrote it. The
+    offset is saved without the lock having to be won: two runs reading the same text send it with
+    the same step_id, and readers keep one.
+    """
+    try:
+        path = hook_input.get("transcript_path")
+        if not isinstance(path, str) or not path:
+            return []
+        state = ledger._session_state(hook_input=hook_input)
+        windows = ledger.investigation_windows(state)
+        if not windows:
+            return []
+        offset = state.get(ledger.TRANSCRIPT_OFFSET_FIELD)
+        offset = offset if isinstance(offset, int) and not isinstance(offset, bool) and offset >= 0 else 0
+        read_to = offset
+        events: List[Dict[str, Any]] = []
+        last_read: Optional[datetime] = None
+        for record, read_to in ledger.transcript_records(path=path, offset=offset):
+            if record is None:
+                continue
+            last_read = ledger._parse_time(record.get("timestamp")) or last_read
+            step = ledger.transcript_step(record)
+            if step is not None:
+                text, step_id, written_at = step
+                for incident_key, joined_at, closed_at in reversed(windows):
+                    if joined_at <= written_at and (closed_at is None or written_at <= closed_at):
+                        event = ledger.step_event(
+                            hook_input=hook_input,
+                            incident_key=incident_key,
+                            step_id=step_id,
+                            text=text,
+                            written_at=written_at,
+                        )
+                        if event is not None:
+                            events.append(event)
+                        break
+            if len(events) >= ledger.MAX_STEPS_PER_HOOK:
+                # The rest wait for the next hook, unread, so a backlog can't crowd out this call's record.
+                break
+
+        def advance(state: Dict[str, Any]) -> None:
+            state[ledger.TRANSCRIPT_OFFSET_FIELD] = read_to
+            closed = state.get(ledger.CLOSED_INVESTIGATIONS_FIELD)
+            if last_read is None or not isinstance(closed, list):
+                return
+            # A closed investigation the read has passed can't get another step.
+            kept = [entry for entry in closed if isinstance(entry, dict) and (
+                (ledger._parse_time(entry.get("closed_at")) or last_read) >= last_read
+            )]
+            if kept:
+                state[ledger.CLOSED_INVESTIGATIONS_FIELD] = kept
+            else:
+                state.pop(ledger.CLOSED_INVESTIGATIONS_FIELD, None)
+
+        update_session_state(hook_input, advance, lock_timeout=_lock_timeout(deadline=deadline))
+        return events
+    except Exception as error:
+        ledger.ledger_warn(message=f"Mezmo ledger could not read the transcript: {str(error) or type(error).__name__}")
+        return []
+
+
+def _skip_transcript(*, hook_input: Mapping[str, Any]) -> None:
+    """With the ledger off, move past what Claude wrote, so turning it back on doesn't send what
+    was written while it was off. Only for a session that has steps to send, or a launched one that
+    may join when the ledger comes on. Never raises."""
+    try:
+        path = hook_input.get("transcript_path")
+        if not isinstance(path, str) or not path:
+            return
+        if not ledger.investigation_windows(ledger._session_state(hook_input=hook_input)) \
+                and ledger._setting(ledger.LEDGER_INCIDENT_KEY_ENV) is None:
+            return
+
+        def change(state: Dict[str, Any]) -> None:
+            state.pop(ledger.CLOSED_INVESTIGATIONS_FIELD, None)
+            state[ledger.TRANSCRIPT_OFFSET_FIELD] = os.path.getsize(path)
+
+        update_session_state(hook_input, change, lock_timeout=LAST_SEND_STATE_TIMEOUT_SECONDS)
+    except Exception:
+        pass
 
 
 def _record_references(*, deadline: float, hook_input: Mapping[str, Any]) -> None:
@@ -204,14 +303,14 @@ def _record_references(*, deadline: float, hook_input: Mapping[str, Any]) -> Non
 def _send(
     *,
     config: ledger.LedgerConfig,
-    event: Mapping[str, Any],
+    events: List[Dict[str, Any]],
     ledger_http: ledger.LedgerHttp,
     outcome: Dict[str, Any],
     sent: List[ledger.LedgerSendResult],
 ) -> None:
-    """Send `event` in a request of its own, keep the result in `sent` and the HTTP status or error in `outcome`."""
+    """Send `events` in a request of their own, keep the result in `sent` and the HTTP status or error in `outcome`."""
     recording = ledger.recording_http(ledger_http=ledger_http, outcome=outcome)
-    sent.append(ledger.send_ledger_events(config=config, events=[event], ledger_http=recording))
+    sent.append(ledger.send_ledger_events(config=config, events=events, ledger_http=recording))
 
 
 def _record_last_send(
@@ -238,24 +337,27 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
     `ran` carries the investigation, and a close is cleared after. A call that ran and read Mezmo
     Memory or Insights adds its references to the state once the requests are started, so its own
     `ran` doesn't carry them. Each waits for the state's lock at most
-    INVESTIGATION_STATE_TIMEOUT_SECONDS and never past the deadline. Each new event goes in a request
-    of its own, so one event's refusal or retry never touches another. Only this thread saves the
-    new events, each by its own result, so each is saved at most once and never by a thread os._exit
+    INVESTIGATION_STATE_TIMEOUT_SECONDS and never past the deadline. The call's event and an
+    investigation event each go in a request of their own, so one's refusal or retry never touches
+    another, and the steps go together in one more. Only this thread saves the new events, each
+    request's by its own result, so each is saved at most once and never by a thread os._exit
     could cut off. A thread still running at the deadline is abandoned, and the duplicate it may
     still deliver is accepted.
     """
     try:
         # Looked up per call, not bound at definition, so tests can stand in for it.
         ledger_http = ledger_http or ledger.post_ledger_events
-        if event.get("hook_event_name") not in LEDGER_EVENTS or not _recorded(event):
+        stop = event.get("hook_event_name") == "Stop"
+        if not stop and (event.get("hook_event_name") not in LEDGER_EVENTS or not _recorded(event)):
             return
-        if ledger._skip_ledger_mcp_tool(hook_input=event):
+        if not stop and ledger._skip_ledger_mcp_tool(hook_input=event):
             return
         try:
             config = ledger.load_ledger_config()
         except Exception:
             return
         if config is None:
+            _skip_transcript(hook_input=event)
             return
         # Real monotonic time, so nothing a caller passes can stretch the deadline. From before the
         # events are built and the state written, so a slow git lookup or lock can't push the save
@@ -275,7 +377,7 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
                 incident_key=investigation[1],
                 service=investigation[2],
             )
-        new_event = _new_event(config=config, hook_input=event)
+        new_event = None if stop else _new_event(config=config, hook_input=event)
         if investigation is not None and investigation[0] == "closed":
             investigation_event = _close(
                 closing=investigation[3],
@@ -284,8 +386,11 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
                 hook_input=event,
                 incident_key=investigation[1],
             )
-        sends: List[Tuple[Dict[str, Any], List[ledger.LedgerSendResult], Dict[str, Any]]] = [
-            (new, [], {}) for new in (new_event, investigation_event) if new is not None
+        steps = _steps(deadline=deadline, hook_input=event)
+        # The call's own record first, each in a request of its own; the steps together in one more.
+        batches = [[new] for new in (new_event, investigation_event) if new is not None] + ([steps] if steps else [])
+        sends: List[Tuple[List[Dict[str, Any]], List[ledger.LedgerSendResult], Dict[str, Any]]] = [
+            (batch, [], {}) for batch in batches
         ]
         threads: List[threading.Thread] = []
         try:
@@ -294,7 +399,7 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
                 threads.append(
                     start_ledger_thread(
                         work=partial(
-                            _send, config=config, event=new, ledger_http=ledger_http, outcome=outcome, sent=sent
+                            _send, config=config, events=new, ledger_http=ledger_http, outcome=outcome, sent=sent
                         )
                     )
                 )
@@ -311,10 +416,10 @@ def handle(event: Mapping[str, Any], *, ledger_http: Optional[ledger.LedgerHttp]
         for thread in threads:
             thread.join(max(0.0, deadline - time.monotonic()))
         for new, sent, _ in sends:
-            result = sent[0] if sent else ledger.LedgerSendResult(answered=False, save=[new])
+            result = sent[0] if sent else ledger.LedgerSendResult(answered=False, save=list(new))
             ledger.save_ledger_events(config=config, events=result.save)
         # A copy of each outcome, so a thread still running can't change it while it is read.
-        _record_last_send(config=config, hook_input=event, sends=[(1, dict(outcome)) for _, _, outcome in sends])
+        _record_last_send(config=config, hook_input=event, sends=[(len(new), dict(outcome)) for new, _, outcome in sends])
         ledger.print_ledger_messages()
     except Exception as error:
         ledger.ledger_warn(message=f"Mezmo ledger failed: {str(error) or type(error).__name__}")
